@@ -11,11 +11,11 @@ import (
 // MemoryStructureExecutionFeedback 是一次已验证结构真正进入 VM 后的现实反馈。
 // 它不做评分或目标判断，只把预测与现实重新写回 Memory 的 Experience。
 type MemoryStructureExecutionFeedback struct {
-	StructureID     string
+	StructureID      string
 	PredictedOutcome map[string]string
-	ActualOutcome   map[string]string
-	PredictionError map[string]string
-	Experience      *MemoryExperience
+	ActualOutcome    map[string]string
+	PredictionError  map[string]string
+	Experience       *MemoryExperience
 }
 
 // capturePredictedOutcome 返回结构自己声明的预测事实。
@@ -107,7 +107,7 @@ func ExecuteMemoryStructure(e *Engine, structure *MemoryStructure, experiences *
 	}
 
 	// 只允许执行 Fabric 中与 Structure 完全一致的实际 Program，避免 Structure 与运行对象发生漂移。
-	executable, err := e.resolveLocalFabricMemory(structure.ID)
+	_, executable, err := e.resolveLocalFabricMemory(structure.ID)
 	if err != nil {
 		return nil, fmt.Errorf("executable memory not found: %w", err)
 	}
