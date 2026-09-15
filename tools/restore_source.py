@@ -11,6 +11,7 @@ from pathlib import Path
 from kernel_lazy_overlay import apply_kernel_lazy_overlay
 from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
+from kernel_remote_memory_overlay import apply_kernel_remote_memory_overlay
 from kernel_scale_overlay import apply_kernel_scale_overlay
 from kernel_speculative_overlay import apply_kernel_speculative_overlay
 
@@ -35,6 +36,7 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
         current = apply_kernel_speculative_overlay(current)
         current = apply_kernel_lazy_overlay(current)
         current = apply_kernel_scale_overlay(current)
+        current = apply_kernel_remote_memory_overlay(current)
         return current
     return raw
 
