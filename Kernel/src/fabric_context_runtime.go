@@ -22,6 +22,8 @@ func rememberFabricOwner(root, member *Engine) {
 	}
 	fabricRootRegistry.Store(root, root)
 	fabricRootRegistry.Store(member, root)
+	registerActivePhysicalBody(root)
+	registerActivePhysicalBody(member)
 }
 
 func engineStoreOpen(e *Engine) bool {
@@ -61,15 +63,20 @@ func fabricRootFor(e *Engine) *Engine {
 		// that is no longer mounted must not retain the old execution context.
 		if !engineStoreOpen(root) || !rootStillMountsMember(root, e) {
 			fabricRootRegistry.Delete(e)
+			unregisterActivePhysicalBody(e)
 			if root == e {
 				fabricRootRegistry.Delete(root)
+				unregisterActivePhysicalBody(root)
 			}
 		} else {
+			registerActivePhysicalBody(root)
+			registerActivePhysicalBody(e)
 			return root
 		}
 	}
 	if e.manifest.Role == "core" && engineStoreOpen(e) {
 		fabricRootRegistry.Store(e, e)
+		registerActivePhysicalBody(e)
 		return e
 	}
 	return e
@@ -78,5 +85,6 @@ func fabricRootFor(e *Engine) *Engine {
 func forgetFabricOwner(e *Engine) {
 	if e != nil {
 		fabricRootRegistry.Delete(e)
+		unregisterActivePhysicalBody(e)
 	}
 }
