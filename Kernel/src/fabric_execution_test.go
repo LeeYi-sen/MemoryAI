@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestMeshServeLocalMemoryReadsPassiveShard(t *testing.T) {
 	memory := &Memory{
@@ -85,5 +88,37 @@ func TestEventSubjectTagResolvesSubjectFromPassiveShard(t *testing.T) {
 	}
 	if got := f.Vars["subject_result"]; got != "subject-found-in-shard" {
 		t.Fatalf("subject_tag did not resolve passive shard subject: %q", got)
+	}
+}
+
+func TestCanonicalEventDispatchDoesNotReenterSchedulerLane(t *testing.T) {
+	handler := &Memory{
+		ID: "event.shard.canonical-handler", Layer: "emergent", Tags: []string{"memory", "event-handler"},
+		Trigger: []string{"event:canonical-event"}, State: map[string]any{}, Revision: 1,
+		Program: []Op{
+			{Code: "set", A: "canonical_result", B: "single-lane"},
+			{Code: "halt"},
+		},
+	}
+	e := loadFabricWriteTestEngine(t, []*Memory{handler})
+	f := newFrame()
+	f.Vars["__txn_canonical"] = "1"
+
+	globalTxnScheduler.commitMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- e.fireEvent("canonical-event", "", f) }()
+
+	select {
+	case err := <-done:
+		globalTxnScheduler.commitMu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		globalTxnScheduler.commitMu.Unlock()
+		t.Fatal("canonical Event re-entered scheduler commit lane")
+	}
+	if got := f.Vars["canonical_result"]; got != "single-lane" {
+		t.Fatalf("canonical shard handler did not execute: %q", got)
 	}
 }
