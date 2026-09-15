@@ -121,8 +121,28 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 			return fail(errors.New("run requires Memory id/tag"))
 		}
 		f := daemonFrameFromArgs(args[1:])
-		if err := globalTxnScheduler.run(e, args[0], f); err != nil {
+		liveContext := cloneStringMap(f.Vars)
+		resolution, err := ResolveContextualExecutionTarget(e, args[0], liveContext)
+		if err != nil {
 			return fail(err)
+		}
+		targetID := args[0]
+		if resolution != nil && strings.TrimSpace(resolution.ResolvedID) != "" {
+			targetID = resolution.ResolvedID
+		}
+		if err := globalTxnScheduler.run(e, targetID, f); err != nil {
+			return fail(err)
+		}
+		if resolution != nil && resolution.Contextual && resolution.Structure != nil {
+			feedback, feedbackErr := RecordContextualExecutionFeedback(e, resolution.Structure, liveContext, f, resolution.ActivationFactID)
+			if feedbackErr != nil {
+				f.Vars["__memory_context_feedback_error"] = feedbackErr.Error()
+			} else if feedback != nil && feedback.Experience != nil {
+				f.Vars["__memory_context_requested"] = resolution.RequestedID
+				f.Vars["__memory_context_resolved"] = resolution.ResolvedID
+				f.Vars["__memory_context_activation_fact"] = resolution.ActivationFactID
+				f.Vars["__memory_context_experience"] = feedback.Experience.ID
+			}
 		}
 		e.runMemoryGrowthAfterLiveActivity(f)
 		return daemonResponse{OK: true, Frame: f}

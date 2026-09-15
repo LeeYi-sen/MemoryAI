@@ -3,161 +3,71 @@
 > Mandatory recovery file. After interruption/context loss, read this file first, then sync current GitHub `main` before modifying code.
 
 ## Mandatory Git rule
-Every commit to `main` must update this same file in the same commit. Implementation, tests, workflows, overlays and this log must be one Git tree/commit. Never develop from an old chat/local copy without first syncing current GitHub `main`.
+Every commit to `main` must update this same file in the same commit. Never develop from an old chat/local copy without first syncing GitHub `main`.
 
 ## Frozen architecture invariants
 - Memory is the AI; AI is Memory. Never convert the system into Agent/plugin architecture.
-- Minimal immutable Kernel owns only physical primitives: atomic storage, time, quotas, scheduling, sandbox VM, I/O, security boundary, crash recovery.
-- Kernel must not hard-code cognitive ranking, relevance, goals, drives, semantic dimensions, policy, learning strategy, fixed cognitive vector shapes, or Skill abstractions.
-- Capability is experience -> stable executable/reusable Memory structure; Dynamic Belief State belongs to Memory.
+- Minimal immutable Kernel owns only physical primitives: atomic storage, time, quotas, scheduling, sandbox VM, I/O, security boundary and crash recovery.
+- Kernel must not hard-code cognitive ranking, relevance, goals, drives, semantic dimensions, policy, learning strategy, fixed cognitive vectors, reward/fitness or Skill abstractions.
+- Capability = Experience -> validated executable/reusable Memory Structure. Dynamic Belief State belongs to Memory.
 - Sovereign Memory Mesh = one Sovereign AI + autonomous nodes + distributed Memory Fabric. Sharing requires Sovereign authorization; remote Memory is direct-read, never silently imported.
 - One AI identity; Memory containers may expand/fuse. Automatic local expansion requires >=5 GiB free space.
-- `Memory.mem` is portable; Kernel is architecture-specific.
-- Runtime persistence must preserve the two-file product principle: no persistent WAL/delta sidecar files next to `Memory.mem`.
+- `memory.mem` is portable; Kernel is architecture-specific.
+- Runtime product remains executable + `memory.mem`: no persistent WAL/delta/journal/database/JSON sidecars.
+- All Experience, Structure, Validation, Belief, Prediction, History, Growth, Lineage, Mutation, Recombination and contextual state ultimately persist inside `memory.mem`.
 
 ## Validation limitation
-GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-job runs. Never report CI PASS unless jobs actually execute. Local/static targeted validation is used meanwhile; full recovery -> gofmt -> vet -> test -> race remains required on a working runner.
+GitHub Actions has repeatedly produced platform-level startup/zero-job failures. Never report CI PASS unless jobs actually execute. Full recovery -> gofmt -> vet -> test -> race remains required on a working runner; targeted local compile/behavior harnesses are used meanwhile.
 
-## Open defects / next exact work
-1. Remove the unreachable historical `routeCognition` source helper from `mesh_runtime.go`.
-2. Make remote/move physical verification journal-aware before migrating those ACK-critical full-persist barriers.
-3. Re-run the complete recovery/package/race Gate when an executable runner is available.
-4. Add replay-receipt ACK/GC only if it is proven safe; otherwise bounded replay ledgers backpressure.
-5. Consider a durable transfer-outcome journal only if ambiguous post-rename finalization requires reconciliation.
+## Open physical-kernel work
+1. Remove unreachable historical `routeCognition` helper from `mesh_runtime.go`.
+2. Make remote/move physical verification journal-aware before migrating ACK-critical full-persist barriers.
+3. Re-run complete recovery/package/race Gate when a working runner is available.
+4. Add replay-receipt ACK/GC only if safely proven; otherwise bounded ledgers backpressure.
+5. Add transfer-outcome journal only if ambiguous post-rename reconciliation truly requires it.
 
-## Commit entries
+## Development history
+- Entry 001: recovery log + frozen Memory-is-AI rules.
+- Entry 002: bounded durable Mesh deferred spool/restart recovery.
+- Entry 003: negative ACK + target-first durable transfer.
+- Entry 004: durable Sovereign proposal replay fencing.
+- Entry 005: physical transfer quotas/failure-safe rollback.
+- Entry 006: removed cognition-shaped physical execution APIs.
+- Entry 007: in-body dual-slot mutation journaling without sidecars.
+- Entry 008: incremental `persistAll()` while preserving remote durability barriers.
+- Entry 009: Memory-owned Experience ledger and factual validation history.
+- Entry 010: deterministic repeated Experience -> candidate Structure.
+- Entry 011: independent Reality Validation -> validated Structure; pending counters retained.
+- Entry 012: Growth state bound into `__memoryai.growth.core` inside `memory.mem`.
+- Entry 013: executable `Program []Op` carried by validated Memory Structure and existing VM.
+- Entry 014: VM execution -> actual outcome -> PredictionError -> Experience.
+- Entry 015: repeated PredictionError evidence -> independently validated Structure revision; old version becomes historical `superseded`.
+- Entry 016: deterministic validated-Structure recombination with lineage/program provenance.
+- Entry 017: event-driven autonomous Growth cycle; real VM witness required; restart identity fixed.
+- Entry 018: evidence-driven multi-generation continuation; Reality-rejected candidates leave automatic retry queue.
+- Entry 019: grounded HTTP/TCP/TLS action -> Reality -> Experience -> Belief, durable at-most-once receipt fence; Belief stores factual support/conflict/missing observations only.
+- Entry 020: Belief -> dynamic Context discovery -> candidate branches -> third independent Reality witness -> validated branches; parent retires only after all branches validate; contested Reality preserves the coarse parent.
 
-### Entry 001
-- Base HEAD: `f4e1fd55d8500f71e7616e9864c2a319ed2dc09f`.
-- Created the mandatory recovery log and froze the Memory-is-AI architecture rules.
-
-### Entry 002
-- Base HEAD: `9a139cac852035b106279cb0f7ec16bb87f2587b`.
-- Added bounded durable Mesh deferred spool and restart recovery.
-
-### Entry 003
-- Base HEAD: `f7e9725574385a18db7cd766757d0a17625773a2`.
-- Added negative ACK propagation and target-first durable transfer; duplicate is preferred to Memory loss.
-
-### Entry 004
-- Base HEAD: `e496098a1ade8aca805221c535fd9607657b25d8`.
-- Added durable Sovereign proposal replay fencing and restart recovery.
-
-### Entry 005
-- Base HEAD: `7b64c62906e33eab115410d4e8a110878bbbc8c3`.
-- Added physical transfer quotas and failure-safe rollback.
-
-### Entry 006
-- Base HEAD: `1f4ef65499a9c7d7ac517e04ad08e74a01a759b4`.
-- Removed cognition-shaped physical execution APIs and replaced them with execution-named primitives.
-
-### Entry 007
-- Base HEAD: `02cfdae62461dd2e33d082045ad487dd924034b9`.
-- Added bounded in-body dual-slot mutation journaling, torn-write recovery and compaction without sidecar files.
-
-### Entry 008
-- Base HEAD: `2eec4bfc7499b1ed78b883e0ead7918d0d6c6cb4`.
-- Scoped incremental persistence to `persistAll()` so remote full-durability barriers remain intact.
-
-### Entry 009
-- Base HEAD: `dac581e521ddd7540f6045d2ba6d5b1508a49efd`.
-- Added Memory-owned Experience with observation/action/outcome, lineage, hashes and validation history.
-
-### Entry 010
-- Base HEAD: `639b998e1f00d136ef7d83e43219cfd8e4ea81f7`.
-- Added deterministic Experience recurrence -> candidate Memory Structure formation and provenance.
-
-### Entry 011
-- Base HEAD: `fec526b5fffa90515623d85895cb6dd1dff45a7d`.
-- Added independent reality validation, failure/success evidence and promotion into validated Memory Structure.
-
-### Entry 011 follow-up
-- Base HEAD: `ef442054fe1436b4e9bf7f1eaac86bb5fec3fc34`.
-- Preserved pending validation counters and witness provenance before promotion.
-
-### Entry 012
-- Base HEAD: `a16eca045dea12fb38bd8ba1c8a7985d21181b48`.
-- Bound Experience/candidate/validation/validated Structure state into the reserved `__memoryai.growth.core` Memory record inside `memory.mem`; no second database or runtime sidecar.
-
-### Entry 013
-- Base HEAD: `b7ab15403c1319909f6eff84174b1719516f2b96`.
-- Added executable `Program []Op` to `MemoryStructure`, plus `BindExecutableProgram` and `ExecutableMemory`. Existing Memory-native persistence carries Program through `memory.mem`.
-
-### Entry 014
-- Base HEAD: `f34783b2bfac0c2a50491b1745bbf7d760044ec7`.
-- Added `PredictionError` to `MemoryExperience` and included it in canonical Experience hashing.
-- Added `ExecuteMemoryStructure`: validated Structure -> existing executable Memory Fabric object -> existing canonical VM -> predicted outcome -> actual outcome -> exact prediction-error facts -> new Experience with parent lineage.
-- No new executor, scheduler, scoring system, database or runtime artifact was introduced. Feedback remains inside the existing Memory Growth state and therefore inside `memory.mem`.
-- Targeted tests cover exact matches, mismatches, missing results, outcome-field isolation and prediction-error hashing. Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
-
-### Entry 015
-- Base HEAD: `6e0a8002fe15eb0af82a120ee3b5c7f576d82ead`.
-- Added `ReconcileValidatedStructureFromExecution`: repeated PredictionError-backed Experience is fed back through the existing Experience -> Candidate -> independent Reality Validation chain.
-- A corrected fact pattern must recur at least twice and pass independent validation before becoming the new validated Memory Structure.
-- The old Structure is retained as historical Memory and marked `superseded`; the new Structure becomes the validated version.
-- The existing executable `Program []Op` is explicitly preserved through `BindExecutableProgram`; Kernel never invents a new Program during self-revision.
-- No new runtime artifact, database, executor, scheduler or sidecar was introduced. The complete state remains covered by the existing `memory.mem` Memory Growth persistence record.
-- Added regression coverage for successful repeated-feedback revision and the no-mutation single-feedback case.
-- Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
-
-### Entry 016
-- Base HEAD: `f5f988f19a55f5c9a80b7f043b0e886c30c337e7`.
-- Added deterministic validated-Structure recombination: two validated executable Structures can produce a recombination candidate by replacing one non-terminal Op at a deterministic boundary with an Op already present in the second parent.
-- Recombination preserves both parent Structure IDs, source Experience provenance, executable Program and mutation index; no arbitrary program generation is introduced.
-- Added a Memory-owned materialization bridge: after real execution creates an Experience, the recombination candidate adopts that real Experience pattern and enters the existing ordinary Candidate -> Reality Validation path.
-- Added finalization that restores recombination lineage and executable Program only after existing validation has promoted the candidate; parent Structures remain intact.
-- All new state is ordinary Memory Growth state and is covered by the existing `__memoryai.growth.core` record inside `memory.mem`; no database, sidecar, new executor, scheduler or ranking subsystem was introduced.
-- Added targeted tests for deterministic mutation, parent lineage, real-experience materialization, finalization and rejection of unvalidated parents.
-- Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
-- Next: connect repeated validated recombination candidates to autonomous self-growth scheduling and then build cross-Structure mutation selection from Memory-native evidence.
-
-### Entry 017
-- Base HEAD: `c76e45baa752b4267ab13bed0d3bd7316bdb9f0a`.
-- Repaired the incomplete Entry 016 repository contract: `MemoryStructure` now carries candidate identity, parent Structure lineage and mutation index, and `FinalizeRecombinedStructure` is implemented so the existing recombination tests and runtime contract are complete.
-- Fixed restart identity for recombination-derived Structures by persisting their real candidate ledger key instead of reconstructing only the ordinary pattern-derived candidate ID.
-- Added one event-driven autonomous Memory Growth cycle after successful live daemon `run`, `input` and `event` activity; no background/generic cognitive scheduler was added.
-- A materialized recombination candidate is re-executed through the existing Fabric and canonical VM to obtain an independent reality witness. Failure evidence is retained; matching evidence promotes and installs the finalized executable Memory Structure.
-- When no candidate is pending, Memory Growth chooses one deterministic, not-yet-attempted ordered pair of validated executable Structures from factual history, performs one real VM probe, records the Experience and materializes it into the existing Candidate -> Reality Validation chain.
-- Recombination impossibility and VM execution errors are retained as Experience facts so failed attempts are neither silently discarded nor retried forever.
-- All Experience, candidate, validation, lineage and growth evidence remains in the existing `__memoryai.growth.core` record inside `memory.mem`; no second database, sidecar, executor, optimizer, ranking subsystem or Skill abstraction was introduced.
-- Added targeted coverage for materialization -> independent witness -> promotion -> restart recovery, failed-witness preservation, finalized lineage/program identity and the repaired Entry 016 contract.
-- Local targeted compile/behavior harness passed. Full repository Gate and CI PASS remain unreported until a real runner executes the complete recovery/gofmt/vet/test/race chain.
-- Next: derive cross-Structure mutation/recombination choice from accumulated Memory-native success/failure evidence without introducing Kernel semantic ranking, then extend the loop across multiple generations and grounding/action feedback.
-
-### Entry 018
-- Base HEAD: `7a07459e38a30cd274818e2b753e1522eb114f11`.
-- Replaced fixed ID-first next-generation continuation with evidence-driven lineage continuation using only persisted Memory facts: independent Reality Validation success identifies the current recombination frontier, and that validated child is tried first in the next unattempted cross-Structure combination.
-- No scalar fitness score, reward model, semantic rank, relevance metric or Kernel goal policy was introduced; when the successful frontier has no remaining pair, selection falls back to deterministic unattempted-pair traversal.
-- Independent reality failure now changes candidate state to `reality_rejected`. The failed witness and Validation history remain in Memory, while the candidate leaves the automatic retry queue so identical live activity cannot generate an infinite validation loop.
-- Reality rejection is persisted through the existing candidate snapshot in `__memoryai.growth.core` inside `memory.mem`; no new state file, database, WAL or sidecar was added.
-- Successful children can now immediately become parents of a second generation; the same materialize -> independent witness -> validate -> finalize path is reused unchanged for every generation.
-- Added targeted coverage for rejection persistence/no automatic retry and for first-generation promotion -> evidence-frontier selection -> second-generation promotion with preserved parent lineage.
-- Local gofmt and targeted evidence-selection harness passed. Full repository Gate and CI PASS remain unreported until a real runner executes recovery/gofmt/vet/test/race.
-- Next: connect multi-generation Structure growth to grounded external action/result Experience and begin Dynamic Belief State integration without moving belief policy into Kernel.
-
-### Entry 019
-- Base HEAD: `156f8017a063322be91cfc1c4fbd5d2f32088b92`.
-- Connected validated Memory Structures to grounded external action/result feedback using the existing source-adapter HTTP/TCP/TLS physical I/O primitive; no second network executor or cognitive action subsystem was introduced.
-- Added a Memory-authored grounded-action physical contract (`grounded_adapter_id`, globally idempotent `grounded_action_id`, explicit `grounded_autonomous`, optional timeout). Kernel only enforces exact physical authorization/idempotency and does not choose goals or rewards.
-- Added durable at-most-once action receipts as ordinary Memory records inside `memory.mem`: `prepared` is persisted before external I/O, `result_persisted` stores the physical result before cognitive feedback, and `feedback_committed` records the resulting Experience/Belief linkage. Ambiguous `prepared` receipts are never automatically replayed; `result_persisted` receipts recover feedback without repeating external side effects.
-- Added an in-process physical concurrency fence so simultaneous live daemon requests cannot execute the same grounded action through the receipt window more than once.
-- Added Memory-native Dynamic Belief evidence records, one per Structure/prediction key/predicted value. Belief stores only exact supporting, conflicting, missing and observed-value Experience facts; it has no confidence scalar, reward, threshold, decay, semantic rank or fixed cognitive vector.
-- Internal VM reality feedback and grounded external feedback now share the same deterministic Belief evidence updater. Belief records are ordinary Memory Fabric records and therefore persist in `memory.mem`; no `belief.db`, sidecar, WAL or separate belief service exists.
-- Live daemon `run`, `input` and `event` activity now opportunistically advances at most one Memory-authorized grounded action plus one existing autonomous growth step, without adding a background cognitive scheduler.
-- Added targeted coverage for single execution/restart idempotency, conflicting external reality, crash recovery from `prepared` and `result_persisted` receipts, concurrent at-most-once fencing, and support/conflict/missing Belief evidence without fixed scores.
-- Local gofmt and targeted compile/static harnesses passed for Grounding/Belief, source-adapter reuse and daemon integration. Full repository Gate and CI PASS remain unreported until a real runner executes recovery/gofmt/vet/test/race.
-- Next: let Memory-owned executable structures consume Belief conflict/history to form contextual Structure branches and activation conditions without Kernel semantic ranking, then extend grounded action issuance across repeated/new action IDs and Sovereign Mesh evidence sharing.
-
-### Entry 020
+### Entry 020 baseline details
 - Base HEAD: `aefc5bb1773a097bc4f16ab39abe3562aac60964`.
-- Added Memory-native Belief -> Context Split -> Structure Branching. Split discovery reads only persisted Belief evidence plus real Experience.Context/Outcome facts; Context keys are dynamic and are never selected from a Kernel semantic dimension table.
-- A split is proposed only when repeated exact Reality patterns provide both support and conflict and one observed Context key cleanly separates distinct outcomes. Selection is deterministic by factual separation + stable lexical order; there is no confidence threshold, reward, semantic score, relevance rank or fixed vector.
-- Each contextual branch candidate is formed from two repeated real Experiences and inherits the parent executable Program and lineage. It cannot promote from formation evidence: a third independent Experience with the same factual pattern is required through the existing Reality Validation ledger before the branch becomes validated/executable.
-- The coarse parent remains validated as a fallback until every branch in the split has independent Reality validation. Only then is the parent marked `context_split`, removed from the validated set and removed from the executable Fabric while remaining preserved historically in Memory Growth state.
-- Added persistent ordinary-Memory split records (`memory-context-split`) inside `memory.mem`, including parent, Belief, prediction key, discovered Context key, branch candidate IDs, formation Experience provenance and split status. No branch database, rule engine, sidecar or new runtime artifact was introduced.
-- New contradictory Reality can invalidate the separating assumption before completion: if one Context value is observed with multiple outcomes, the split becomes `contested`, no branch is force-promoted, and the coarse parent remains active. A later different Context key can still form a new proposal from the expanded evidence.
-- Live daemon `run`, `input` and `event` now opportunistically advance at most one grounded action, one context-branching step and one existing growth step; no background cognitive scheduler was introduced.
-- Grounded-action safety was extended across branch lineage: a child Structure that inherits a parent's already-consumed physical action ID treats that receipt as consumed and cannot replay the side effect; unrelated duplicate action IDs remain hard conflicts.
-- Added targeted coverage for dynamic discriminant discovery (`structure` selected while non-separating `color` is rejected), two-evidence formation + third independent witness, parent retirement only after all children validate, restart persistence, non-separating evidence refusal, contested-split preservation, no runtime sidecar and inherited grounded-action at-most-once safety.
-- Local gofmt, production/test compile stubs and direct Context-separation/contestation Go harnesses passed. Full repository Gate and CI PASS remain unreported until a real runner executes recovery/gofmt/vet/test/race.
-- Next: make contextual activation consume validated split conditions so the correct branch is selected at execution time, then let Memory issue fresh grounded action identities for repeated contextual trials and share Belief/split evidence through Sovereign Memory Mesh without importing remote Memory.
+- Context keys come only from real `Experience.Context`; no semantic dimension table or confidence threshold.
+- Branch formation needs two repeated exact Reality Experiences, then a third independent witness through the existing validation ledger.
+- Validated split records are ordinary `memory-context-split` Memory inside `memory.mem`.
+- Once all branch candidates validate, coarse parent becomes historical `context_split`, leaves validated/executable state, but remains in Memory lineage.
+- New contradictory Reality can mark a split `contested` before completion.
+- Grounded-action lineage prevents a contextual child from replaying a parent's already-consumed action ID.
+- Entry 020 HEAD: `5541088050acebfbf8e572f9023064a36649cfc3`.
+
+### Entry 021
+- Base HEAD: `5541088050acebfbf8e572f9023064a36649cfc3`.
+- Added Memory-native contextual execution resolution over independently validated `memory-context-split` facts. Kernel performs exact Context key/value equality only; it does not rank branches, infer missing values or select semantic relevance.
+- A coarse/contextual Structure ID can resolve recursively through multiple validated splits to one unique validated leaf. Historical intermediate Structures already retired to `context_split` remain routing lineage nodes; the final executable leaf must still be currently validated.
+- Missing required Context, unknown value, multiple validated splits, multiple matching branches, lineage disagreement or routing cycle never falls back to an arbitrary child. Each refusal is persisted as an ordinary `memory-context-activation-fact` inside `memory.mem`.
+- Exact matched conditions are materialized into the selected executable Memory State as `memory_context_condition:<key>` plus root/leaf identity. Existing physical exact-index and scheduler responsibilities remain unchanged and non-cognitive.
+- Live daemon `run` resolves an already-validated contextual leaf before invoking the existing transaction scheduler/VM. Non-contextual targets retain the historical direct execution path.
+- After contextual VM execution, caller live Context + actual predicted-outcome fields are recorded as a new Experience with exact PredictionError and passed through the existing Dynamic Belief updater. A validated leaf can therefore accumulate its own Reality evidence and split again recursively.
+- Context descendants that inherited a parent's autonomous grounded-action identity receive a deterministic fresh physical action ID derived from parent action identity + child Structure identity, while retaining `grounded_parent_action_id` provenance. This avoids parent receipt replay without inventing semantic action policy.
+- Context activation match/refusal facts, executable Context conditions, refreshed action identity, Experience and Belief all persist through existing `memory.mem`; no context-router DB, sidecar, second executor, semantic selector, ranking service or background scheduler was added.
+- Added targeted coverage for exact branch selection + restart persistence, missing/unknown/direct-leaf mismatch refusal, recursive two-level traversal through a retired intermediate, fresh grounded action identity, and live contextual VM feedback into leaf Experience/Belief.
+- Local gofmt, production compile-only stubs, split-test compile stubs, combined Entry 020+021 compile, and recursive behavior harnesses passed. Full repository Gate/CI PASS remain unreported until a real runner executes recovery/gofmt/vet/test/race.
+- Next: let contextual descendants issue repeated/new grounded trials through Memory-authored action instances; then expose Belief/split evidence across Sovereign Memory Mesh by direct remote read without importing remote Memory, while continuing physical-kernel cleanup.
