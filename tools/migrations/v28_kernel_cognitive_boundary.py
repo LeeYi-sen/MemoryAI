@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse, hashlib, subprocess
 from pathlib import Path
 EXPECTED_INPUT_SHA256='8b43be53777e2964297a4f0c1f1df061c06d2a7f8e515636ff2367681420018e'
-EXPECTED_OUTPUT_SHA256='a0ff31f5d5ed648c2dd74d924804bd22f28ada4359699201822f6c5bbb0fbfa7'
+EXPECTED_OUTPUT_SHA256='7cf782220f70e4fb1f81b667dc52c74b97156a0394140200178a8a9ca8f0dcd6'
 COGNITIVE_FIELDS=('Reuse','Trials','Successes','Reward','Cost','Stability')
 def sha256(data:bytes)->str:return hashlib.sha256(data).hexdigest()
 def replace_once(text,old,new,label):
@@ -19,8 +19,13 @@ def migrate(source:str)->str:
     if start<0 or end<0: raise RuntimeError('metric_add case block not found')
     source=source[:start]+source[end:]
     source=replace_once(source,', Stability: .1, Revision: 1}',', Revision: 1}','new memory stability default')
+    source=replace_once(source,
+        '\t\tchild := copyMemory(parent)\n',
+        '\t\tchild := copyMemory(parent)\n\t\t// Trigger ownership is explicit. Variants/challengers must not silently\n\t\t// subscribe to the same event stream as their parent.\n\t\tif !truth(x(op.Args["inherit_trigger"])) {\n\t\t\tchild.Trigger = nil\n\t\t}\n',
+        'memory_copy trigger inheritance')
     for line in ('\t\tchild.Reuse = 0\n','\t\tchild.Trials = 0\n','\t\tchild.Successes = 0\n','\t\tchild.Reward = 0\n','\t\tchild.Cost = 0\n'):
         source=replace_once(source,line,'',f'remove {line.strip()}')
+    source=replace_once(source,'\t\tchild.CreatedUnix = time.Now().Unix()\n','\t\tchild.RuntimeExecCount = 0\n\t\tchild.CreatedUnix = time.Now().Unix()\n','reset copied runtime execution telemetry')
     source=replace_once(source,
         '\tcase "reuse":\n\t\treturn strconv.FormatUint(m.Reuse, 10)\n\tcase "trials":\n\t\treturn strconv.FormatUint(m.Trials, 10)\n\tcase "successes":\n\t\treturn strconv.FormatUint(m.Successes, 10)\n\tcase "reward":\n\t\treturn ff(m.Reward)\n\tcase "cost":\n\t\treturn ff(m.Cost)\n\tcase "stability":\n\t\treturn ff(m.Stability)\n',
         '\tcase "runtime_exec_count":\n\t\treturn strconv.FormatUint(m.RuntimeExecCount, 10)\n','fieldString cognitive metrics')
