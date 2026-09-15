@@ -31,6 +31,51 @@ func (e *Engine) resolveLocalFabricMemoryCopy(id string) (*Engine, *Memory, erro
 	return owner, copyMemory(resolved), nil
 }
 
+// resolveMountedShardMemoryCopy is used only after a lazy speculative Engine
+// has already proved that its pinned primary Store does not contain id. It must
+// not probe the primary Engine again: the snapshot is holding the primary Store
+// RLock for its lifetime, and recursively acquiring that RLock can deadlock
+// behind a waiting persistence writer because sync.RWMutex prefers writers.
+func (e *Engine) resolveMountedShardMemoryCopy(id string) (*Engine, *Memory, error) {
+	if e == nil {
+		return nil, nil, io.EOF
+	}
+	var owner *Engine
+	var found *Memory
+	for _, candidate := range e.localFabricEngines() {
+		if candidate == nil || candidate == e {
+			continue
+		}
+		m, err := candidate.resolveIDLocal(id)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				continue
+			}
+			return nil, nil, err
+		}
+		if m == nil {
+			continue
+		}
+		if owner != nil && owner != candidate {
+			return nil, nil, duplicateFabricIdentityError(id)
+		}
+		owner = candidate
+		found = m
+	}
+	if owner == nil || found == nil {
+		return nil, nil, io.EOF
+	}
+	owner.dataMu.RLock()
+	defer owner.dataMu.RUnlock()
+	if owner.deletedIDs[id] {
+		return nil, nil, io.EOF
+	}
+	if cached := owner.cache[id]; cached != nil {
+		return owner, copyMemory(cached), nil
+	}
+	return owner, copyMemory(found), nil
+}
+
 func memoryHasActivationFeature(m *Memory, feature string) bool {
 	for _, candidate := range activationFeaturesForMemory(m, 0) {
 		if candidate == feature {
