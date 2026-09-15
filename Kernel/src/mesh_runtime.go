@@ -501,7 +501,7 @@ func (m *meshRuntime) proposeShared(id string) (MeshResponse, error) {
 	if e == nil {
 		return MeshResponse{}, errors.New("mesh engine unavailable")
 	}
-	mem, err := e.resolveIDLocal(strings.TrimSpace(id))
+	_, mem, err := e.resolveLocalFabricMemoryCopy(strings.TrimSpace(id))
 	if err != nil {
 		return MeshResponse{}, err
 	}
@@ -526,11 +526,11 @@ func (m *meshRuntime) serveLocalMemory(id string) MeshResponse {
 	if e == nil {
 		return MeshResponse{OK: false, Error: "mesh engine unavailable"}
 	}
-	mem, err := e.resolveIDLocal(strings.TrimSpace(id))
+	_, mem, err := e.resolveLocalFabricMemoryCopy(strings.TrimSpace(id))
 	if err != nil {
 		return MeshResponse{OK: false, Error: err.Error(), Status: "forgotten"}
 	}
-	return MeshResponse{OK: true, Status: "remembered", Memory: copyMemory(mem)}
+	return MeshResponse{OK: true, Status: "remembered", Memory: mem}
 }
 
 func (m *meshRuntime) serveLocalExecution(id string, vars map[string]string) MeshResponse {
@@ -540,7 +540,14 @@ func (m *meshRuntime) serveLocalExecution(id string, vars map[string]string) Mes
 	if e == nil {
 		return MeshResponse{OK: false, Error: "mesh engine unavailable"}
 	}
-	if _, err := e.resolveExecutable(id); err != nil {
+	owner, executable, err := e.resolveLocalFabricMemory(strings.TrimSpace(id))
+	if err != nil {
+		return MeshResponse{OK: false, Error: err.Error()}
+	}
+	if owner == nil || executable == nil || len(executable.Program) == 0 {
+		return MeshResponse{OK: false, Error: "Memory is not executable: " + strings.TrimSpace(id)}
+	}
+	if _, err := owner.resolveExecutable(id); err != nil {
 		return MeshResponse{OK: false, Error: err.Error()}
 	}
 	f := newFrame()
@@ -549,7 +556,7 @@ func (m *meshRuntime) serveLocalExecution(id string, vars map[string]string) Mes
 			f.Vars[k] = v
 		}
 	}
-	if err := globalTxnScheduler.run(e, id, f); err != nil {
+	if err := globalTxnScheduler.run(owner, id, f); err != nil {
 		return MeshResponse{OK: false, Error: err.Error()}
 	}
 	return MeshResponse{OK: true, Status: "executed", Frame: f}
@@ -641,11 +648,9 @@ func (m *meshRuntime) routeCognition(id string, vars map[string]string, preferLo
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 
 	if preferLocal && e != nil {
-		if _, err := e.resolveExecutable(id); err == nil {
-			res := m.serveLocalExecution(id, vars)
-			if res.OK {
-				return self, res.Frame, nil
-			}
+		res := m.serveLocalExecution(id, vars)
+		if res.OK {
+			return self, res.Frame, nil
 		}
 	}
 	if len(nodes) == 0 {
