@@ -174,3 +174,62 @@ func TestSpeculativeShardFallbackDoesNotReenterPinnedPrimaryStore(t *testing.T) 
 		t.Fatal("primary Store writer did not resume after snapshot release")
 	}
 }
+
+func TestSpeculativeUnreadOwnerHintRetargetsAfterShardMove(t *testing.T) {
+	e, oldOwner := newSpeculativeFabricTestEngine(t)
+	ce, base, err := e.snapshotForSpeculationLazy(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLazySpeculation(ce)
+
+	// Discover a physical owner without actually reading/baselining the Memory.
+	ids, err := ce.storeTagIDs("txn-shard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "shard.target" {
+		t.Fatalf("unexpected tag candidates: %#v", ids)
+	}
+	if len(base.memories) != 0 {
+		t.Fatalf("owner hint unexpectedly consumed read-set: %d", len(base.memories))
+	}
+	if hinted, ok := speculativePhysicalOwner(ce, "shard.target"); !ok || hinted != oldOwner {
+		t.Fatalf("old owner hint missing: owner=%v ok=%v", hinted, ok)
+	}
+
+	// Move the same physical identity after the hint but before the first read.
+	if err := e.deleteExplicitMemoryBounded("shard.target"); err != nil {
+		t.Fatal(err)
+	}
+	moved := &Memory{
+		ID: "shard.target", Layer: "emergent", Tags: []string{"memory", "txn-shard"},
+		State: map[string]any{"value": "moved"}, Revision: 2,
+	}
+	newPath := filepath.Join(filepath.Dir(e.bodyPath), "Memory.2.mem")
+	writeBodyForPersistenceTest(t, newPath, "storage", []*Memory{moved})
+	if _, err := e.mountSpace(newPath); err != nil {
+		t.Fatal(err)
+	}
+	newOwner, got, err := e.resolveLocalFabricMemory("shard.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newOwner == oldOwner || got.State["value"] != "moved" {
+		t.Fatalf("test topology did not move owner: old=%p new=%p value=%v", oldOwner, newOwner, got.State["value"])
+	}
+
+	resolved, err := ce.resolveIDLocal("shard.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.State["value"] != "moved" {
+		t.Fatalf("speculative read used stale owner data: %v", resolved.State["value"])
+	}
+	if len(base.memories) != 1 {
+		t.Fatalf("moved Memory not baselined exactly once: %d", len(base.memories))
+	}
+	if owner, ok := speculativePhysicalOwner(ce, "shard.target"); !ok || owner != newOwner {
+		t.Fatalf("stale owner hint was not retargeted: owner=%p new=%p ok=%v", owner, newOwner, ok)
+	}
+}
