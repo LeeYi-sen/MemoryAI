@@ -92,3 +92,35 @@ func MaterializeRecombinationCandidate(candidate *MemoryStructureCandidate, expe
 	out.SourceExperienceIDs = mergeSortedUnique(out.SourceExperienceIDs, []string{experience.ID})
 	return out, nil
 }
+
+// FinalizeRecombinedStructure 只在普通 Reality Validation 已经晋升结构之后恢复重组血缘和 Program。
+// 它不改变验证结论，不生成新 Program；所有执行内容都必须来自候选携带的父结构重组结果。
+func FinalizeRecombinedStructure(structure *MemoryStructure, candidate *MemoryStructureCandidate) (*MemoryStructure, error) {
+	if structure == nil || structure.State != memoryStructureValidatedState {
+		return nil, errors.New("validated recombined structure unavailable")
+	}
+	if candidate == nil || candidate.State != memoryStructureCandidateState {
+		return nil, errors.New("materialized recombination candidate unavailable")
+	}
+	if strings.TrimSpace(candidate.ID) == "" || strings.TrimSpace(candidate.PatternHash) == "" {
+		return nil, errors.New("recombination candidate identity unavailable")
+	}
+	if structure.PatternHash != candidate.PatternHash {
+		return nil, errors.New("validated structure does not match recombination candidate pattern")
+	}
+	if len(candidate.ParentStructureIDs) != 2 {
+		return nil, errors.New("recombination candidate parent lineage unavailable")
+	}
+	if len(candidate.Program) == 0 {
+		return nil, errors.New("recombination candidate executable program unavailable")
+	}
+
+	out := cloneMemoryStructure(structure)
+	out.CandidateID = candidate.ID
+	out.ParentStructureIDs = cloneStrings(candidate.ParentStructureIDs)
+	out.MutationIndex = candidate.MutationIndex
+	if err := BindExecutableProgram(out, candidate.Program); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

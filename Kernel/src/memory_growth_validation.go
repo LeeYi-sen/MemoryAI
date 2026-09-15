@@ -24,7 +24,9 @@ type MemoryStructureValidation struct {
 // MemoryStructure 是经过独立现实证据验证后的第一类可复用记忆结构。
 // 它仍然是 Memory-owned 数据，不是 Kernel 的认知策略或能力模块。
 type MemoryStructure struct {
-	ID                      string            `json:"id"`
+	ID string `json:"id"`
+	// CandidateID 保留该结构在统一候选账本中的真实键，避免重组候选重启后丢失映射。
+	CandidateID             string            `json:"candidate_id,omitempty"`
 	PatternHash             string            `json:"pattern_hash"`
 	SourceExperienceIDs     []string          `json:"source_experience_ids"`
 	ValidationExperienceIDs []string          `json:"validation_experience_ids"`
@@ -37,8 +39,12 @@ type MemoryStructure struct {
 	ValidationCount         uint64            `json:"validation_count"`
 	SuccessCount            uint64            `json:"success_count"`
 	FailureCount            uint64            `json:"failure_count"`
+	// ParentStructureIDs 保留结构重组的父代血缘；普通结构为空。
+	ParentStructureIDs []string `json:"parent_structure_ids,omitempty"`
+	// MutationIndex 是父结构 Program 发生确定性交换的位置；普通结构为零值。
+	MutationIndex int `json:"mutation_index,omitempty"`
 	// Program 是 Memory Structure 自己携带的可执行 VM 表达，不由 Kernel 从语义猜测生成。
-	Program                 []Op              `json:"program,omitempty"`
+	Program []Op `json:"program,omitempty"`
 }
 
 type memoryStructureValidationLedger struct {
@@ -68,6 +74,7 @@ func cloneMemoryStructure(src *MemoryStructure) *MemoryStructure {
 	out.Observation = cloneStringMap(src.Observation)
 	out.Action = cloneStringMap(src.Action)
 	out.ExpectedOutcome = cloneStringMap(src.ExpectedOutcome)
+	out.ParentStructureIDs = cloneStrings(src.ParentStructureIDs)
 	out.Program = append([]Op(nil), src.Program...)
 	return &out
 }
@@ -144,6 +151,7 @@ func (l *memoryStructureValidationLedger) ValidateCandidate(candidate *MemoryStr
 	if structure == nil {
 		structure = &MemoryStructure{
 			ID:                  fmt.Sprintf("memory-structure-%s", candidate.PatternHash[:16]),
+			CandidateID:         candidate.ID,
 			PatternHash:         candidate.PatternHash,
 			SourceExperienceIDs: cloneStrings(candidate.SourceExperienceIDs),
 			Context:             cloneStringMap(source.Context),
@@ -152,6 +160,9 @@ func (l *memoryStructureValidationLedger) ValidateCandidate(candidate *MemoryStr
 			ExpectedOutcome:     cloneStringMap(source.Outcome),
 			PredictionHash:      strings.TrimSpace(source.PredictionHash),
 			State:               memoryStructureValidatedState,
+			ParentStructureIDs:  cloneStrings(candidate.ParentStructureIDs),
+			MutationIndex:       candidate.MutationIndex,
+			Program:             append([]Op(nil), candidate.Program...),
 		}
 		l.structures[candidate.ID] = structure
 	}

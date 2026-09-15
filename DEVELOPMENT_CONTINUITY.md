@@ -64,7 +64,7 @@ GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-j
 - Added Memory-owned Experience with observation/action/outcome, lineage, hashes and validation history.
 
 ### Entry 010
-- Base HEAD: `639b998e1f00d136ef7f83e43219cfd8e4ea81f7`.
+- Base HEAD: `639b998e1f00d136ef7d83e43219cfd8e4ea81f7`.
 - Added deterministic Experience recurrence -> candidate Memory Structure formation and provenance.
 
 ### Entry 011
@@ -110,3 +110,16 @@ GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-j
 - Added targeted tests for deterministic mutation, parent lineage, real-experience materialization, finalization and rejection of unvalidated parents.
 - Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
 - Next: connect repeated validated recombination candidates to autonomous self-growth scheduling and then build cross-Structure mutation selection from Memory-native evidence.
+
+### Entry 017
+- Base HEAD: `c76e45baa752b4267ab13bed0d3bd7316bdb9f0a`.
+- Repaired the incomplete Entry 016 repository contract: `MemoryStructure` now carries candidate identity, parent Structure lineage and mutation index, and `FinalizeRecombinedStructure` is implemented so the existing recombination tests and runtime contract are complete.
+- Fixed restart identity for recombination-derived Structures by persisting their real candidate ledger key instead of reconstructing only the ordinary pattern-derived candidate ID.
+- Added one event-driven autonomous Memory Growth cycle after successful live daemon `run`, `input` and `event` activity; no background/generic cognitive scheduler was added.
+- A materialized recombination candidate is re-executed through the existing Fabric and canonical VM to obtain an independent reality witness. Failure evidence is retained; matching evidence promotes and installs the finalized executable Memory Structure.
+- When no candidate is pending, Memory Growth chooses one deterministic, not-yet-attempted ordered pair of validated executable Structures from factual history, performs one real VM probe, records the Experience and materializes it into the existing Candidate -> Reality Validation chain.
+- Recombination impossibility and VM execution errors are retained as Experience facts so failed attempts are neither silently discarded nor retried forever.
+- All Experience, candidate, validation, lineage and growth evidence remains in the existing `__memoryai.growth.core` record inside `memory.mem`; no second database, sidecar, executor, optimizer, ranking subsystem or Skill abstraction was introduced.
+- Added targeted coverage for materialization -> independent witness -> promotion -> restart recovery, failed-witness preservation, finalized lineage/program identity and the repaired Entry 016 contract.
+- Local targeted compile/behavior harness passed. Full repository Gate and CI PASS remain unreported until a real runner executes the complete recovery/gofmt/vet/test/race chain.
+- Next: derive cross-Structure mutation/recombination choice from accumulated Memory-native success/failure evidence without introducing Kernel semantic ranking, then extend the loop across multiple generations and grounding/action feedback.

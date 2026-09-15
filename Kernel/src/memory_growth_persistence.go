@@ -18,15 +18,15 @@ const memoryGrowthStateVersion = 1
 // memoryGrowthPersistedState 是 Memory Growth Core 的可恢复状态快照。
 // 该结构只负责序列化，不承担任何认知决策。
 type memoryGrowthPersistedState struct {
-	Version                   int                                      `json:"version"`
-	ExperienceNextSeq         uint64                                   `json:"experience_next_seq"`
-	ExperienceOrder           []string                                 `json:"experience_order"`
-	Experiences               []*MemoryExperience                      `json:"experiences"`
-	ExperienceValidations     map[string][]ExperienceValidation        `json:"experience_validations"`
-	Candidates                []*MemoryStructureCandidate              `json:"candidates"`
-	StructureValidationHistory map[string][]MemoryStructureValidation  `json:"structure_validation_history"`
-	PendingStructures         []*MemoryStructure                         `json:"pending_structures"`
-	ValidatedCandidateIDs     []string                                 `json:"validated_candidate_ids"`
+	Version                    int                                    `json:"version"`
+	ExperienceNextSeq          uint64                                 `json:"experience_next_seq"`
+	ExperienceOrder            []string                               `json:"experience_order"`
+	Experiences                []*MemoryExperience                    `json:"experiences"`
+	ExperienceValidations      map[string][]ExperienceValidation      `json:"experience_validations"`
+	Candidates                 []*MemoryStructureCandidate            `json:"candidates"`
+	StructureValidationHistory map[string][]MemoryStructureValidation `json:"structure_validation_history"`
+	PendingStructures          []*MemoryStructure                     `json:"pending_structures"`
+	ValidatedCandidateIDs      []string                               `json:"validated_candidate_ids"`
 }
 
 func newMemoryGrowthPersistedState() memoryGrowthPersistedState {
@@ -143,6 +143,10 @@ func restoreMemoryGrowthState(state memoryGrowthPersistedState) (*experienceLedg
 func candidateIDFromStructure(structure *MemoryStructure) string {
 	if structure == nil {
 		return ""
+	}
+	// 重组候选的 ID 并不等于普通 pattern-derived candidate ID，必须优先使用真实账本键。
+	if candidateID := strings.TrimSpace(structure.CandidateID); candidateID != "" {
+		return candidateID
 	}
 	if len(structure.PatternHash) >= 16 {
 		return fmt.Sprintf("memory-structure-candidate-%s", structure.PatternHash[:16])

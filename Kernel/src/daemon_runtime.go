@@ -18,10 +18,10 @@ type daemonRequest struct {
 }
 
 type daemonResponse struct {
-	OK    bool           `json:"ok"`
-	Error string         `json:"error,omitempty"`
-	Data  any            `json:"data,omitempty"`
-	Frame *Frame         `json:"frame,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	Data  any    `json:"data,omitempty"`
+	Frame *Frame `json:"frame,omitempty"`
 }
 
 var daemonConnections uint64
@@ -61,6 +61,23 @@ func daemonFrameFromArgs(args []string) *Frame {
 	return f
 }
 
+// runMemoryGrowthAfterLiveActivity 把真实 live 活动与 Memory Growth 闭环连接起来。
+// 这里不创建新的后台 scheduler；每个完成的 run/input/event 仅机会式推进一次 Memory-native 生长。
+func (e *Engine) runMemoryGrowthAfterLiveActivity(f *Frame) {
+	if e == nil {
+		return
+	}
+	_, err := RunAutonomousMemoryGrowthCycle(e)
+	if err == nil || f == nil {
+		return
+	}
+	if f.Vars == nil {
+		f.Vars = map[string]string{}
+	}
+	// 生长失败不回滚已经完成的外部事件，只把物理故障暴露到当前 Frame 供 Memory/调用方观察。
+	f.Vars["__memory_growth_error"] = err.Error()
+}
+
 func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 	if len(req.Args) == 0 {
 		return daemonResponse{OK: false, Error: "daemon command required"}
@@ -96,6 +113,7 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if err := globalTxnScheduler.run(e, args[0], f); err != nil {
 			return fail(err)
 		}
+		e.runMemoryGrowthAfterLiveActivity(f)
 		return daemonResponse{OK: true, Frame: f}
 	case "input":
 		if len(args) < 1 {
@@ -108,6 +126,7 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if err := e.fireEvent("input", "", f); err != nil {
 			return fail(err)
 		}
+		e.runMemoryGrowthAfterLiveActivity(f)
 		return daemonResponse{OK: true, Frame: f}
 	case "event":
 		if len(args) < 1 {
@@ -123,6 +142,7 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if err := e.fireEvent(args[0], subject, f); err != nil {
 			return fail(err)
 		}
+		e.runMemoryGrowthAfterLiveActivity(f)
 		return daemonResponse{OK: true, Frame: f}
 	case "activate":
 		if len(args) < 1 {
