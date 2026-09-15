@@ -48,8 +48,26 @@ func newPhysicalEvent(name, subject string, vars map[string]string) PhysicalEven
 	}
 }
 
+func eventFabricRoot(e *Engine) *Engine {
+	root := fabricRootFor(e)
+	if root != nil {
+		return root
+	}
+	return e
+}
+
 func (e *Engine) ensureEventPhysicalIndex() error {
+	if e == nil {
+		return fmt.Errorf("physical event index requires engine")
+	}
+	root := eventFabricRoot(e)
+	if root != e {
+		return root.ensureEventPhysicalIndex()
+	}
 	if e.speculative {
+		if origin, ok := speculativeOriginEngine(e); ok && origin != nil {
+			return eventFabricRoot(origin).ensureEventPhysicalIndex()
+		}
 		return nil
 	}
 	e.eventStats.mu.Lock()
@@ -76,10 +94,17 @@ func memoryHasTag(m *Memory, tag string) bool {
 
 func eventSubjectTags(e *Engine, subject string) map[string]bool {
 	out := map[string]bool{}
-	if subject == "" {
+	if e == nil || subject == "" {
 		return out
 	}
-	m, err := e.resolve(subject)
+	var m *Memory
+	var err error
+	if e.speculative {
+		m, err = e.resolveIDLocal(subject)
+	} else {
+		root := eventFabricRoot(e)
+		_, m, err = root.resolveLocalFabricMemory(subject)
+	}
 	if err != nil || m == nil {
 		return out
 	}
@@ -118,6 +143,9 @@ func memoryMatchesPhysicalEvent(m *Memory, ev PhysicalEvent, subjectTags map[str
 }
 
 func (e *Engine) eventCandidateIDs(ev PhysicalEvent, subjectTags map[string]bool) ([]string, error) {
+	if e == nil {
+		return nil, fmt.Errorf("physical event candidates require engine")
+	}
 	keys := []string{"event:" + ev.Name}
 	if ev.Subject != "" {
 		keys = append(keys, "subject_id:"+ev.Subject)
@@ -127,36 +155,25 @@ func (e *Engine) eventCandidateIDs(ev PhysicalEvent, subjectTags map[string]bool
 	}
 	sort.Strings(keys)
 
-	ids := map[string]struct{}{}
+	root := eventFabricRoot(e)
+	if err := root.ensureEventPhysicalIndex(); err != nil {
+		return nil, err
+	}
+	queryEngine := root
 	if e.speculative {
-		// Speculative engines already contain a bounded private snapshot. Scanning
-		// that private cache does not reintroduce a production Memory-wide scan.
-		e.dataMu.RLock()
-		for id, m := range e.cache {
-			if e.deletedIDs[id] || m == nil {
-				continue
-			}
-			for _, trigger := range m.Trigger {
-				for _, key := range keys {
-					if strings.TrimSpace(trigger) == key {
-						ids[id] = struct{}{}
-					}
-				}
-			}
-		}
-		e.dataMu.RUnlock()
-	} else {
-		if err := e.ensureEventPhysicalIndex(); err != nil {
+		// ExactFeatureIDs on the speculative Engine reads the same root Fabric
+		// indexes through the pinned snapshot path and overlays private mutations.
+		queryEngine = e
+	}
+
+	ids := map[string]struct{}{}
+	for _, key := range keys {
+		matches, err := globalActivationRuntime.ExactFeatureIDs(queryEngine, "trigger:"+key)
+		if err != nil {
 			return nil, err
 		}
-		for _, key := range keys {
-			matches, err := globalActivationRuntime.ExactFeatureIDs(e, "trigger:"+key)
-			if err != nil {
-				return nil, err
-			}
-			for _, id := range matches {
-				ids[id] = struct{}{}
-			}
+		for _, id := range matches {
+			ids[id] = struct{}{}
 		}
 	}
 
@@ -175,16 +192,22 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 	if ev.Depth > 64 {
 		return fmt.Errorf("physical event depth exceeded: %d", ev.Depth)
 	}
+	root := eventFabricRoot(e)
 	subjectTags := eventSubjectTags(e, ev.Subject)
 	ids, err := e.eventCandidateIDs(ev, subjectTags)
 	if err != nil {
 		return err
 	}
-	atomic.AddUint64(&e.eventStats.dispatched, 1)
+	atomic.AddUint64(&root.eventStats.dispatched, 1)
 
 	for _, id := range ids {
-		m, err := e.resolveIDLocal(id)
-		if err != nil || !memoryMatchesPhysicalEvent(m, ev, subjectTags) {
+		var handler *Memory
+		if e.speculative {
+			handler, err = e.resolveIDLocal(id)
+		} else {
+			_, handler, err = root.resolveLocalFabricMemory(id)
+		}
+		if err != nil || !memoryMatchesPhysicalEvent(handler, ev, subjectTags) {
 			continue
 		}
 		f.Vars["__event"] = ev.Name
@@ -195,8 +218,14 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 				f.Vars[k] = v
 			}
 		}
-		atomic.AddUint64(&e.eventStats.handlerRuns, 1)
-		if err := e.run(id, f); err != nil {
+		atomic.AddUint64(&root.eventStats.handlerRuns, 1)
+		if e.speculative {
+			if err := e.run(id, f); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := globalTxnScheduler.run(root, id, f); err != nil {
 			return err
 		}
 	}
@@ -214,7 +243,8 @@ func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {
 	}
 	f.Events = append(f.Events, ev)
 	f.eventCount++
-	atomic.AddUint64(&e.eventStats.emitted, 1)
+	root := eventFabricRoot(e)
+	atomic.AddUint64(&root.eventStats.emitted, 1)
 	oldDepth := f.Vars["__event_depth"]
 	f.Vars["__event_depth"] = fmt.Sprint(ev.Depth)
 	err := e.dispatchPhysicalEvent(f, ev)
