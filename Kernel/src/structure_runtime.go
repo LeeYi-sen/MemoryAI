@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -69,71 +70,29 @@ func (e *Engine) importMemoryJSON(raw string, remote bool) (string, string, erro
 	if err := validateMemoryCapabilities(&m, false); err != nil {
 		return m.ID, "denied", err
 	}
-	if current, err := e.resolveIDLocal(m.ID); err == nil && current != nil {
+
+	_, current, err := e.resolveLocalFabricMemory(m.ID)
+	if err == nil && current != nil {
 		if memoryJSONDigest(current) == memoryJSONDigest(&m) {
 			return m.ID, "unchanged", nil
 		}
 		if m.Revision <= current.Revision {
-			return m.ID, "stale", fmt.Errorf("import revision must advance existing Memory: id=%s incoming=%d current=%d", m.ID, m.Revision, current.Revision)
+			return m.ID, "stale", fmt.Errorf(
+				"import revision must advance existing Memory: id=%s incoming=%d current=%d",
+				m.ID, m.Revision, current.Revision,
+			)
 		}
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return m.ID, "error", err
 	}
-	e.upsertExplicitMemory(&m)
+	if err := e.upsertExplicitMemoryBounded(&m); err != nil {
+		return m.ID, "error", err
+	}
 	return m.ID, "imported", nil
 }
 
-func (e *Engine) upsertExplicitMemory(m *Memory) {
-	q := copyMemory(m)
-	if q.State == nil {
-		q.State = map[string]any{}
-	}
-
-	// Store access must happen before taking dataMu. storeGetID acquires a
-	// physical-store lifetime lease whose pointer selection itself uses dataMu
-	// RLock; calling it while holding dataMu.Lock would self-deadlock because
-	// sync.RWMutex is not re-entrant.
-	persistedOld, persistedErr := e.storeGetID(q.ID)
-
-	e.dataMu.Lock()
-	if old := e.cache[q.ID]; old != nil {
-		for _, t := range old.Tags {
-			e.tagDeltaRemoveLocked(q.ID, t)
-		}
-	} else if persistedErr == nil && persistedOld != nil {
-		for _, t := range persistedOld.Tags {
-			e.tagDeltaRemoveLocked(q.ID, t)
-		}
-	}
-	e.cache[q.ID] = q
-	for _, t := range q.Tags {
-		e.tagDeltaAddLocked(q.ID, t)
-	}
-	if persistedErr != nil {
-		e.newIDs[q.ID] = true
-	} else {
-		delete(e.newIDs, q.ID)
-	}
-	delete(e.deletedIDs, q.ID)
-	e.dirtyIDs[q.ID] = true
-	e.dirty = true
-	e.dataMu.Unlock()
-}
-
 func (e *Engine) explicitDeleteMemory(id string) error {
-	m, err := e.resolveIDLocal(id)
-	if err != nil {
-		return err
-	}
-	e.dataMu.Lock()
-	for _, t := range m.Tags {
-		e.tagDeltaRemoveLocked(id, t)
-	}
-	e.deletedIDs[id] = true
-	delete(e.cache, id)
-	delete(e.newIDs, id)
-	delete(e.dirtyIDs, id)
-	e.dirty = true
-	e.dataMu.Unlock()
-	return nil
+	return e.deleteExplicitMemoryBounded(strings.TrimSpace(id))
 }
 
 func (e *Engine) collectStructures(ids []string, closure bool) ([]*Memory, error) {
@@ -227,15 +186,20 @@ func (e *Engine) syncRequiredStructures(path string) error {
 		if err := validateMemoryCapabilities(incoming, false); err != nil {
 			return err
 		}
-		current, er := e.resolveIDLocal(incoming.ID)
+		_, current, er := e.resolveLocalFabricMemory(incoming.ID)
 		if er == nil && memoryJSONDigest(current) == memoryJSONDigest(incoming) {
 			continue
+		}
+		if er != nil && !errors.Is(er, io.EOF) {
+			return er
 		}
 		q := copyMemory(incoming)
 		if er == nil && q.Revision <= current.Revision {
 			q.Revision = current.Revision + 1
 		}
-		e.upsertExplicitMemory(q)
+		if err := e.upsertExplicitMemoryBounded(q); err != nil {
+			return err
+		}
 	}
 	return nil
 }
