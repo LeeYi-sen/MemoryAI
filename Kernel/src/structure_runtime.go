@@ -20,6 +20,7 @@ func memoryJSONDigest(m *Memory) string {
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:])
 }
+
 func (e *Engine) exportMemoryJSON(id string, sign bool) (string, error) {
 	m, err := e.resolve(id)
 	if err != nil {
@@ -38,7 +39,14 @@ func (e *Engine) exportMemoryJSON(id string, sign bool) (string, error) {
 	}
 	return string(b), nil
 }
+
 func (e *Engine) importMemoryJSON(raw string, remote bool) (string, string, error) {
+	// Frozen architecture: remote Memory is never copied/imported into this
+	// body. A remote Memory is remembered only while its origin is reachable and
+	// is consumed through the Sovereign Mesh direct-read path.
+	if remote {
+		return "", "denied", errors.New("remote Memory import disabled; use Sovereign Mesh direct read")
+	}
 	var m Memory
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return "", "invalid", err
@@ -50,7 +58,7 @@ func (e *Engine) importMemoryJSON(raw string, remote bool) (string, string, erro
 	if m.State == nil {
 		m.State = map[string]any{}
 	}
-	if err := validateMemoryCapabilities(&m, remote); err != nil {
+	if err := validateMemoryCapabilities(&m, false); err != nil {
 		return m.ID, "denied", err
 	}
 	if current, err := e.resolveIDLocal(m.ID); err == nil && current != nil {
@@ -64,18 +72,26 @@ func (e *Engine) importMemoryJSON(raw string, remote bool) (string, string, erro
 	e.upsertExplicitMemory(&m)
 	return m.ID, "imported", nil
 }
+
 func (e *Engine) upsertExplicitMemory(m *Memory) {
 	q := copyMemory(m)
 	if q.State == nil {
 		q.State = map[string]any{}
 	}
+
+	// Store access must happen before taking dataMu. storeGetID acquires a
+	// physical-store lifetime lease whose pointer selection itself uses dataMu
+	// RLock; calling it while holding dataMu.Lock would self-deadlock because
+	// sync.RWMutex is not re-entrant.
+	persistedOld, persistedErr := e.storeGetID(q.ID)
+
 	e.dataMu.Lock()
 	if old := e.cache[q.ID]; old != nil {
 		for _, t := range old.Tags {
 			e.tagDeltaRemoveLocked(q.ID, t)
 		}
-	} else if old, err := e.storeGetID(q.ID); err == nil && old != nil {
-		for _, t := range old.Tags {
+	} else if persistedErr == nil && persistedOld != nil {
+		for _, t := range persistedOld.Tags {
 			e.tagDeltaRemoveLocked(q.ID, t)
 		}
 	}
@@ -83,14 +99,17 @@ func (e *Engine) upsertExplicitMemory(m *Memory) {
 	for _, t := range q.Tags {
 		e.tagDeltaAddLocked(q.ID, t)
 	}
-	if _, err := e.storeGetID(q.ID); err != nil {
+	if persistedErr != nil {
 		e.newIDs[q.ID] = true
+	} else {
+		delete(e.newIDs, q.ID)
 	}
 	delete(e.deletedIDs, q.ID)
 	e.dirtyIDs[q.ID] = true
 	e.dirty = true
 	e.dataMu.Unlock()
 }
+
 func (e *Engine) explicitDeleteMemory(id string) error {
 	m, err := e.resolveIDLocal(id)
 	if err != nil {
@@ -108,6 +127,7 @@ func (e *Engine) explicitDeleteMemory(id string) error {
 	e.dataMu.Unlock()
 	return nil
 }
+
 func (e *Engine) collectStructures(ids []string, closure bool) ([]*Memory, error) {
 	seen := map[string]bool{}
 	queue := append([]string(nil), ids...)
@@ -131,6 +151,7 @@ func (e *Engine) collectStructures(ids []string, closure bool) ([]*Memory, error
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
+
 func printStructureBundle(memories []*Memory) error {
 	b, err := json.MarshalIndent(structureBundle{Format: "memoryai-structure-bundle-v1", Memories: memories}, "", "  ")
 	if err != nil {
@@ -139,6 +160,7 @@ func printStructureBundle(memories []*Memory) error {
 	fmt.Println(string(b))
 	return nil
 }
+
 func (e *Engine) exportStructures(ids []string) error {
 	memories, err := e.collectStructures(ids, false)
 	if err != nil {
@@ -146,6 +168,7 @@ func (e *Engine) exportStructures(ids []string) error {
 	}
 	return printStructureBundle(memories)
 }
+
 func (e *Engine) exportStructureClosure(ids []string) error {
 	memories, err := e.collectStructures(ids, true)
 	if err != nil {
@@ -153,6 +176,7 @@ func (e *Engine) exportStructureClosure(ids []string) error {
 	}
 	return printStructureBundle(memories)
 }
+
 func decodeStructureBundle(data []byte) ([]*Memory, error) {
 	var bundle structureBundle
 	if err := json.Unmarshal(data, &bundle); err == nil && len(bundle.Memories) > 0 {
@@ -177,6 +201,7 @@ func decodeStructureBundle(data []byte) ([]*Memory, error) {
 	}
 	return nil, errors.New("structure bundle contains no memories")
 }
+
 func (e *Engine) syncRequiredStructures(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -206,6 +231,7 @@ func (e *Engine) syncRequiredStructures(path string) error {
 	}
 	return nil
 }
+
 func (e *Engine) deleteStructures(ids []string) error {
 	ordered := append([]string(nil), ids...)
 	sort.Strings(ordered)
