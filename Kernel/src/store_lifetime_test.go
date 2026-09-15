@@ -84,9 +84,6 @@ func TestSpeculativePinnedStoreAvoidsNestedReadDeadlock(t *testing.T) {
 		close(writerDone)
 	}()
 	<-writerStarted
-	// Give the writer an opportunity to queue. If speculative reads attempted a
-	// second RLock, Go RWMutex writer preference would block that read behind the
-	// writer while the snapshot itself still held the first RLock.
 	time.Sleep(20 * time.Millisecond)
 
 	readDone := make(chan error, 1)
@@ -146,5 +143,51 @@ func TestPersistWaitsForSpeculativeStoreLease(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("persist did not resume after speculative store lease release")
+	}
+}
+
+func TestReleaseSpeculativeStoreLeaseBreaksPersistCommitLockCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Memory.mem")
+	root := &Memory{ID: "root", Layer: "inherited", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1}
+	writeBodyForPersistenceTest(t, path, "storage", []*Memory{root})
+	e, err := loadEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.close()
+
+	ce, _, err := e.snapshotForSpeculationLazy(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLazySpeculation(ce)
+
+	// Reproduce finalizePersistedBody's lock order: dataMu -> Store WLock.
+	// The speculative snapshot currently owns the Store RLock, so this goroutine
+	// intentionally parks while holding dataMu.
+	writerHasDataMu := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		e.dataMu.Lock()
+		st := e.store
+		guard := indexedStoreGuard(st)
+		close(writerHasDataMu)
+		guard.Lock()
+		guard.Unlock()
+		e.dataMu.Unlock()
+		close(writerDone)
+	}()
+	<-writerHasDataMu
+
+	// Scheduler must perform this release before a commit attempts dataMu. If it
+	// waited until transaction teardown, both sides would wait forever.
+	releaseSpeculativeStoreLease(ce)
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("release-before-commit did not break dataMu/StoreGuard lock cycle")
+	}
+	if _, pinned := pinnedSpeculativeStore(ce); pinned {
+		t.Fatal("speculative Store remained pinned after commit-phase release")
 	}
 }
