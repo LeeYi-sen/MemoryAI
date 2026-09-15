@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,10 +24,10 @@ def sha256(data: bytes) -> str:
 
 def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
     # Historical bootstrap bytes remain immutable and hash-verifiable. Forward
-    # source fixes are applied only after that verification as an explicit,
-    # deterministic overlay.
+    # source fixes are applied only after that verification as explicit,
+    # deterministic overlays with their own input hashes.
     if rel_target.as_posix() == "Kernel/src/kernel.go":
-        return apply_kernel_overlay(raw)
+        return apply_kernel_mesh_overlay(apply_kernel_overlay(raw))
     return raw
 
 
