@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"io"
+	"sort"
 	"sync"
 )
 
@@ -37,6 +38,24 @@ func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 	g.RLock()
 	e.dataMu.RUnlock()
 	return st, g.RUnlock, nil
+}
+
+func sortedOwnedIDs(seen map[string]*Engine) []string {
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergeOwnedIDs(dst map[string]*Engine, src map[string]*Engine) error {
+	for id, owner := range src {
+		if err := addFabricOwner(dst, id, owner); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
@@ -81,16 +100,34 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 }
 
 func (e *Engine) storeTagIDs(tag string) ([]string, error) {
-	if origin, ok := speculativeOriginEngine(e); ok {
-		ids, owners, err := origin.listTagFabricOwned(tag)
+	if st, ok := pinnedSpeculativeStore(e); ok {
+		origin, exists := speculativeOriginEngine(e)
+		if !exists {
+			return nil, io.EOF
+		}
+		seen := map[string]*Engine{}
+		primaryIDs, err := st.TagIDs(tag)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		for _, id := range primaryIDs {
+			if err := addFabricOwner(seen, id, origin); err != nil {
+				return nil, err
+			}
+		}
+		_, shardOwners, err := origin.listTagMountedShardsOwned(tag)
 		if err != nil {
 			return nil, err
 		}
-		if err := recordSpeculativeOwnerHints(e, owners); err != nil {
+		if err := mergeOwnedIDs(seen, shardOwners); err != nil {
 			return nil, err
 		}
-		return ids, nil
+		if err := recordSpeculativeOwnerHints(e, seen); err != nil {
+			return nil, err
+		}
+		return sortedOwnedIDs(seen), nil
 	}
+
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
 		return nil, err
@@ -122,16 +159,93 @@ func (e *Engine) storePhysicalFeatureIDsLocal(feature string) ([]string, error) 
 }
 
 func (e *Engine) storePhysicalFeatureIDs(feature string) ([]string, error) {
-	if origin, ok := speculativeOriginEngine(e); ok {
-		ids, owners, err := origin.physicalFeatureIDsFabricOwned(feature)
+	if st, ok := pinnedSpeculativeStore(e); ok {
+		origin, exists := speculativeOriginEngine(e)
+		if !exists {
+			return nil, io.EOF
+		}
+		seen := map[string]*Engine{}
+		shadowed := activationShadowedIDs(e)
+
+		indexed, err := st.HasPhysicalFeatureIndex()
 		if err != nil {
 			return nil, err
 		}
-		if err := recordSpeculativeOwnerHints(e, owners); err != nil {
+		if indexed {
+			ids, err := st.PhysicalFeatureIDs(feature)
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			for _, id := range ids {
+				if shadowed[id] {
+					continue
+				}
+				if err := addFabricOwner(seen, id, origin); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			ids, err := st.AllIDs()
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			for _, id := range ids {
+				if shadowed[id] {
+					continue
+				}
+				m, er := st.GetID(id)
+				if er != nil {
+					if errors.Is(er, io.EOF) {
+						continue
+					}
+					return nil, er
+				}
+				if memoryHasActivationFeature(m, feature) {
+					if err := addFabricOwner(seen, id, origin); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+
+		_, shardOwners, err := origin.physicalFeatureIDsMountedShardsOwned(feature)
+		if err != nil {
 			return nil, err
 		}
-		return ids, nil
+		if err := mergeOwnedIDs(seen, shardOwners); err != nil {
+			return nil, err
+		}
+
+		// Private speculative changes shadow both primary and shard base postings.
+		for id := range shadowed {
+			delete(seen, id)
+		}
+		e.dataMu.RLock()
+		for id := range shadowed {
+			if e.deletedIDs[id] {
+				continue
+			}
+			m := e.cache[id]
+			if m == nil || !memoryHasActivationFeature(m, feature) {
+				continue
+			}
+			owner := origin
+			if hinted, exists := speculativePhysicalOwner(e, id); exists && hinted != nil {
+				owner = hinted
+			}
+			if err := addFabricOwner(seen, id, owner); err != nil {
+				e.dataMu.RUnlock()
+				return nil, err
+			}
+		}
+		e.dataMu.RUnlock()
+
+		if err := recordSpeculativeOwnerHints(e, seen); err != nil {
+			return nil, err
+		}
+		return sortedOwnedIDs(seen), nil
 	}
+
 	if e != nil && e.manifest.Role == "core" {
 		ids, _, err := e.physicalFeatureIDsFabricOwned(feature)
 		return ids, err
@@ -149,25 +263,31 @@ func (e *Engine) storeHasPhysicalFeatureIndexLocal() (bool, error) {
 }
 
 func (e *Engine) storeHasPhysicalFeatureIndex() (bool, error) {
-	target := e
-	if origin, ok := speculativeOriginEngine(e); ok {
-		target = origin
-	}
-	if target != nil && target.manifest.Role == "core" {
-		// The Fabric adapter itself provides exact feature lookup for every body.
-		// Indexed bodies use their persisted secondary index; a legacy body gets a
-		// compatibility scan isolated to that body inside physicalFeatureIDsFabric.
-		// Therefore one legacy shard must not force Activation.Build into its old
-		// primary-only full-scan mode. Still probe every Store here so I/O/index
-		// corruption remains a hard error rather than being silently hidden.
-		for _, candidate := range target.localFabricEngines() {
+	if st, ok := pinnedSpeculativeStore(e); ok {
+		if _, err := st.HasPhysicalFeatureIndex(); err != nil {
+			return false, err
+		}
+		origin, exists := speculativeOriginEngine(e)
+		if !exists {
+			return false, io.EOF
+		}
+		for _, candidate := range origin.mountedFabricEngines() {
 			if _, err := candidate.storeHasPhysicalFeatureIndexLocal(); err != nil {
 				return false, err
 			}
 		}
 		return true, nil
 	}
-	return target.storeHasPhysicalFeatureIndexLocal()
+
+	if e != nil && e.manifest.Role == "core" {
+		for _, candidate := range e.localFabricEngines() {
+			if _, err := candidate.storeHasPhysicalFeatureIndexLocal(); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	return e.storeHasPhysicalFeatureIndexLocal()
 }
 
 func (e *Engine) storeMemoryCount() int {
