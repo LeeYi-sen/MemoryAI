@@ -59,6 +59,29 @@ func speculativePhysicalOwner(e *Engine, id string) (*Engine, bool) {
 	return owner, owner != nil
 }
 
+// recordSpeculativeOwnerHints keeps physical routing information already
+// discovered by tag/activation index traversal. Hints do not add records to the
+// read-set and therefore do not consume the working-set limit until an ID is
+// actually read.
+func recordSpeculativeOwnerHints(e *Engine, hints map[string]*Engine) error {
+	ctx, ok := speculativeLazyContext(e)
+	if !ok || len(hints) == 0 {
+		return nil
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	for id, owner := range hints {
+		if id == "" || owner == nil {
+			continue
+		}
+		if existing := ctx.owners[id]; existing != nil && existing != owner {
+			return duplicateFabricIdentityError(id)
+		}
+		ctx.owners[id] = owner
+	}
+	return nil
+}
+
 func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engine) error {
 	if e == nil || !e.speculative || m == nil || id == "" {
 		return nil
@@ -70,6 +93,9 @@ func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engi
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 	if _, exists := ctx.base.memories[id]; exists {
+		if existing := ctx.owners[id]; existing != nil && owner != nil && existing != owner {
+			return duplicateFabricIdentityError(id)
+		}
 		if ctx.owners[id] == nil && owner != nil {
 			ctx.owners[id] = owner
 		}
@@ -80,6 +106,9 @@ func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engi
 			"snapshot working-set limit exceeded: next=%d max=%d",
 			len(ctx.base.memories)+1, ctx.max,
 		)
+	}
+	if existing := ctx.owners[id]; existing != nil && owner != nil && existing != owner {
+		return duplicateFabricIdentityError(id)
 	}
 	ctx.base.memories[id] = copyMemory(m)
 	if owner != nil {
