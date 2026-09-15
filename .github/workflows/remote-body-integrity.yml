@@ -98,9 +98,9 @@ jobs:
       - name: Run remote body transaction tests
         env:
           GO111MODULE: "off"
-        run: go test ./Kernel/src -run 'RemoteBody|PassiveBody|MountWaits|UnmountWaits|RootClose'
+        run: go test ./Kernel/src -run 'RemoteBody|PassiveBody|Mount|Unmount|RootClose'
 
       - name: Race-test remote body transaction tests
         env:
           GO111MODULE: "off"
-        run: go test -race ./Kernel/src -run 'RemoteBody|PassiveBody|MountWaits|UnmountWaits|RootClose'
+        run: go test -race ./Kernel/src -run 'RemoteBody|PassiveBody|Mount|Unmount|RootClose'
