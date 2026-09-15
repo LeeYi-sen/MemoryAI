@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from kernel_overlay import apply_kernel_overlay
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFESTS = (
     ROOT / "bootstrap/v27/Kernel/src/kernel.go.bootstrap.json",
@@ -17,6 +19,15 @@ DEFAULT_MANIFESTS = (
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
+    # Historical bootstrap bytes remain immutable and hash-verifiable. Forward
+    # source fixes are applied only after that verification as an explicit,
+    # deterministic overlay.
+    if rel_target.as_posix() == "Kernel/src/kernel.go":
+        return apply_kernel_overlay(raw)
+    return raw
 
 
 def restore_manifest(manifest_path: Path, *, check_only: bool = False) -> dict[str, object]:
@@ -37,38 +48,43 @@ def restore_manifest(manifest_path: Path, *, check_only: bool = False) -> dict[s
 
     packed = base64.b64decode("".join(encoded_parts), validate=True)
     expected_gzip = str(meta.get("gzip_sha256") or "").strip()
-    if expected_gzip and sha256(packed) != expected_gzip:
+    packed_sha = sha256(packed)
+    if expected_gzip and packed_sha != expected_gzip:
         raise RuntimeError(
             f"gzip SHA-256 mismatch for {manifest_path}: "
-            f"expected {expected_gzip}, got {sha256(packed)}"
+            f"expected {expected_gzip}, got {packed_sha}"
         )
 
     raw = gzip.decompress(packed)
     expected = str(meta.get("original_sha256") or "").strip()
-    actual = sha256(raw)
-    if expected and actual != expected:
+    bootstrap_sha = sha256(raw)
+    if expected and bootstrap_sha != expected:
         raise RuntimeError(
-            f"source SHA-256 mismatch for {manifest_path}: expected {expected}, got {actual}"
+            f"source SHA-256 mismatch for {manifest_path}: expected {expected}, got {bootstrap_sha}"
         )
 
     rel_target = Path(str(meta["path"]))
+    current = current_source_bytes(rel_target, raw)
+    current_sha = sha256(current)
     target = ROOT / rel_target
     if not check_only:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(raw)
+        target.write_bytes(current)
 
     return {
         "manifest": str(manifest_path.relative_to(ROOT)),
         "target": str(rel_target),
-        "sha256": actual,
-        "bytes": len(raw),
+        "bootstrap_sha256": bootstrap_sha,
+        "current_sha256": current_sha,
+        "bytes": len(current),
+        "overlay_applied": current != raw,
         "status": "verified" if check_only else "restored",
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Restore and verify source files stored as deterministic bootstrap chunks."
+        description="Restore, verify and forward-patch source files stored as deterministic bootstrap chunks."
     )
     parser.add_argument(
         "manifests",
@@ -78,7 +94,7 @@ def main() -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Verify bootstrap chunks and hashes without writing restored files.",
+        help="Verify bootstrap chunks and current overlays without writing restored files.",
     )
     args = parser.parse_args()
 
