@@ -6,15 +6,33 @@ import (
 )
 
 // lazySnapshotContext records the exact read-set baseline of one speculative
-// Engine. It is external to Engine so the historical ABI stays small; the
-// Kernel resolve path contributes a baseline only when a Memory is first read.
+// Engine. It also owns one long physical-store lease. Speculative reads reuse
+// this lease instead of recursively acquiring another RLock, which avoids a
+// writer-preference deadlock when persistence is waiting to swap the store.
 type lazySnapshotContext struct {
-	mu   sync.Mutex
-	base *memorySnapshot
-	max  int
+	mu           sync.Mutex
+	base         *memorySnapshot
+	max          int
+	store        *IndexedStore
+	releaseStore func()
 }
 
 var lazySnapshotContexts sync.Map // map[*Engine]*lazySnapshotContext
+
+func pinnedSpeculativeStore(e *Engine) (*IndexedStore, bool) {
+	if e == nil || !e.speculative {
+		return nil, false
+	}
+	v, ok := lazySnapshotContexts.Load(e)
+	if !ok {
+		return nil, false
+	}
+	ctx := v.(*lazySnapshotContext)
+	if ctx.store == nil {
+		return nil, false
+	}
+	return ctx.store, true
+}
 
 func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
 	if e == nil || !e.speculative || m == nil || id == "" {
@@ -56,10 +74,24 @@ func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
 // persisted Memory body. Only dirty/new local records must be copied up front;
 // clean persisted records are page-loaded and baselined on first access. The
 // same maxWorkingSet applies to both the initial overlay and subsequent reads.
+//
+// The physical IndexedStore is pinned here, not in the scheduler, so every
+// caller of this primitive gets the same descriptor-lifetime guarantee.
 func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memorySnapshot, error) {
 	if e == nil {
 		return nil, nil, fmt.Errorf("lazy speculative snapshot requires engine")
 	}
+	store, releaseStore, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return nil, nil, err
+	}
+	releaseOnError := true
+	defer func() {
+		if releaseOnError {
+			releaseStore()
+		}
+	}()
+
 	base := &memorySnapshot{
 		memories:   map[string]*Memory{},
 		newIDs:     map[string]bool{},
@@ -103,10 +135,13 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	}
 	tagAdded := cloneTagDelta(e.tagAdded)
 	tagRemoved := cloneTagDelta(e.tagRemoved)
+	bodyPath := e.bodyPath
+	manifest := e.manifest
+	genesis := e.genesis
 	e.dataMu.RUnlock()
 
 	ce := &Engine{
-		bodyPath: e.bodyPath, manifest: e.manifest, genesis: e.genesis, store: e.store,
+		bodyPath: bodyPath, manifest: manifest, genesis: genesis, store: store,
 		cache: cloneCache, newIDs: map[string]bool{}, dirtyIDs: map[string]bool{}, deletedIDs: map[string]bool{},
 		spaces: map[string]*Engine{}, writeSpace: "", dataMu: &sync.RWMutex{}, speculative: true,
 		tagAdded: tagAdded, tagRemoved: tagRemoved,
@@ -120,12 +155,23 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	for id, v := range base.dirtyIDs {
 		ce.dirtyIDs[id] = v
 	}
-	lazySnapshotContexts.Store(ce, &lazySnapshotContext{base: base, max: maxWorkingSet})
+	lazySnapshotContexts.Store(ce, &lazySnapshotContext{
+		base: base, max: maxWorkingSet, store: store, releaseStore: releaseStore,
+	})
+	releaseOnError = false
 	return ce, base, nil
 }
 
 func releaseLazySpeculation(e *Engine) {
-	if e != nil {
-		lazySnapshotContexts.Delete(e)
+	if e == nil {
+		return
+	}
+	v, ok := lazySnapshotContexts.LoadAndDelete(e)
+	if !ok {
+		return
+	}
+	ctx := v.(*lazySnapshotContext)
+	if ctx.releaseStore != nil {
+		ctx.releaseStore()
 	}
 }
