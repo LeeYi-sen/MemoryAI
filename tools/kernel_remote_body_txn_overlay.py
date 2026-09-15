@@ -51,6 +51,47 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
     )
     text = text[:mount_start] + mount_block + text[mount_end:]
 
+    # Unmount removes the active topology entry and persists/closes the shard.
+    # Hold the same path lease through that entire transition so a remote passive
+    # opener cannot enter after unregister but before durable close completes.
+    unmount_start = text.find("func (e *Engine) unmountSpace(")
+    close_start = text.find("\nfunc (e *Engine) close()", unmount_start)
+    if unmount_start < 0 or close_start < 0:
+        raise RuntimeError("remote-body-txn overlay could not isolate unmountSpace body")
+    unmount_block = text[unmount_start:close_start]
+    topology_lock = "\te.spaceMu.Lock()\n"
+    if topology_lock not in unmount_block:
+        raise RuntimeError("remote-body-txn overlay unmount topology lock missing")
+    unmount_block = unmount_block.replace(
+        topology_lock,
+        "\treleaseUnmountBodyTxn := acquireRemoteBodyTransaction(cp)\n"
+        "\tdefer releaseUnmountBodyTxn()\n"
+        "\te.spaceMu.Lock()\n",
+        1,
+    )
+    text = text[:unmount_start] + unmount_block + text[close_start:]
+
+    # Root close detaches every mounted body. Each physical shard gets its own
+    # path lease so different shards can still close independently, while a
+    # passive remote opener for the same shard waits until closeStore finishes.
+    old_close_loop = '''\tfor _, sp := range spaces {
+\t\tforgetFabricOwner(sp)
+\t\tsp.closeStore()
+\t}
+'''
+    new_close_loop = '''\tfor _, sp := range spaces {
+\t\treleaseBodyCloseTxn := acquireRemoteBodyTransaction(sp.bodyPath)
+\t\tforgetFabricOwner(sp)
+\t\tsp.closeStore()
+\t\treleaseBodyCloseTxn()
+\t}
+'''
+    if text.count(old_close_loop) != 1:
+        raise RuntimeError(
+            f"remote-body-txn overlay close loop: expected one match, got {text.count(old_close_loop)}"
+        )
+    text = text.replace(old_close_loop, new_close_loop, 1)
+
     old_close_tail = '''\tforgetFabricOwner(e)
 \te.closeStore()
 }'''
@@ -74,4 +115,8 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
         raise RuntimeError("passive body serialized-call count mismatch")
     if text.count("releaseMountBodyTxn := acquireRemoteBodyTransaction(cp)") != 1:
         raise RuntimeError("mountSpace physical path lease missing or duplicated")
+    if text.count("releaseUnmountBodyTxn := acquireRemoteBodyTransaction(cp)") != 1:
+        raise RuntimeError("unmountSpace physical path lease missing or duplicated")
+    if text.count("releaseBodyCloseTxn := acquireRemoteBodyTransaction(sp.bodyPath)") != 1:
+        raise RuntimeError("mounted-body close path lease missing or duplicated")
     return text.encode("utf-8")
