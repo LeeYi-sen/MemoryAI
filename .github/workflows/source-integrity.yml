@@ -45,10 +45,20 @@ jobs:
             exit 1
           fi
 
+      - name: Vet Kernel package
+        env:
+          GO111MODULE: "off"
+        run: go vet ./Kernel/src
+
       - name: Compile and test Kernel package
         env:
           GO111MODULE: "off"
         run: go test ./Kernel/src
+
+      - name: Race-test Kernel package
+        env:
+          GO111MODULE: "off"
+        run: go test -race ./Kernel/src
 
       - name: Assert Kernel remains physical-only
         run: |
@@ -60,12 +70,15 @@ jobs:
           scheduler = Path('Kernel/src/scheduler_runtime.go').read_text(encoding='utf-8')
           lazy = Path('Kernel/src/speculative_lazy.go').read_text(encoding='utf-8')
           mesh = Path('Kernel/src/mesh_runtime.go').read_text(encoding='utf-8')
+          scale = Path('Kernel/src/scale_runtime.go').read_text(encoding='utf-8')
 
           required_kernel = [
               'RuntimeExecCount uint64',
               'bindMeshEngine(e)',
               'speculativeAdditionalForbiddenPrimitive(op.Code)',
               'recordSpeculativeBaseline(e, id, m)',
+              'localMemoryCountFast(e)',
+              'boundedLegacyBodyIDs(e)',
           ]
           missing = [x for x in required_kernel if x not in kernel]
           if missing:
@@ -82,10 +95,12 @@ jobs:
               'm.Reuse++',
               'if src.Reward > dst.Reward',
               'if src.Stability > dst.Stability',
+              'case "body_list":\n\t\tids, err := e.localIDs()',
+              'func (e *Engine) localMemoryCount() int {\n\tids, err := e.localIDs()',
           ]
           bad = [x for x in forbidden_kernel if x in kernel]
           if bad:
-              raise SystemExit(f'cognitive metric logic reintroduced into Kernel ABI: {bad}')
+              raise SystemExit(f'forbidden Kernel policy/scale path reintroduced: {bad}')
 
           required_activation = [
               'Score:      0',
@@ -110,6 +125,15 @@ jobs:
           for token in ['ctx.max > 0', 'snapshot working-set limit exceeded', 'max: maxWorkingSet']:
               if token not in lazy:
                   raise SystemExit(f'lazy read-set bound missing: {token}')
+
+          for token in [
+              'localMemoryCountFast',
+              'e.store.memoryCount > max',
+              'body_list disabled',
+              'use exact/tag/activation indexing',
+          ]:
+              if token not in scale:
+                  raise SystemExit(f'bounded scale behavior missing: {token}')
 
           mesh_required = [
               'remote_memory_semantics',
