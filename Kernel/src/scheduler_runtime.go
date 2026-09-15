@@ -35,8 +35,7 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 		return errors.New("transaction scheduler requires frame")
 	}
 	// Nested speculative execution stays inside the existing private snapshot.
-	// The outer scheduler already pins the shared physical store for the whole
-	// speculative transaction.
+	// Its lazySnapshotContext already owns the shared physical store lease.
 	if e.speculative {
 		return e.run(id, f)
 	}
@@ -52,16 +51,9 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	}
 	defer atomic.AddInt64(&speculativeInflight, -1)
 
-	// Lazy speculative Engines share the primary IndexedStore pointer. Pin that
-	// physical descriptor before snapshot creation and keep it pinned through
-	// conflict detection/commit so persistence cannot swap+close the old body in
-	// the middle of cognition.
-	_, releaseStore, err := e.acquireStoreLifetimeLease()
-	if err != nil {
-		return err
-	}
-	defer releaseStore()
-
+	// snapshotForSpeculationLazy pins its own physical IndexedStore and releases
+	// it through releaseLazySpeculation. Keeping lease ownership in the snapshot
+	// primitive protects direct callers and avoids recursively acquiring RLock.
 	ce, base, err := e.snapshotForSpeculationLazy(snapshotMemoryLimit())
 	if err != nil {
 		if strings.Contains(err.Error(), "snapshot working-set limit exceeded") {
@@ -134,7 +126,7 @@ func (s *txnScheduler) Info() map[string]any {
 		"canonical_runs":      atomic.LoadUint64(&s.canonicalRuns),
 		"speculative":         speculativeInfo(),
 		"snapshot_scope":      "dirty-new-plus-first-read",
-		"store_lifetime":      "shared-physical-read-lease",
+		"store_lifetime":      "lazy-snapshot-owned-shared-lease",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
 	}
