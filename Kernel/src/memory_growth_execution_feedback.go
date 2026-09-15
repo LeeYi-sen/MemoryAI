@@ -28,13 +28,26 @@ func capturePredictedOutcome(structure *MemoryStructure) map[string]string {
 }
 
 // captureActualOutcome 只读取预测中声明的键，因此不会把 VM 内部所有临时变量误当成“结果”。
-func captureActualOutcome(vars map[string]any, predicted map[string]string) map[string]string {
-	if len(predicted) == 0 {
+// Vars 在历史/生成运行时中存在不同具体 map 类型，这里只做物理读取适配，不改变其语义。
+func captureActualOutcome(vars any, predicted map[string]string) map[string]string {
+	if len(predicted) == 0 || vars == nil {
 		return nil
+	}
+	lookup := func(key string) (any, bool) {
+		switch values := vars.(type) {
+		case map[string]any:
+			value, ok := values[key]
+			return value, ok
+		case map[string]string:
+			value, ok := values[key]
+			return value, ok
+		default:
+			return nil, false
+		}
 	}
 	out := make(map[string]string, len(predicted))
 	for key := range predicted {
-		value, ok := vars[key]
+		value, ok := lookup(key)
 		if !ok {
 			continue
 		}
