@@ -25,9 +25,6 @@ func indexedStoreGuard(st *IndexedStore) *sync.RWMutex {
 	return actual.(*sync.RWMutex)
 }
 
-// acquireStoreLifetimeLease pins the Engine's current physical store. Lazy
-// speculative Engines already own one long primary-store lease in their
-// context, so nested reads reuse that lease instead of taking another RLock.
 func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 	if e == nil {
 		return nil, nil, io.EOF
@@ -48,10 +45,6 @@ func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 }
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
-	// A lazy speculative Engine has no mounted shard map of its own. First try
-	// its pinned primary Store. On a miss, reuse an owner hint already discovered
-	// by tag/activation index traversal; only an unhinted exact lookup performs a
-	// mounted-shard fallback scan. The primary is never re-probed here.
 	if st, ok := pinnedSpeculativeStore(e); ok {
 		m, err := st.GetID(id)
 		if err == nil {
@@ -93,9 +86,6 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 }
 
 func (e *Engine) storeTagIDs(tag string) ([]string, error) {
-	// Tag predicates inside a lazy transaction must see all mounted local shards.
-	// The traversal already knows each result's owner, so preserve those hints for
-	// later exact reads instead of scanning the shard set again per ID.
 	if origin, ok := speculativeOriginEngine(e); ok {
 		ids, owners, err := origin.listTagFabricOwned(tag)
 		if err != nil {
@@ -114,13 +104,26 @@ func (e *Engine) storeTagIDs(tag string) ([]string, error) {
 	return st.TagIDs(tag)
 }
 
-func (e *Engine) storeAllIDs() ([]string, error) {
+func (e *Engine) storeAllIDsLocal() ([]string, error) {
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 	return st.AllIDs()
+}
+
+func (e *Engine) storeAllIDs() ([]string, error) {
+	return e.storeAllIDsLocal()
+}
+
+func (e *Engine) storePhysicalFeatureIDsLocal(feature string) ([]string, error) {
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return st.PhysicalFeatureIDs(feature)
 }
 
 func (e *Engine) storePhysicalFeatureIDs(feature string) ([]string, error) {
@@ -134,21 +137,40 @@ func (e *Engine) storePhysicalFeatureIDs(feature string) ([]string, error) {
 		}
 		return ids, nil
 	}
-	st, release, err := e.acquireStoreLifetimeLease()
-	if err != nil {
-		return nil, err
+	if e != nil && e.manifest.Role == "core" {
+		ids, _, err := e.physicalFeatureIDsFabricOwned(feature)
+		return ids, err
 	}
-	defer release()
-	return st.PhysicalFeatureIDs(feature)
+	return e.storePhysicalFeatureIDsLocal(feature)
 }
 
-func (e *Engine) storeHasPhysicalFeatureIndex() (bool, error) {
+func (e *Engine) storeHasPhysicalFeatureIndexLocal() (bool, error) {
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
 		return false, err
 	}
 	defer release()
 	return st.HasPhysicalFeatureIndex()
+}
+
+func (e *Engine) storeHasPhysicalFeatureIndex() (bool, error) {
+	target := e
+	if origin, ok := speculativeOriginEngine(e); ok {
+		target = origin
+	}
+	if target != nil && target.manifest.Role == "core" {
+		for _, candidate := range target.localFabricEngines() {
+			ok, err := candidate.storeHasPhysicalFeatureIndexLocal()
+			if err != nil {
+				return false, err
+			}
+			if !ok {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	return target.storeHasPhysicalFeatureIndexLocal()
 }
 
 func (e *Engine) storeMemoryCount() int {
@@ -169,9 +191,6 @@ func (e *Engine) validateStore() error {
 	return validateIndexedStore(st)
 }
 
-// closeStore is used only when an Engine is no longer available to new work.
-// The write guard waits for any in-flight physical reads before closing the
-// descriptor.
 func (e *Engine) closeStore() {
 	if e == nil {
 		return
