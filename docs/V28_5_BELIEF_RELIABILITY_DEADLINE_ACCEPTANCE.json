@@ -1,0 +1,44 @@
+{
+  "gates": {
+    "belief_reliability_gate": {
+      "average_reliability": 0.625,
+      "reliable_calibrated_sources": 1,
+      "status": "PASS",
+      "status_after": "stable"
+    },
+    "fsck": {
+      "memory_count": 137128,
+      "result": "CLEAN",
+      "status": "PASS"
+    },
+    "prediction_deadline": {
+      "belief_status": "revising",
+      "belief_uncertainty": 1,
+      "prediction_status": "overdue",
+      "retry_count": 1,
+      "status": "PASS"
+    },
+    "prediction_failure_negative_credit": {
+      "belief_status": "revising",
+      "belief_uncertainty": 1,
+      "good_source_after_failure": 0.8,
+      "status": "PASS"
+    },
+    "source_reliability_bad": {
+      "reliability": 0.25,
+      "status": "PASS",
+      "successes": 1,
+      "trials": 4
+    },
+    "source_reliability_good": {
+      "reliability": 1.0,
+      "status": "PASS",
+      "successes": 4,
+      "trials": 4
+    }
+  },
+  "input_required_structures_sha256": "c79cfe749fa4f274a61a9cea8dc9e8fe7f3bde10f44a4137df579ff1e66b2f5f",
+  "output_required_structures_sha256": "7d4e512d624c4b13ad619fc051e62342c1feb5e291c98f21f1ad35037b13087c",
+  "source_parent_head": "16260132c1d6308ca083d52c9132b85fe3ae5393",
+  "suite_id": "v28.5-belief-reliability-deadline-dynamic-20260915"
+}
