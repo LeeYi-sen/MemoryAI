@@ -1,0 +1,15 @@
+{
+  "source_parent_head": "0af38e27c40dd9c36544ff8fef39c06e539e3f10",
+  "input_required_structures_sha256": "4de691df29abafd625e193e259caea1583b0cdcf60bab5c3d328beca779212d9",
+  "output_required_structures_sha256": "eb82f503266a12c617e46e78eae882502daed54a8e90859760caf6be7a58ae73",
+  "suite_id": "v28.7-language-semantics-dynamic-20260915",
+  "gates": {
+    "repeated_human_teaching": {"status":"PASS","observation_support":3,"independent_sources":1,"concept_status":"stable"},
+    "direct_ground_policy": {"status":"PASS","policy_0":"candidate","policy_1":"stable"},
+    "learned_predicate_relation": {"status":"PASS","predicate_status":"stable","predicate_observations":3,"relation_uses_learned_predicate":true},
+    "expression_render": {"status":"PASS","surface":"苹果是一种水果"},
+    "role_learning": {"status":"PASS","resolved_role":"test.role.question"},
+    "autonomous_raw_grounding": {"status":"PASS","observation_support":3,"concept_status":"stable","stable_grounding_maps":1},
+    "fsck": {"status":"PASS","result":"CLEAN","memory_count":137139}
+  }
+}
