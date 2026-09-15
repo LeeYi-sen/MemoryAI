@@ -22,6 +22,15 @@ func meshHostIsLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func meshHostIsUnspecified(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
 func meshListenHost(addr string) string {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err == nil {
@@ -31,7 +40,8 @@ func meshListenHost(addr string) string {
 }
 
 // validateMeshEndpoint prevents Sovereign grants and channel MACs from crossing
-// an unauthenticated plaintext network. HTTP is only accepted on loopback.
+// an unauthenticated plaintext network. HTTP is only accepted on loopback. An
+// unspecified bind address (0.0.0.0/::) is never a valid advertised endpoint.
 func validateMeshEndpoint(endpoint string) error {
 	u, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil {
@@ -41,6 +51,9 @@ func validateMeshEndpoint(endpoint string) error {
 		return errors.New("mesh endpoint host required")
 	}
 	host := u.Hostname()
+	if meshHostIsUnspecified(host) {
+		return errors.New("mesh endpoint cannot advertise an unspecified bind address; configure MEMORYAI_MESH_ENDPOINT with a routable host")
+	}
 	switch strings.ToLower(u.Scheme) {
 	case "https":
 		return nil
@@ -72,6 +85,10 @@ func meshListenUsesTLS(addr string) (bool, error) {
 func defaultMeshEndpoint(listen string) (string, error) {
 	if strings.TrimSpace(listen) == "" {
 		return "", nil
+	}
+	host := meshListenHost(listen)
+	if meshHostIsUnspecified(host) {
+		return "", errors.New("wildcard mesh listener requires explicit MEMORYAI_MESH_ENDPOINT with a routable host")
 	}
 	useTLS, err := meshListenUsesTLS(listen)
 	if err != nil {
