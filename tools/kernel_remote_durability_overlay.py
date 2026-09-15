@@ -143,4 +143,28 @@ func sameStrings'''
         )
     text = text.replace(
         historical_save,
-        'if er = persistEngineIfDirty(sp); err != nilìœ°(€€€€¤((€€€É•ÅÕ¥É•‘}…™Ñ•È€ô€ (€€€€€€€€É•ÅÕ¥É•I•µ½Ñ•5ÕÑ…Ñ¥½¹, ‰ÍÁ…•}É•…Ñ”ˆ°É•ÍÀ¤œ°(€€€€€€€€É•ÅÕ¥É•I•µ½Ñ•5ÕÑ…Ñ¥½¹, ‰ÍÁ…•}ÁÕĞˆ°É•ÍÀ¤œ°(€€€€€€€€É•ÅÕ¥É•I•µ½Ñ•5ÕÑ…Ñ¥½¹, ‰ÍÁ…•}ÕÁÍ•ÉĞˆ°É•ÍÀ¤œ°(€€€€€€€€É•ÅÕ¥É•I•µ½Ñ•5ÕÑ…Ñ¥½¹, ‰ÍÁ…•}‘•±•Ñ”ˆ°É•ÍÀ¤œ°(€€€€€€€€É•ÑÕÉ¸ÑÉ…¹Í™•É5•µ½ÉåÕÉ…‰±”¡”°¥°Ñ…É•Ğ°µ½Ù”¤œ°(€€€€€€€€¥˜•È€ôÁ•ÉÍ¥ÍÑ¹¥¹•%™¥ÉÑä¡ÍÀ¤ì•ÉÈ€„ô¹¥°ìœ°(€€€€¤(€€€µ¥ÍÍ¥¹œ€ômÑ½­•¸™½ÈÑ½­•¸¥¸É•ÅÕ¥É•‘}…™Ñ•È¥˜Ñ½­•¸¹½Ğ¥¸Ñ•áÑt(€€€¥˜µ¥ÍÍ¥¹œè(€€€€€€€É…¥Í”IÕ¹Ñ¥µ•ÉÉ½È (€€€€€€€€€€€˜‰É•µ½Ñ”µ‘ÕÉ…‰¥±¥Ñä½Ù•É±…ä½ÕÑÁÕĞ‰½Õ¹‘…Éäµ¥ÍÍ¥¹œèíµ¥ÍÍ¥¹ôˆ(€€€€€€€€¤(€€€¥˜Ñ•áĞ¹½Õ¹Ğ ¥˜•È€ôÁ•ÉÍ¥ÍÑ¹¥¹•%™¥ÉÑä¡ÍÀ¤ì•ÉÈ€„ô¹¥°ìœ¤€ğ€Èè(€€€€€€€É…¥Í”IÕ¹Ñ¥µ•ÉÉ½È ‰É•µ½Ñ”‘ÕÉ…‰±”µ•´µ¹½‘”Á•ÉÍ¥ÍÑ•¹”‰…ÉÉ¥•Èµ¥ÍÍ¥¹œˆ¤(€€€¥˜¡¥ÍÑ½É¥…±}Í…Ù”¥¸Ñ•áĞè(€€€€€€€É…¥Í”IÕ¹Ñ¥µ•ÉÉ½È ‰É•µ½Ñ”µ•´µ¹½‘”ÍÑ¥±°Á•ÉÍ¥ÍÑÌÑ¡É½Õ É•ÅÕ•ÍĞ…±¥…ÌÁ…Ñ ˆ¤(€€€¥˜€ÍÉŒ¹‘•±•Ñ•‘%Ím¥‘t€ôÑÉÕ”œ¥¸Ñ•áĞè(€€€€€€€É…¥Í”IÕ¹Ñ¥µ•ÉÉ½È ‰¡¥ÍÑ½É¥…°ÁÉ”µ‘ÕÉ…‰¥±¥ÑäÑÉ…¹Í™•ÈÍ½ÕÉ”‘•±•Ñ¥½¸É•µ…¥¹•ˆ¤(€€€É•ÑÕÉ¸Ñ•áĞ¹•¹½‘” ‰ÕÑ˜´àˆ¤(
+        'if er = persistEngineIfDirty(sp); er != nil {',
+    )
+
+    forbidden = (
+        historical_save,
+        'src.deletedIDs[id] = true',
+    )
+    bad = [token for token in forbidden if token in text]
+    if bad:
+        raise RuntimeError(f"remote-durability historical unsafe path remained: {bad}")
+
+    required_after = (
+        'requireRemoteMutationACK("space_create", resp)',
+        'requireRemoteMutationACK("space_put", resp)',
+        'requireRemoteMutationACK("space_upsert", resp)',
+        'requireRemoteMutationACK("space_delete", resp)',
+        'return transferMemoryDurable(e, id, target, move)',
+        'persistEngineIfDirty(sp)',
+    )
+    missing = [token for token in required_after if token not in text]
+    if missing:
+        raise RuntimeError(
+            f"remote-durability repaired boundary missing after overlay: {missing}"
+        )
+    return text.encode("utf-8")
