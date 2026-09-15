@@ -22,6 +22,14 @@ var globalTxnScheduler = &txnScheduler{}
 
 func (s *txnScheduler) canonical(e *Engine, id string, f *Frame) error {
 	atomic.AddUint64(&s.canonicalRuns, 1)
+	root := fabricRootFor(e)
+	if root != nil {
+		owner, _, err := root.resolveLocalFabricMemory(id)
+		if err == nil && owner != nil {
+			rememberFabricOwner(root, owner)
+			return owner.run(id, f)
+		}
+	}
 	return e.run(id, f)
 }
 
@@ -35,6 +43,12 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	if e.speculative {
 		return e.run(id, f)
 	}
+
+	root := fabricRootFor(e)
+	if root == nil {
+		root = e
+	}
+	e = root
 
 	atomic.AddUint64(&s.runs, 1)
 	atomic.AddUint64(&speculativeStarted, 1)
@@ -96,8 +110,12 @@ func (s *txnScheduler) classifyTargets(e *Engine, ids []string) []map[string]any
 	rows := make([]map[string]any, 0, len(ids))
 	ordered := append([]string(nil), ids...)
 	sort.Strings(ordered)
+	root := fabricRootFor(e)
+	if root == nil {
+		root = e
+	}
 	for _, id := range ordered {
-		_, m, err := e.resolveLocalFabricMemory(id)
+		_, m, err := root.resolveLocalFabricMemory(id)
 		if err != nil || m == nil || len(m.Program) == 0 {
 			continue
 		}
@@ -126,6 +144,7 @@ func (s *txnScheduler) Info() map[string]any {
 		"speculative":         speculativeInfo(),
 		"snapshot_scope":      "first-read-across-local-fabric",
 		"store_lifetime":      "execution-long-lease+release-before-commit",
+		"canonical_replay":    "fabric-owner-aware",
 		"creation_policy":     "canonical-only-bounded-placement",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
