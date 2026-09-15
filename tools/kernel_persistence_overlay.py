@@ -37,6 +37,19 @@ def apply_kernel_persistence_overlay(raw: bytes) -> bytes:
 
     text = _replace_once(
         text,
+        '''func (e *Engine) saveBody(out string) error {
+\tms, err := e.allMemories()
+''',
+        '''func (e *Engine) saveBody(out string) error {
+\tunlockPersist := lockEnginePersistence(e)
+\tdefer unlockPersist()
+\tms, persistedSnapshot, err := snapshotMemoriesForPersistence(e)
+''',
+        "snapshot immutable persistence view",
+    )
+
+    text = _replace_once(
+        text,
         '''\tentries = append(entries, zipEntry{"manifest.json", mb, false})
 \treturn writeDetZip(out, entries)
 }
@@ -46,18 +59,28 @@ type zipEntry struct {''',
 \tif err := writeDetZip(out, entries); err != nil {
 \t\treturn err
 \t}
-\treturn finalizePersistedBody(e, out)
+\treturn finalizePersistedBody(e, out, persistedSnapshot)
 }
 
 type zipEntry struct {''',
-        "reopen active persisted store",
+        "reopen active persisted store with written snapshot",
     )
 
     forbidden = (
         'func (e *Engine) persistAll() error {\n\tif err := e.saveBody(e.bodyPath)',
+        'func (e *Engine) saveBody(out string) error {\n\tms, err := e.allMemories()',
         'entries = append(entries, zipEntry{"manifest.json", mb, false})\n\treturn writeDetZip(out, entries)',
+        'finalizePersistedBody(e, out)',
     )
     bad = [token for token in forbidden if token in text]
     if bad:
         raise RuntimeError(f"unfixed persistence path remained: {bad}")
+    required_after = (
+        "lockEnginePersistence(e)",
+        "snapshotMemoriesForPersistence(e)",
+        "finalizePersistedBody(e, out, persistedSnapshot)",
+    )
+    missing = [token for token in required_after if token not in text]
+    if missing:
+        raise RuntimeError(f"persistence snapshot boundary missing: {missing}")
     return text.encode("utf-8")
