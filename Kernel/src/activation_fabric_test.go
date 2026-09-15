@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -68,6 +69,20 @@ func TestActivationSeesPersistedPassiveShard(t *testing.T) {
 	}
 }
 
+func TestActivationBuildCountsCompleteFabric(t *testing.T) {
+	e, _ := newActivationFabricTestEngine(t)
+	r := newSparseActivationRuntime()
+	if err := r.Build(e); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt64(&r.nodes); got != 2 {
+		t.Fatalf("Activation Build counted only part of Fabric: got=%d want=2", got)
+	}
+	if got := fabricMemoryCountFast(e); got != 2 {
+		t.Fatalf("Fabric fast count mismatch: got=%d want=2", got)
+	}
+}
+
 func TestActivationShardDirtyOverlayShadowsPersistedPosting(t *testing.T) {
 	e, owner := newActivationFabricTestEngine(t)
 	r := newSparseActivationRuntime()
@@ -103,5 +118,19 @@ func TestActivationShardDirtyOverlayShadowsPersistedPosting(t *testing.T) {
 		if !activationHasID(result, q.ID) {
 			t.Fatalf("dirty shard overlay missing for %q: %#v", query, result.Candidates)
 		}
+	}
+}
+
+func TestActivationQualificationUsesFullFabricReference(t *testing.T) {
+	e, _ := newActivationFabricTestEngine(t)
+	report, err := qualifySparseActivation(e)
+	if err != nil {
+		t.Fatalf("Fabric activation qualification failed: report=%+v err=%v", report, err)
+	}
+	if !report.OK || report.IndexedNodes != 2 || report.ReferenceNodes != 2 {
+		t.Fatalf("qualification used incomplete Fabric corpus: %+v", report)
+	}
+	if report.ExactCandidate != report.Queries || report.ExactTopK != report.Queries {
+		t.Fatalf("qualification exactness incomplete: %+v", report)
 	}
 }
