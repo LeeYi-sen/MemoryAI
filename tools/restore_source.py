@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from kernel_fabric_execution_overlay import apply_kernel_fabric_execution_overlay
 from kernel_lazy_overlay import apply_kernel_lazy_overlay
 from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
@@ -43,6 +44,7 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
         current = apply_kernel_persistence_overlay(current)
         current = apply_kernel_shard_overlay(current)
         current = apply_kernel_store_access_overlay(current)
+        current = apply_kernel_fabric_execution_overlay(current)
         return current
     return raw
 
