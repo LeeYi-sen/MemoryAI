@@ -1,54 +1,121 @@
 package main
 
-// These helpers are the only live Engine -> IndexedStore access path. The
-// underlying body file is atomically replaced during persistence, so readers
-// take storeMu.RLock while finalizePersistedBody swaps/closes under storeMu.Lock.
-// This lock protects file-descriptor lifetime only; it carries no Memory policy.
+import (
+	"io"
+	"sync"
+)
+
+// IndexedStore file descriptors are shared by the primary Engine and lazy
+// speculative Engines. A lock embedded only in Engine would therefore not
+// protect a shared store from being closed by another Engine. Guards are keyed
+// by the physical IndexedStore instance so every user of the same descriptor
+// coordinates through one lifetime boundary.
+var indexedStoreLifetime sync.Map // map[*IndexedStore]*sync.RWMutex
+
+func indexedStoreGuard(st *IndexedStore) *sync.RWMutex {
+	if st == nil {
+		return nil
+	}
+	if g, ok := indexedStoreLifetime.Load(st); ok {
+		return g.(*sync.RWMutex)
+	}
+	g := &sync.RWMutex{}
+	actual, _ := indexedStoreLifetime.LoadOrStore(st, g)
+	return actual.(*sync.RWMutex)
+}
+
+// acquireStoreLifetimeLease pins the Engine's current physical store. The
+// Engine data lock protects the store pointer while the shared guard is
+// acquired; after that the guard alone prevents persistence from closing the
+// descriptor until release is called.
+func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
+	if e == nil {
+		return nil, nil, io.EOF
+	}
+	e.dataMu.RLock()
+	st := e.store
+	if st == nil {
+		e.dataMu.RUnlock()
+		return nil, nil, io.EOF
+	}
+	g := indexedStoreGuard(st)
+	g.RLock()
+	e.dataMu.RUnlock()
+	return st, g.RUnlock, nil
+}
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
-	e.storeMu.RLock()
-	defer e.storeMu.RUnlock()
-	return e.store.GetID(id)
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return st.GetID(id)
 }
 
 func (e *Engine) storeTagIDs(tag string) ([]string, error) {
-	e.storeMu.RLock()
-	defer e.storeMu.RUnlock()
-	return e.store.TagIDs(tag)
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return st.TagIDs(tag)
 }
 
 func (e *Engine) storeAllIDs() ([]string, error) {
-	e.storeMu.RLock()
-	defer e.storeMu.RUnlock()
-	return e.store.AllIDs()
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return st.AllIDs()
 }
 
 func (e *Engine) storePhysicalFeatureIDs(feature string) ([]string, error) {
-	e.storeMu.RLock()
-	defer e.storeMu.RUnlock()
-	return e.store.PhysicalFeatureIDs(feature)
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return st.PhysicalFeatureIDs(feature)
 }
 
 func (e *Engine) storeHasPhysicalFeatureIndex() (bool, error) {
-	e.storeMu.RLock()
-	defer e.storeMu.RUnlock()
-	return e.store.HasPhysicalFeatureIndex()
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	return st.HasPhysicalFeatureIndex()
 }
 
 func (e *Engine) storeMemoryCount() int {
-	e.storeMu.RLock()
-	defer e.storeMu.RUnlock()
-	if e.store == nil {
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
 		return 0
 	}
-	return e.store.memoryCount
+	defer release()
+	return st.memoryCount
 }
 
+// closeStore is used only when an Engine is no longer available to new work.
+// The write guard waits for any in-flight physical reads before closing the
+// descriptor.
 func (e *Engine) closeStore() {
-	e.storeMu.Lock()
-	defer e.storeMu.Unlock()
-	if e.store != nil {
-		e.store.Close()
-		e.store = nil
+	if e == nil {
+		return
 	}
+	e.dataMu.Lock()
+	st := e.store
+	if st == nil {
+		e.dataMu.Unlock()
+		return
+	}
+	g := indexedStoreGuard(st)
+	g.Lock()
+	e.store = nil
+	_ = st.file.Close()
+	g.Unlock()
+	indexedStoreLifetime.Delete(st)
+	e.dataMu.Unlock()
 }
