@@ -22,12 +22,12 @@ def _sub_once(text: str, pattern: str, repl: str, label: str) -> str:
 
 
 def apply_kernel_overlay(raw: bytes) -> bytes:
-    """Apply the current source ABI/boundary fixes to the exact v27 bootstrap.
+    """Apply current ABI/boundary fixes to the exact v27 bootstrap.
 
-    The bootstrap remains immutable and hash-verifiable. This overlay is the
-    auditable forward delta used to reconstruct the current Kernel source.
-    It intentionally removes cognitive metric mutation from Kernel while
-    retaining legacy JSON fields only as passive compatibility data.
+    Historical bootstrap bytes remain immutable and hash-verifiable. This
+    overlay is the auditable forward delta used to reconstruct current Kernel
+    source. Cognitive metrics remain passive legacy JSON compatibility data;
+    Kernel never mutates, ranks, merges or exposes them as execution policy.
     """
     got = hashlib.sha256(raw).hexdigest()
     if got != V27_KERNEL_SHA256:
@@ -44,14 +44,53 @@ def apply_kernel_overlay(raw: bytes) -> bytes:
         "image version",
     )
 
+    old_memory_struct = '''type Memory struct {
+\tID            string         `json:"id"`
+\tLayer         string         `json:"layer"`
+\tGeneration    int            `json:"generation"`
+\tParents       []string       `json:"parents,omitempty"`
+\tTags          []string       `json:"tags,omitempty"`
+\tContent       string         `json:"content,omitempty"`
+\tTrigger       []string       `json:"trigger,omitempty"`
+\tCapabilities  []string       `json:"capabilities,omitempty"`
+\tCapabilitySig string         `json:"capability_sig,omitempty"`
+\tBudget        ResourceBudget `json:"budget,omitempty"`
+\tRevision      uint64         `json:"revision,omitempty"`
+\tProgram       []Op           `json:"program,omitempty"`
+\tState         map[string]any `json:"state,omitempty"`
+\tReuse         uint64         `json:"reuse_count,omitempty"`
+\tTrials        uint64         `json:"real_trials,omitempty"`
+\tSuccesses     uint64         `json:"successes,omitempty"`
+\tReward        float64        `json:"total_reward,omitempty"`
+\tCost          float64        `json:"total_cost,omitempty"`
+\tStability     float64        `json:"stability,omitempty"`
+\tCreatedUnix   int64          `json:"created_unix,omitempty"`
+}'''
+    new_memory_struct = '''type Memory struct {
+\tID               string         `json:"id"`
+\tLayer            string         `json:"layer"`
+\tGeneration       int            `json:"generation"`
+\tParents          []string       `json:"parents,omitempty"`
+\tTags             []string       `json:"tags,omitempty"`
+\tContent          string         `json:"content,omitempty"`
+\tTrigger          []string       `json:"trigger,omitempty"`
+\tCapabilities     []string       `json:"capabilities,omitempty"`
+\tCapabilitySig    string         `json:"capability_sig,omitempty"`
+\tBudget           ResourceBudget `json:"budget,omitempty"`
+\tRevision         uint64         `json:"revision,omitempty"`
+\tProgram          []Op           `json:"program,omitempty"`
+\tState            map[string]any `json:"state,omitempty"`
+\tRuntimeExecCount uint64         `json:"runtime_exec_count,omitempty"`
+\tReuse            uint64         `json:"reuse_count,omitempty"`
+\tTrials           uint64         `json:"real_trials,omitempty"`
+\tSuccesses        uint64         `json:"successes,omitempty"`
+\tReward           float64        `json:"total_reward,omitempty"`
+\tCost             float64        `json:"total_cost,omitempty"`
+\tStability        float64        `json:"stability,omitempty"`
+\tCreatedUnix      int64          `json:"created_unix,omitempty"`
+}'''
     text = _replace_once(
-        text,
-        '\tState         map[string]any `json:"state,omitempty"`\n'
-        '\tReuse         uint64         `json:"reuse_count,omitempty"`',
-        '\tState            map[string]any `json:"state,omitempty"`\n'
-        '\tRuntimeExecCount uint64         `json:"runtime_exec_count,omitempty"`\n'
-        '\tReuse            uint64         `json:"reuse_count,omitempty"`',
-        "physical execution telemetry field",
+        text, old_memory_struct, new_memory_struct, "physical execution telemetry ABI"
     )
 
     old_run = '''\t// Surface/input memories are transport structures. Counting every raw surface
