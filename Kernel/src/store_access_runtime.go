@@ -6,11 +6,6 @@ import (
 	"sync"
 )
 
-// IndexedStore file descriptors are shared by the primary Engine and lazy
-// speculative Engines. A lock embedded only in Engine would therefore not
-// protect a shared store from being closed by another Engine. Guards are keyed
-// by the physical IndexedStore instance so every user of the same descriptor
-// coordinates through one lifetime boundary.
 var indexedStoreLifetime sync.Map // map[*IndexedStore]*sync.RWMutex
 
 func indexedStoreGuard(st *IndexedStore) *sync.RWMutex {
@@ -159,13 +154,15 @@ func (e *Engine) storeHasPhysicalFeatureIndex() (bool, error) {
 		target = origin
 	}
 	if target != nil && target.manifest.Role == "core" {
+		// The Fabric adapter itself provides exact feature lookup for every body.
+		// Indexed bodies use their persisted secondary index; a legacy body gets a
+		// compatibility scan isolated to that body inside physicalFeatureIDsFabric.
+		// Therefore one legacy shard must not force Activation.Build into its old
+		// primary-only full-scan mode. Still probe every Store here so I/O/index
+		// corruption remains a hard error rather than being silently hidden.
 		for _, candidate := range target.localFabricEngines() {
-			ok, err := candidate.storeHasPhysicalFeatureIndexLocal()
-			if err != nil {
+			if _, err := candidate.storeHasPhysicalFeatureIndexLocal(); err != nil {
 				return false, err
-			}
-			if !ok {
-				return false, nil
 			}
 		}
 		return true, nil
