@@ -14,6 +14,7 @@ from kernel_overlay import apply_kernel_overlay
 from kernel_persistence_overlay import apply_kernel_persistence_overlay
 from kernel_remote_memory_overlay import apply_kernel_remote_memory_overlay
 from kernel_scale_overlay import apply_kernel_scale_overlay
+from kernel_shard_overlay import apply_kernel_shard_overlay
 from kernel_speculative_overlay import apply_kernel_speculative_overlay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,7 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
         current = apply_kernel_scale_overlay(current)
         current = apply_kernel_remote_memory_overlay(current)
         current = apply_kernel_persistence_overlay(current)
+        current = apply_kernel_shard_overlay(current)
         return current
     return raw
 
