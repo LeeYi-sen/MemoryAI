@@ -2,19 +2,27 @@ name: source-integrity
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
-  source-integrity:
+  source_integrity:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout without external actions
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
 
       - name: Verify bootstrap source hashes
         run: python3 tools/restore_source.py --check
@@ -46,20 +54,11 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p = Path('Kernel/src/activation_runtime.go').read_text(encoding='utf-8')
-          required = [
-              'Score:      0',
-              'selection_order',
-              'stable-memory-id',
-              'cognitive_ranking',
-              'false',
-          ]
+          required = ['Score:      0', 'selection_order', 'stable-memory-id', 'cognitive_ranking', 'false']
           missing = [x for x in required if x not in p]
           if missing:
               raise SystemExit(f'activation physical-boundary assertions missing: {missing}')
-          forbidden = [
-              'FeatureHit > out[j].FeatureHit',
-              'exactActivationScore(',
-          ]
+          forbidden = ['FeatureHit > out[j].FeatureHit', 'exactActivationScore(']
           bad = [x for x in forbidden if x in p]
           if bad:
               raise SystemExit(f'cognitive activation ranking reintroduced: {bad}')
