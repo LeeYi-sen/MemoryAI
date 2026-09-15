@@ -114,5 +114,19 @@ func runRemoteEvidenceIntakeCycle(e *Engine, reader remoteEvidenceReader) (*Remo
 // whether to form a new local Experience. Kernel never persists the remote
 // payload automatically and never adjudicates evidence truth.
 func RunAutonomousRemoteEvidenceIntakeCycle(e *Engine) (*RemoteEvidenceIntakeResult, error) {
+	episode, err := runRemoteEvidenceEpisodeCycle(e, ReadRemoteMemoryEvidence)
+	if err != nil {
+		return &RemoteEvidenceIntakeResult{Skipped: episode != nil && episode.Skipped}, err
+	}
+	if episode != nil && !episode.Skipped {
+		return &RemoteEvidenceIntakeResult{
+			StructureID:       episode.StructureID,
+			IntakeFactID:      episode.EpisodeFactID,
+			LocalExperienceID: episode.LocalExperienceID,
+			Committed:         episode.Committed,
+			Rejected:          episode.Rejected,
+			Persisted:         episode.Persisted,
+		}, nil
+	}
 	return runRemoteEvidenceIntakeCycle(e, ReadRemoteMemoryEvidence)
 }
