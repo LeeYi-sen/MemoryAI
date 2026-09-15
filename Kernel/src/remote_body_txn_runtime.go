@@ -17,6 +17,11 @@ var remoteBodyTxnLocks sync.Map // map[string]*sync.Mutex
 // only after the Store descriptor has been closed.
 var passiveBodyTxnRelease sync.Map // map[*Engine]func()
 
+// activePhysicalBodies records bodies mounted into a live local Fabric. A body
+// may be either mounted or opened as a temporary remote-node passive Engine,
+// never both at the same time in one process.
+var activePhysicalBodies sync.Map // map[canonical body path]*Engine
+
 func canonicalPhysicalBodyPath(path string) string {
 	if abs, err := filepath.Abs(path); err == nil {
 		return filepath.Clean(abs)
@@ -32,6 +37,37 @@ func acquireRemoteBodyTransaction(path string) func() {
 	return mu.Unlock
 }
 
+func registerActivePhysicalBody(e *Engine) {
+	if e == nil || e.bodyPath == "" {
+		return
+	}
+	activePhysicalBodies.Store(canonicalPhysicalBodyPath(e.bodyPath), e)
+}
+
+func unregisterActivePhysicalBody(e *Engine) {
+	if e == nil || e.bodyPath == "" {
+		return
+	}
+	key := canonicalPhysicalBodyPath(e.bodyPath)
+	if current, ok := activePhysicalBodies.Load(key); ok && current == e {
+		activePhysicalBodies.Delete(key)
+	}
+}
+
+func activePhysicalBody(path string) (*Engine, bool) {
+	key := canonicalPhysicalBodyPath(path)
+	raw, ok := activePhysicalBodies.Load(key)
+	if !ok {
+		return nil, false
+	}
+	e, ok := raw.(*Engine)
+	if !ok || e == nil || !engineStoreOpen(e) {
+		activePhysicalBodies.Delete(key)
+		return nil, false
+	}
+	return e, true
+}
+
 // loadPassiveStorageSerialized wraps the historical passive loader so two
 // requests can never load the same old body image concurrently and later race
 // to overwrite one another. The lease intentionally spans the caller's entire
@@ -39,6 +75,10 @@ func acquireRemoteBodyTransaction(path string) func() {
 // Kernel overlay.
 func loadPassiveStorageSerialized(path string) (*Engine, error) {
 	release := acquireRemoteBodyTransaction(path)
+	if live, ok := activePhysicalBody(path); ok {
+		release()
+		return nil, fmt.Errorf("physical Memory body already mounted by live Fabric: %s (%s)", path, live.manifest.BodyID)
+	}
 	sp, err := loadPassiveStorage(path)
 	if err != nil {
 		release()
