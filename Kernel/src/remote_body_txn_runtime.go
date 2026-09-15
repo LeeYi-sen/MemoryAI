@@ -49,6 +49,13 @@ func canonicalPhysicalBodyPath(path string) string {
 	return clean
 }
 
+// loadEngineCanonical ensures the Engine's bodyPath is the physical target,
+// not a symlink alias. Atomic temp+rename persistence must never replace the
+// alias inode while leaving the real Memory body stale.
+func loadEngineCanonical(path string) (*Engine, error) {
+	return loadEngine(canonicalPhysicalBodyPath(path))
+}
+
 func acquireRemoteBodyTransaction(path string) func() {
 	key := canonicalPhysicalBodyPath(path)
 	remoteBodyTxnLocksMu.Lock()
@@ -118,24 +125,25 @@ func activePhysicalBody(path string) (*Engine, bool) {
 // use of the returned Engine and is released by Engine.close via the generated
 // Kernel overlay.
 func loadPassiveStorageSerialized(path string) (*Engine, error) {
-	release := acquireRemoteBodyTransaction(path)
-	if live, ok := activePhysicalBody(path); ok {
+	physicalPath := canonicalPhysicalBodyPath(path)
+	release := acquireRemoteBodyTransaction(physicalPath)
+	if live, ok := activePhysicalBody(physicalPath); ok {
 		release()
-		return nil, fmt.Errorf("physical Memory body already mounted by live Fabric: %s (%s)", path, live.manifest.BodyID)
+		return nil, fmt.Errorf("physical Memory body already mounted by live Fabric: %s (%s)", physicalPath, live.manifest.BodyID)
 	}
-	sp, err := loadPassiveStorage(path)
+	sp, err := loadPassiveStorage(physicalPath)
 	if err != nil {
 		release()
 		return nil, err
 	}
 	if sp == nil {
 		release()
-		return nil, fmt.Errorf("passive storage loader returned nil engine: %s", path)
+		return nil, fmt.Errorf("passive storage loader returned nil engine: %s", physicalPath)
 	}
 	if _, loaded := passiveBodyTxnRelease.LoadOrStore(sp, release); loaded {
 		release()
 		sp.close()
-		return nil, fmt.Errorf("passive storage transaction already registered: %s", path)
+		return nil, fmt.Errorf("passive storage transaction already registered: %s", physicalPath)
 	}
 	return sp, nil
 }
