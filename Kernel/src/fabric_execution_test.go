@@ -122,3 +122,62 @@ func TestCanonicalEventDispatchDoesNotReenterSchedulerLane(t *testing.T) {
 		t.Fatalf("canonical shard handler did not execute: %q", got)
 	}
 }
+
+func TestCanonicalEventHandlerKeepsSiblingShardVisibility(t *testing.T) {
+	handler := &Memory{
+		ID: "vm.shard.a", Layer: "emergent", Tags: []string{"memory", "event-handler"},
+		Trigger: []string{"event:canonical-cross-shard"}, State: map[string]any{}, Revision: 1,
+		Program: []Op{
+			{Code: "state_get", A: "vm.shard.b", B: "value", C: "event_before"},
+			{Code: "state_set", A: "vm.shard.b", B: "value", C: "event-updated"},
+			{Code: "call", A: "vm.shard.child"},
+			{Code: "halt"},
+		},
+	}
+	target := &Memory{
+		ID: "vm.shard.b", Layer: "emergent", Tags: []string{"memory"},
+		State: map[string]any{"value": "initial"}, Revision: 1,
+	}
+	child := &Memory{
+		ID: "vm.shard.child", Layer: "emergent", Tags: []string{"memory"},
+		State: map[string]any{}, Revision: 1,
+		Program: []Op{{Code: "set", A: "event_child", B: "sibling-visible"}, {Code: "halt"}},
+	}
+	e, ownerA, ownerB := loadTwoShardVMTestEngine(t, []*Memory{handler}, []*Memory{target, child})
+	f := newFrame()
+	f.Vars["__txn_canonical"] = "1"
+
+	globalTxnScheduler.commitMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- e.fireEvent("canonical-cross-shard", "", f) }()
+	select {
+	case err := <-done:
+		globalTxnScheduler.commitMu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		globalTxnScheduler.commitMu.Unlock()
+		t.Fatal("canonical cross-shard Event re-entered scheduler or lost Fabric context")
+	}
+
+	if got := f.Vars["event_before"]; got != "initial" {
+		t.Fatalf("canonical Event state_get lost sibling shard: %q", got)
+	}
+	if got := f.Vars["event_child"]; got != "sibling-visible" {
+		t.Fatalf("canonical Event call lost sibling shard: %q", got)
+	}
+	actualOwner, got, err := e.resolveLocalFabricMemory(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actualOwner != ownerB || got.State["value"] != "event-updated" || got.Revision != 2 {
+		t.Fatalf("canonical Event state_set did not remain on sibling owner: owner=%p want=%p state=%v revision=%d", actualOwner, ownerB, got.State, got.Revision)
+	}
+	if _, err := e.resolveIDLocal(target.ID); !errorsIsVMEOF(err) {
+		t.Fatalf("canonical Event copied target into primary: %v", err)
+	}
+	if _, err := ownerA.resolveIDLocal(target.ID); !errorsIsVMEOF(err) {
+		t.Fatalf("canonical Event copied target into handler shard: %v", err)
+	}
+}
