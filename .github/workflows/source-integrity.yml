@@ -73,6 +73,11 @@ jobs:
           mesh_grant = Path('Kernel/src/mesh_grant_runtime.go').read_text(encoding='utf-8')
           mesh_transport = Path('Kernel/src/mesh_transport_security.go').read_text(encoding='utf-8')
           scale = Path('Kernel/src/scale_runtime.go').read_text(encoding='utf-8')
+          persistence = Path('Kernel/src/persistence_runtime.go').read_text(encoding='utf-8')
+          shard = Path('Kernel/src/shard_runtime.go').read_text(encoding='utf-8')
+          store_access = Path('Kernel/src/store_access_runtime.go').read_text(encoding='utf-8')
+          structure = Path('Kernel/src/structure_runtime.go').read_text(encoding='utf-8')
+          lifetime_test = Path('Kernel/src/store_lifetime_test.go').read_text(encoding='utf-8')
 
           required_kernel = [
               'RuntimeExecCount uint64',
@@ -81,6 +86,12 @@ jobs:
               'recordSpeculativeBaseline(e, id, m)',
               'localMemoryCountFast(e)',
               'boundedLegacyBodyIDs(e)',
+              'remote_space_import disabled:',
+              'lockEnginePersistence(e)',
+              'snapshotMemoriesForPersistence(e)',
+              'finalizePersistedBody(e, out, persistedSnapshot)',
+              'e.validateStore()',
+              'sp.validateStore()',
           ]
           missing = [x for x in required_kernel if x not in kernel]
           if missing:
@@ -99,10 +110,12 @@ jobs:
               'if src.Stability > dst.Stability',
               'case "body_list":\n\t\tids, err := e.localIDs()',
               'func (e *Engine) localMemoryCount() int {\n\tids, err := e.localIDs()',
+              'validateIndexedStore(e.store)',
+              'validateIndexedStore(sp.store)',
           ]
           bad = [x for x in forbidden_kernel if x in kernel]
           if bad:
-              raise SystemExit(f'forbidden Kernel policy/scale path reintroduced: {bad}')
+              raise SystemExit(f'forbidden Kernel policy/scale/store path reintroduced: {bad}')
 
           required_activation = [
               'Score:      0',
@@ -111,31 +124,101 @@ jobs:
               'cognitive_ranking',
               'false',
               'persisted_secondary_index',
+              'storeHasPhysicalFeatureIndex()',
+              'storePhysicalFeatureIDs(',
           ]
           missing = [x for x in required_activation if x not in activation]
           if missing:
               raise SystemExit(f'activation physical-boundary assertions missing: {missing}')
-          forbidden_activation = ['FeatureHit > out[j].FeatureHit', 'exactActivationScore(']
+          forbidden_activation = [
+              'FeatureHit > out[j].FeatureHit',
+              'exactActivationScore(',
+              'e.store.HasPhysicalFeatureIndex()',
+              'e.store.PhysicalFeatureIDs(',
+              'e.store.AllIDs()',
+              'e.store.GetID(',
+          ]
           bad = [x for x in forbidden_activation if x in activation]
           if bad:
-              raise SystemExit(f'cognitive activation ranking reintroduced: {bad}')
+              raise SystemExit(f'activation ranking/store lifetime regression: {bad}')
 
           if 'snapshotForSpeculationLazy(snapshotMemoryLimit())' not in scheduler:
               raise SystemExit('scheduler no longer uses lazy speculative snapshots')
           if 'snapshotForSpeculation(snapshotMemoryLimit())' in scheduler:
               raise SystemExit('scheduler regressed to full Memory snapshot')
-          for token in ['ctx.max > 0', 'snapshot working-set limit exceeded', 'max: maxWorkingSet']:
+          for token in [
+              'releaseStore func()',
+              'pinnedSpeculativeStore',
+              'acquireStoreLifetimeLease()',
+              'snapshot working-set limit exceeded',
+              'LoadAndDelete',
+          ]:
               if token not in lazy:
-                  raise SystemExit(f'lazy read-set bound missing: {token}')
+                  raise SystemExit(f'lazy read-set/store lease boundary missing: {token}')
+          if 'acquireStoreLifetimeLease()' in scheduler:
+              raise SystemExit('scheduler reintroduced duplicate store RLock around lazy snapshot')
 
           for token in [
               'localMemoryCountFast',
-              'e.store.memoryCount > max',
+              'persistedCount > max',
+              'storeMemoryCount()',
               'body_list disabled',
               'use exact/tag/activation indexing',
           ]:
               if token not in scale:
                   raise SystemExit(f'bounded scale behavior missing: {token}')
+
+          persistence_required = [
+              'lockEnginePersistence',
+              'snapshotMemoriesForPersistence',
+              'structuralMemoryDigest',
+              'RuntimeExecCount = 0',
+              'rebuildPendingTagDeltasLocked',
+              'indexedStoreGuard(old)',
+              'writtenDigest',
+              'persistEngineIfDirty',
+          ]
+          missing = [x for x in persistence_required if x not in persistence]
+          if missing:
+              raise SystemExit(f'persistence concurrency boundary missing: {missing}')
+
+          shard_required = [
+              'MEMORYAI_SHARD_MAX_MEMORIES',
+              'mountAutomaticStorageShards',
+              'createAutomaticWritableShard',
+              'placeRuntimeMemory',
+              'automaticShardMu',
+          ]
+          missing = [x for x in shard_required if x not in shard]
+          if missing:
+              raise SystemExit(f'bounded physical shard boundary missing: {missing}')
+
+          store_required = [
+              'indexedStoreLifetime',
+              'indexedStoreGuard',
+              'pinnedSpeculativeStore',
+              'acquireStoreLifetimeLease',
+              'validateStore',
+          ]
+          missing = [x for x in store_required if x not in store_access]
+          if missing:
+              raise SystemExit(f'live IndexedStore lifetime boundary missing: {missing}')
+
+          structure_required = [
+              'remote Memory import disabled; use Sovereign Mesh direct read',
+              'q.RuntimeExecCount = 0',
+              'persistedOld, persistedErr := e.storeGetID(q.ID)',
+          ]
+          missing = [x for x in structure_required if x not in structure]
+          if missing:
+              raise SystemExit(f'structure/direct-read boundary missing: {missing}')
+          forbidden_structure = [
+              'validateMemoryCapabilities(&m, remote)',
+              'e.dataMu.Lock()\n\tif old := e.cache[q.ID];',
+          ]
+          bad = [x for x in forbidden_structure if x in structure]
+          if bad:
+              raise SystemExit(f'structure import/deadlock regression: {bad}')
 
           mesh_required = [
               'remote_memory_semantics',
@@ -175,6 +258,16 @@ jobs:
           missing = [x for x in transport_required if x not in mesh_transport]
           if missing:
               raise SystemExit(f'Mesh transport boundary assertions missing: {missing}')
+
+          test_required = [
+              'TestUpsertExplicitMemoryDoesNotReenterDataLock',
+              'TestRemoteJSONImportIsDirectReadOnly',
+              'TestSpeculativePinnedStoreAvoidsNestedReadDeadlock',
+              'TestPersistWaitsForSpeculativeStoreLease',
+          ]
+          missing = [x for x in test_required if x not in lifetime_test]
+          if missing:
+              raise SystemExit(f'store lifetime regression tests missing: {missing}')
 
           print('Kernel physical-only/source-integrity boundaries: PASS')
           PY
