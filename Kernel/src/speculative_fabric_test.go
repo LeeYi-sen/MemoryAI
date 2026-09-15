@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newSpeculativeFabricTestEngine(t *testing.T) (*Engine, *Engine) {
@@ -128,5 +129,48 @@ func TestSpeculativeShardConflictDoesNotOverwriteConcurrentMutation(t *testing.T
 	}
 	if _, err := os.Stat(owner.bodyPath); err != nil {
 		t.Fatalf("shard body unexpectedly disappeared: %v", err)
+	}
+}
+
+func TestSpeculativeShardFallbackDoesNotReenterPinnedPrimaryStore(t *testing.T) {
+	e, _ := newSpeculativeFabricTestEngine(t)
+	ce, _, err := e.snapshotForSpeculationLazy(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLazySpeculation(ce)
+
+	guard := indexedStoreGuard(e.store)
+	writerStarted := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		close(writerStarted)
+		guard.Lock()
+		guard.Unlock()
+		close(writerDone)
+	}()
+	<-writerStarted
+	time.Sleep(20 * time.Millisecond)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, er := ce.resolveIDLocal("shard.target")
+		readDone <- er
+	}()
+	select {
+	case er := <-readDone:
+		if er != nil {
+			t.Fatalf("shard fallback failed while primary writer waited: %v", er)
+		}
+	case <-time.After(500 * time.Millisecond):
+		releaseLazySpeculation(ce)
+		t.Fatal("shard fallback deadlocked by re-entering pinned primary Store")
+	}
+
+	releaseLazySpeculation(ce)
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("primary Store writer did not resume after snapshot release")
 	}
 }
