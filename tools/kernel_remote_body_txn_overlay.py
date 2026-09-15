@@ -40,8 +40,8 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
     text = passive_call_pattern.sub("loadPassiveStorageSerialized(", text)
 
     # Local mounting must coordinate on the same physical path before Engine
-    # loading. Otherwise a remote passive request could mutate the old image
-    # while mountSpace concurrently opens another Engine for the same file.
+    # loading. The active-body check is inside the path lease, so a symlink alias
+    # cannot create a second live Engine for an already mounted physical body.
     mount_start = text.find("func (e *Engine) mountSpace(")
     mount_end = text.find("\nfunc (e *Engine) unmountSpace(", mount_start)
     if mount_start < 0 or mount_end < 0:
@@ -56,6 +56,9 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
         mount_load,
         "\treleaseMountBodyTxn := acquireRemoteBodyTransaction(cp)\n"
         "\tdefer releaseMountBodyTxn()\n"
+        "\tif live, mounted := activePhysicalBody(cp); mounted {\n"
+        "\t\treturn \"\", fmt.Errorf(\"physical Memory body already mounted: %s (%s)\", cp, live.manifest.BodyID)\n"
+        "\t}\n"
         "\tsp, err := loadEngineCanonical(cp)\n",
         1,
     )
@@ -131,6 +134,8 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
         raise RuntimeError("passive body transaction release hook missing or duplicated")
     if text.count("releaseMountBodyTxn := acquireRemoteBodyTransaction(cp)") != 1:
         raise RuntimeError("mountSpace physical path lease missing or duplicated")
+    if text.count("activePhysicalBody(cp)") != 1:
+        raise RuntimeError("mountSpace active physical-body guard missing or duplicated")
     if text.count("releaseUnmountBodyTxn := acquireRemoteBodyTransaction(cp)") != 1:
         raise RuntimeError("unmountSpace physical path lease missing or duplicated")
     if text.count("releaseBodyCloseTxn := acquireRemoteBodyTransaction(sp.bodyPath)") != 1:
