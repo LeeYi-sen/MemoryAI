@@ -23,14 +23,26 @@ var globalTxnScheduler = &txnScheduler{}
 func (s *txnScheduler) canonical(e *Engine, id string, f *Frame) error {
 	atomic.AddUint64(&s.canonicalRuns, 1)
 	root := fabricRootFor(e)
-	if root != nil {
-		owner, _, err := root.resolveLocalFabricMemory(id)
-		if err == nil && owner != nil {
-			rememberFabricOwner(root, owner)
-			return owner.run(id, f)
-		}
+	if root == nil {
+		root = e
 	}
-	return e.run(id, f)
+	owner, _, err := root.resolveLocalFabricMemory(id)
+	if err != nil || owner == nil {
+		owner = e
+	} else {
+		rememberFabricOwner(root, owner)
+	}
+
+	oldCanonical, hadCanonical := f.Vars["__txn_canonical"]
+	f.Vars["__txn_canonical"] = "1"
+	defer func() {
+		if hadCanonical {
+			f.Vars["__txn_canonical"] = oldCanonical
+		} else {
+			delete(f.Vars, "__txn_canonical")
+		}
+	}()
+	return owner.run(id, f)
 }
 
 func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
@@ -144,7 +156,7 @@ func (s *txnScheduler) Info() map[string]any {
 		"speculative":         speculativeInfo(),
 		"snapshot_scope":      "first-read-across-local-fabric",
 		"store_lifetime":      "execution-long-lease+release-before-commit",
-		"canonical_replay":    "fabric-owner-aware",
+		"canonical_replay":    "fabric-owner-aware-single-lane",
 		"creation_policy":     "canonical-only-bounded-placement",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
