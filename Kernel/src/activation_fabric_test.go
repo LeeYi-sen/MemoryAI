@@ -47,6 +47,15 @@ func activationHasID(result ActivationResult, id string) bool {
 	return false
 }
 
+func containsActivationID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestActivationSeesPersistedPassiveShard(t *testing.T) {
 	e, _ := newActivationFabricTestEngine(t)
 	r := newSparseActivationRuntime()
@@ -80,6 +89,37 @@ func TestActivationBuildCountsCompleteFabric(t *testing.T) {
 	}
 	if got := fabricMemoryCountFast(e); got != 2 {
 		t.Fatalf("Fabric fast count mismatch: got=%d want=2", got)
+	}
+}
+
+func TestActivationPrimaryLiveOverlayRemainsVisible(t *testing.T) {
+	e, _ := newActivationFabricTestEngine(t)
+	r := newSparseActivationRuntime()
+	if err := r.Build(e); err != nil {
+		t.Fatal(err)
+	}
+
+	live := &Memory{
+		ID: "activation.primary.live", Layer: "emergent", Tags: []string{"memory", "primary-live"},
+		State: map[string]any{"phase": "live"}, Revision: 1,
+	}
+	if err := upsertExplicitMemoryOnOwner(e, live); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := r.Activate(e, "tag:primary-live", 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activationHasID(result, live.ID) {
+		t.Fatalf("Activate filtered valid primary live overlay: %#v", result.Candidates)
+	}
+	exact, err := r.ExactFeatureIDs(e, "tag:primary-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsActivationID(exact, live.ID) {
+		t.Fatalf("ExactFeatureIDs filtered valid primary live overlay: %#v", exact)
 	}
 }
 
