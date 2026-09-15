@@ -1,0 +1,38 @@
+{
+  "gates": {
+    "drive_min_weight": {
+      "configured_below_min": 0.01,
+      "effective_weight": 0.05,
+      "min_weight": 0.05,
+      "status": "PASS"
+    },
+    "drive_six_factors": {
+      "contributions": {
+        "conflict": 4,
+        "curiosity": 5,
+        "goal": 7,
+        "novelty": 6,
+        "prediction_error": 3,
+        "uncertainty": 0.1
+      },
+      "score": 25.1,
+      "status": "PASS"
+    },
+    "frontier_full_scan": {
+      "candidate_count": 3,
+      "new_goals_created": 2,
+      "preexisting_goal_for_index0": true,
+      "status": "PASS"
+    },
+    "fsck": {
+      "memory_count": 137124,
+      "result": "CLEAN",
+      "status": "PASS"
+    }
+  },
+  "input_required_structures_sha256": "3689e0d596b75eeb58a9d018fe24c75f492928b8a62cad68418013bb92c9642c",
+  "kernel_source_sha256": "7cf782220f70e4fb1f81b667dc52c74b97156a0394140200178a8a9ca8f0dcd6",
+  "output_required_structures_sha256": "c79cfe749fa4f274a61a9cea8dc9e8fe7f3bde10f44a4137df579ff1e66b2f5f",
+  "source_parent_head": "7e1b76ac736136530892a013ddf514be081d4530",
+  "suite_id": "v28.4-frontier-drive-dynamic-20260915"
+}
