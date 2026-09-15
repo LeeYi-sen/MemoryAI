@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
-
-ABI_OVERLAY_SHA256 = "8fb0b2714984ca59b39ab5fef1dd6ad0066995ac3cc3c4e68213a60f60656e18"
-
 
 def apply_kernel_mesh_overlay(raw: bytes) -> bytes:
-    got = hashlib.sha256(raw).hexdigest()
-    if got != ABI_OVERLAY_SHA256:
-        raise RuntimeError(
-            f"mesh overlay requires ABI-overlay source {ABI_OVERLAY_SHA256}, got {got}"
-        )
     text = raw.decode("utf-8")
+
+    required = (
+        "RuntimeExecCount uint64",
+        "func loadEngine(",
+        "const imageVersion = \"28.8.0-memory-fabric-sovereign\"",
+    )
+    missing = [token for token in required if token not in text]
+    if missing:
+        raise RuntimeError(f"mesh overlay upstream boundary missing: {missing}")
+
     old = '''\te, err := loadEngine(body)
 \tif err != nil {
 \t\tdie(err)
@@ -26,4 +27,7 @@ def apply_kernel_mesh_overlay(raw: bytes) -> bytes:
 '''
     if text.count(old) != 1:
         raise RuntimeError(f"mesh overlay loadEngine hook: expected one match, got {text.count(old)}")
-    return text.replace(old, new, 1).encode("utf-8")
+    out = text.replace(old, new, 1)
+    if out.count("bindMeshEngine(e)") != 1:
+        raise RuntimeError("mesh overlay failed to install engine binding")
+    return out.encode("utf-8")
