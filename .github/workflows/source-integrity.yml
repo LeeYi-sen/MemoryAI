@@ -70,6 +70,8 @@ jobs:
           scheduler = Path('Kernel/src/scheduler_runtime.go').read_text(encoding='utf-8')
           lazy = Path('Kernel/src/speculative_lazy.go').read_text(encoding='utf-8')
           mesh = Path('Kernel/src/mesh_runtime.go').read_text(encoding='utf-8')
+          mesh_grant = Path('Kernel/src/mesh_grant_runtime.go').read_text(encoding='utf-8')
+          mesh_transport = Path('Kernel/src/mesh_transport_security.go').read_text(encoding='utf-8')
           scale = Path('Kernel/src/scale_runtime.go').read_text(encoding='utf-8')
 
           required_kernel = [
@@ -139,14 +141,40 @@ jobs:
               'remote_memory_semantics',
               'direct-read-no-import',
               'shared_authorization',
-              'sovereign-memory-event',
+              'sovereign-memory-event+ed25519-grant',
               'e.fireEvent("mesh.shared.proposal"',
-              'routing',
               'stable-physical-availability-only',
+              'consumeMeshGrant(req.Grant',
+              'shared_grant',
+              'cross_host_transport',
+              'tls-required',
           ]
           missing = [x for x in mesh_required if x not in mesh]
           if missing:
               raise SystemExit(f'Sovereign Mesh boundary assertions missing: {missing}')
+
+          grant_required = [
+              'ed25519.Sign',
+              'ed25519.Verify',
+              'mesh grant replay rejected',
+              'ExpiresUnix',
+              'TargetNode',
+              'MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64',
+              'MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64',
+          ]
+          missing = [x for x in grant_required if x not in mesh_grant]
+          if missing:
+              raise SystemExit(f'Sovereign grant boundary assertions missing: {missing}')
+
+          transport_required = [
+              'plaintext mesh HTTP is restricted to loopback',
+              'non-loopback mesh listener requires',
+              'wildcard mesh listener requires explicit MEMORYAI_MESH_ENDPOINT',
+              'mesh endpoint cannot advertise an unspecified bind address',
+          ]
+          missing = [x for x in transport_required if x not in mesh_transport]
+          if missing:
+              raise SystemExit(f'Mesh transport boundary assertions missing: {missing}')
 
           print('Kernel physical-only/source-integrity boundaries: PASS')
           PY
