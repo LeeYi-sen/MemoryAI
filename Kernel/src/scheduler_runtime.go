@@ -64,6 +64,11 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	if err != nil {
 		if errors.Is(err, errSpeculativeSideEffect) || ce.speculativeSideEffectHit() {
 			atomic.AddUint64(&speculativeSideEffectFallback, 1)
+			// No speculative page-in will occur after this point. Release the
+			// primary Store R lease before taking the canonical commit lane; a
+			// persistence finalizer may already hold dataMu while waiting for the
+			// Store write guard.
+			releaseSpeculativeStoreLease(ce)
 			s.commitMu.Lock()
 			defer s.commitMu.Unlock()
 			return s.canonical(e, id, f)
@@ -72,6 +77,10 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	}
 
 	diff := diffSnapshot(base, ce)
+	// The read-set and owner map are complete once diff is formed. Keep that
+	// logical context, but stop pinning the primary IndexedStore before commit.
+	releaseSpeculativeStoreLease(ce)
+
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
 	if !e.commitFabricSnapshotDiff(base, diff, ce) {
@@ -116,7 +125,7 @@ func (s *txnScheduler) Info() map[string]any {
 		"canonical_runs":      atomic.LoadUint64(&s.canonicalRuns),
 		"speculative":         speculativeInfo(),
 		"snapshot_scope":      "first-read-across-local-fabric",
-		"store_lifetime":      "primary-long-lease+shard-first-read-leases",
+		"store_lifetime":      "execution-long-lease+release-before-commit",
 		"creation_policy":     "canonical-only-bounded-placement",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
