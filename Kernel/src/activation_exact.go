@@ -13,7 +13,7 @@ func (r *SparseActivationRuntime) ExactFeatureIDs(e *Engine, feature string) ([]
 
 	if persistent {
 		shadowed := activationShadowedIDs(e)
-		ids, err := e.store.PhysicalFeatureIDs(feature)
+		ids, err := e.storePhysicalFeatureIDs(feature)
 		if err != nil {
 			return nil, err
 		}
