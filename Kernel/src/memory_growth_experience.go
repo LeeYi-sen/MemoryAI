@@ -24,6 +24,9 @@ type MemoryExperience struct {
 	Action          map[string]string `json:"action,omitempty"`
 	Outcome         map[string]string `json:"outcome,omitempty"`
 	PredictionHash  string            `json:"prediction_hash,omitempty"`
+	// PredictionError 保存一次真实执行后“预测值 -> 实际值”的差异事实。
+	// 它属于 Experience 本身，不由 Kernel 解释差异的意义。
+	PredictionError map[string]string `json:"prediction_error,omitempty"`
 	ContentHash     string            `json:"content_hash"`
 	ValidationCount uint64            `json:"validation_count"`
 	SuccessCount    uint64            `json:"success_count"`
@@ -78,22 +81,35 @@ func cloneStrings(src []string) []string {
 	return out
 }
 
+func clonePredictionError(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
 func canonicalExperiencePayload(e MemoryExperience) []byte {
 	type payload struct {
-		ParentIDs      []string          `json:"parent_ids,omitempty"`
-		Context        map[string]string `json:"context,omitempty"`
-		Observation    map[string]string `json:"observation,omitempty"`
-		Action         map[string]string `json:"action,omitempty"`
-		Outcome        map[string]string `json:"outcome,omitempty"`
-		PredictionHash string            `json:"prediction_hash,omitempty"`
+		ParentIDs       []string          `json:"parent_ids,omitempty"`
+		Context         map[string]string `json:"context,omitempty"`
+		Observation     map[string]string `json:"observation,omitempty"`
+		Action          map[string]string `json:"action,omitempty"`
+		Outcome         map[string]string `json:"outcome,omitempty"`
+		PredictionHash  string            `json:"prediction_hash,omitempty"`
+		PredictionError map[string]string `json:"prediction_error,omitempty"`
 	}
 	b, _ := json.Marshal(payload{
-		ParentIDs:      cloneStrings(e.ParentIDs),
-		Context:        cloneStringMap(e.Context),
-		Observation:    cloneStringMap(e.Observation),
-		Action:         cloneStringMap(e.Action),
-		Outcome:        cloneStringMap(e.Outcome),
-		PredictionHash: strings.TrimSpace(e.PredictionHash),
+		ParentIDs:       cloneStrings(e.ParentIDs),
+		Context:         cloneStringMap(e.Context),
+		Observation:     cloneStringMap(e.Observation),
+		Action:          cloneStringMap(e.Action),
+		Outcome:         cloneStringMap(e.Outcome),
+		PredictionHash:  strings.TrimSpace(e.PredictionHash),
+		PredictionError: clonePredictionError(e.PredictionError),
 	})
 	return b
 }
@@ -117,6 +133,7 @@ func (l *experienceLedger) Record(experience MemoryExperience) (*MemoryExperienc
 	experience.Action = cloneStringMap(experience.Action)
 	experience.Outcome = cloneStringMap(experience.Outcome)
 	experience.PredictionHash = strings.TrimSpace(experience.PredictionHash)
+	experience.PredictionError = clonePredictionError(experience.PredictionError)
 	experience.ContentHash = experienceContentHash(experience)
 
 	l.mu.Lock()
@@ -159,6 +176,7 @@ func cloneExperience(src *MemoryExperience) *MemoryExperience {
 	out.Observation = cloneStringMap(src.Observation)
 	out.Action = cloneStringMap(src.Action)
 	out.Outcome = cloneStringMap(src.Outcome)
+	out.PredictionError = clonePredictionError(src.PredictionError)
 	return &out
 }
 
