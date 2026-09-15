@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"sync"
 )
@@ -25,9 +26,8 @@ func indexedStoreGuard(st *IndexedStore) *sync.RWMutex {
 }
 
 // acquireStoreLifetimeLease pins the Engine's current physical store. Lazy
-// speculative Engines already own one long lease in lazySnapshotContext, so
-// their nested reads reuse that lease instead of taking another RLock. This is
-// important because Go RWMutex blocks new readers once a writer is waiting.
+// speculative Engines already own one long primary-store lease in their
+// context, so nested reads reuse that lease instead of taking another RLock.
 func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 	if e == nil {
 		return nil, nil, io.EOF
@@ -48,6 +48,31 @@ func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 }
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
+	// A lazy speculative Engine has no mounted shard map of its own. First try
+	// its pinned primary Store; on a miss, resolve a detached copy through the
+	// origin's local Fabric and record the real physical owner in the read-set.
+	if st, ok := pinnedSpeculativeStore(e); ok {
+		m, err := st.GetID(id)
+		if err == nil {
+			return m, nil
+		}
+		if !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		origin, exists := speculativeOriginEngine(e)
+		if !exists {
+			return nil, io.EOF
+		}
+		owner, snapshot, err := origin.resolveLocalFabricMemoryCopy(id)
+		if err != nil {
+			return nil, err
+		}
+		if err := recordSpeculativeBaselineOwned(e, id, snapshot, owner); err != nil {
+			return nil, err
+		}
+		return snapshot, nil
+	}
+
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
 		return nil, err
@@ -57,6 +82,12 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 }
 
 func (e *Engine) storeTagIDs(tag string) ([]string, error) {
+	// Tag predicates inside a lazy transaction must see all mounted local shards,
+	// not only the primary Store. listTagLocal on the speculative Engine will
+	// still apply its private tagAdded/tagRemoved deltas after this base result.
+	if origin, ok := speculativeOriginEngine(e); ok {
+		return origin.listTagFabric(tag)
+	}
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
 		return nil, err
@@ -75,6 +106,9 @@ func (e *Engine) storeAllIDs() ([]string, error) {
 }
 
 func (e *Engine) storePhysicalFeatureIDs(feature string) ([]string, error) {
+	if origin, ok := speculativeOriginEngine(e); ok {
+		return origin.physicalFeatureIDsFabric(feature)
+	}
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
 		return nil, err
