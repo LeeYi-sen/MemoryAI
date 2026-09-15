@@ -49,8 +49,10 @@ func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
 	// A lazy speculative Engine has no mounted shard map of its own. First try
-	// its pinned primary Store; on a miss, resolve a detached copy through the
-	// origin's local Fabric and record the real physical owner in the read-set.
+	// its pinned primary Store. On a miss the primary is already proven absent,
+	// so fallback must inspect mounted shards only. Re-probing the origin primary
+	// would recursively acquire the same RWMutex while the snapshot still owns an
+	// RLock and can deadlock behind a queued persistence writer.
 	if st, ok := pinnedSpeculativeStore(e); ok {
 		m, err := st.GetID(id)
 		if err == nil {
@@ -63,7 +65,7 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 		if !exists {
 			return nil, io.EOF
 		}
-		owner, snapshot, err := origin.resolveLocalFabricMemoryCopy(id)
+		owner, snapshot, err := origin.resolveMountedShardMemoryCopy(id)
 		if err != nil {
 			return nil, err
 		}
