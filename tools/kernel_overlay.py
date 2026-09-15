@@ -26,8 +26,8 @@ def apply_kernel_overlay(raw: bytes) -> bytes:
 
     Historical bootstrap bytes remain immutable and hash-verifiable. This
     overlay is the auditable forward delta used to reconstruct current Kernel
-    source. Cognitive metrics remain passive legacy JSON compatibility data;
-    Kernel never mutates, ranks, merges or exposes them as execution policy.
+    source. Cognitive metrics are removed from the Kernel ABI and execution
+    policy; migrated Memory State owns them.
     """
     got = hashlib.sha256(raw).hexdigest()
     if got != V27_KERNEL_SHA256:
@@ -81,12 +81,6 @@ def apply_kernel_overlay(raw: bytes) -> bytes:
 \tProgram          []Op           `json:"program,omitempty"`
 \tState            map[string]any `json:"state,omitempty"`
 \tRuntimeExecCount uint64         `json:"runtime_exec_count,omitempty"`
-\tReuse            uint64         `json:"reuse_count,omitempty"`
-\tTrials           uint64         `json:"real_trials,omitempty"`
-\tSuccesses        uint64         `json:"successes,omitempty"`
-\tReward           float64        `json:"total_reward,omitempty"`
-\tCost             float64        `json:"total_cost,omitempty"`
-\tStability        float64        `json:"stability,omitempty"`
 \tCreatedUnix      int64          `json:"created_unix,omitempty"`
 }'''
     text = _replace_once(
@@ -156,14 +150,14 @@ def apply_kernel_overlay(raw: bytes) -> bytes:
         '\t\tchild.Successes = 0\n'
         '\t\tchild.Reward = 0\n'
         '\t\tchild.Cost = 0\n',
-        '\t\tchild.RuntimeExecCount = 0\n'
-        '\t\t// Legacy cognitive metric fields are passive compatibility data only.\n'
-        '\t\tchild.Reuse = 0\n'
-        '\t\tchild.Trials = 0\n'
-        '\t\tchild.Successes = 0\n'
-        '\t\tchild.Reward = 0\n'
-        '\t\tchild.Cost = 0\n',
+        '\t\tchild.RuntimeExecCount = 0\n',
         "memory copy runtime telemetry reset",
+    )
+    text = _replace_once(
+        text,
+        ', CreatedUnix: time.Now().Unix(), Stability: .1, Revision: 1}',
+        ', CreatedUnix: time.Now().Unix(), Revision: 1}',
+        "remove cognitive stability default",
     )
 
     text = _sub_once(
@@ -199,15 +193,24 @@ def apply_kernel_overlay(raw: bytes) -> bytes:
         'case "metric_add"',
         'metricAdd(',
         'm.Reuse++',
+        '.Reuse',
+        '.Trials',
+        '.Successes',
+        '.Reward',
+        '.Cost',
+        '.Stability',
+        'reuse_count,omitempty',
+        'real_trials,omitempty',
+        'successes,omitempty',
+        'total_reward,omitempty',
+        'total_cost,omitempty',
+        'stability,omitempty',
         'case "reuse":',
         'case "trials":',
         'case "successes":',
         'case "reward":',
         'case "cost":',
         'case "stability":',
-        'if src.Reuse > dst.Reuse',
-        'if src.Reward > dst.Reward',
-        'if src.Stability > dst.Stability',
     )
     bad = [token for token in forbidden if token in text]
     if bad:
