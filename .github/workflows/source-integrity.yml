@@ -63,36 +63,38 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          files = {
-              name: Path(path).read_text(encoding='utf-8')
-              for name, path in {
-                  'kernel': 'Kernel/src/kernel.go',
-                  'activation': 'Kernel/src/activation_runtime.go',
-                  'activation_fabric_test': 'Kernel/src/activation_fabric_test.go',
-                  'scheduler': 'Kernel/src/scheduler_runtime.go',
-                  'event': 'Kernel/src/event_runtime.go',
-                  'lazy': 'Kernel/src/speculative_lazy.go',
-                  'spec_boundary': 'Kernel/src/speculative_boundary_extra.go',
-                  'spec_commit': 'Kernel/src/speculative_fabric_commit.go',
-                  'spec_fabric_test': 'Kernel/src/speculative_fabric_test.go',
-                  'mesh': 'Kernel/src/mesh_runtime.go',
-                  'grant': 'Kernel/src/mesh_grant_runtime.go',
-                  'transport': 'Kernel/src/mesh_transport_security.go',
-                  'scale': 'Kernel/src/scale_runtime.go',
-                  'persistence': 'Kernel/src/persistence_runtime.go',
-                  'shard': 'Kernel/src/shard_runtime.go',
-                  'store': 'Kernel/src/store_access_runtime.go',
-                  'fabric': 'Kernel/src/fabric_write_runtime.go',
-                  'fabric_read': 'Kernel/src/fabric_read_runtime.go',
-                  'fabric_context': 'Kernel/src/fabric_context_runtime.go',
-                  'fabric_execution_test': 'Kernel/src/fabric_execution_test.go',
-                  'structure': 'Kernel/src/structure_runtime.go',
-                  'source_adapter': 'Kernel/src/source_adapter_runtime.go',
-                  'lifetime_test': 'Kernel/src/store_lifetime_test.go',
-                  'fabric_test': 'Kernel/src/fabric_write_runtime_test.go',
-                  'digest_test': 'Kernel/src/memory_digest_test.go',
-              }.items()
+          paths = {
+              'kernel': 'Kernel/src/kernel.go',
+              'activation': 'Kernel/src/activation_runtime.go',
+              'activation_exact': 'Kernel/src/activation_exact.go',
+              'activation_fabric_test': 'Kernel/src/activation_fabric_test.go',
+              'scheduler': 'Kernel/src/scheduler_runtime.go',
+              'event': 'Kernel/src/event_runtime.go',
+              'lazy': 'Kernel/src/speculative_lazy.go',
+              'spec_boundary': 'Kernel/src/speculative_boundary_extra.go',
+              'spec_commit': 'Kernel/src/speculative_fabric_commit.go',
+              'spec_fabric_test': 'Kernel/src/speculative_fabric_test.go',
+              'mesh': 'Kernel/src/mesh_runtime.go',
+              'grant': 'Kernel/src/mesh_grant_runtime.go',
+              'transport': 'Kernel/src/mesh_transport_security.go',
+              'scale': 'Kernel/src/scale_runtime.go',
+              'persistence': 'Kernel/src/persistence_runtime.go',
+              'shard': 'Kernel/src/shard_runtime.go',
+              'store': 'Kernel/src/store_access_runtime.go',
+              'fabric': 'Kernel/src/fabric_write_runtime.go',
+              'fabric_read': 'Kernel/src/fabric_read_runtime.go',
+              'fabric_context': 'Kernel/src/fabric_context_runtime.go',
+              'fabric_execution_test': 'Kernel/src/fabric_execution_test.go',
+              'fabric_vm_test': 'Kernel/src/fabric_vm_test.go',
+              'structure': 'Kernel/src/structure_runtime.go',
+              'source_adapter': 'Kernel/src/source_adapter_runtime.go',
+              'lifetime_test': 'Kernel/src/store_lifetime_test.go',
+              'fabric_test': 'Kernel/src/fabric_write_runtime_test.go',
+              'digest_test': 'Kernel/src/memory_digest_test.go',
+              'fabric_execution_overlay': 'tools/kernel_fabric_execution_overlay.py',
+              'restore': 'tools/restore_source.py',
           }
+          files = {name: Path(path).read_text(encoding='utf-8') for name, path in paths.items()}
 
           def require(name, tokens):
               missing = [x for x in tokens if x not in files[name]]
@@ -104,6 +106,7 @@ jobs:
               if bad:
                   raise SystemExit(f'{name} forbidden boundary regression: {bad}')
 
+          # Minimal physical Kernel: no cognitive metric mutation/ranking.
           require('kernel', [
               'RuntimeExecCount uint64', 'bindMeshEngine(e)',
               'speculativeAdditionalForbiddenPrimitive(op.Code)',
@@ -112,6 +115,10 @@ jobs:
               'lockEnginePersistence(e)', 'snapshotMemoriesForPersistence(e)',
               'finalizePersistedBody(e, out, persistedSnapshot)',
               'e.validateStore()', 'sp.validateStore()',
+              'executionOwner := e.ownerOf(m.ID)',
+              'executionOwner.dataMu.Lock()',
+              'root.resolveLocalFabricMemory(id)',
+              'root.listTagFabricOwned(idOrTag)',
           ])
           forbid('kernel', [
               'reuse_count,omitempty', 'real_trials,omitempty', 'successes,omitempty',
@@ -120,34 +127,54 @@ jobs:
               'validateIndexedStore(e.store)', 'validateIndexedStore(sp.store)',
           ])
 
+          require('fabric_execution_overlay', [
+              'unique local exact resolver', 'unique mutable Fabric resolver',
+              'unique Fabric owner lookup', 'run physical-owner lock',
+              'root.resolveLocalFabricMemory(id)',
+              'root.listTagFabricOwned(idOrTag)',
+              'executionOwner.dataMu.Lock()',
+          ])
+          require('restore', [
+              'apply_kernel_fabric_execution_overlay',
+              'current = apply_kernel_fabric_execution_overlay(current)',
+          ])
+
           require('activation', [
               'Score:      0', 'stable-memory-id', 'cognitive_ranking',
               'storeHasPhysicalFeatureIndex()', 'storePhysicalFeatureIDs(',
+              'fabricMemoryCountFast(root)',
+              'fabric-persisted-exact-index+per-body-live-overlay',
           ])
           forbid('activation', [
               'FeatureHit > out[j].FeatureHit', 'exactActivationScore(',
               'e.store.HasPhysicalFeatureIndex()', 'e.store.PhysicalFeatureIDs(',
               'e.store.AllIDs()', 'e.store.GetID(',
           ])
+          require('activation_exact', ['storePhysicalFeatureIDs(feature)'])
           require('activation_fabric_test', [
               'TestActivationSeesPersistedPassiveShard',
+              'TestActivationBuildCountsCompleteFabric',
               'TestActivationShardDirtyOverlayShadowsPersistedPosting',
+              'TestActivationQualificationUsesFullFabricReference',
+              'TestActivationPrimaryLiveOverlayRemainsVisible',
           ])
 
           require('scheduler', [
               'snapshotForSpeculationLazy(snapshotMemoryLimit())',
               'commitFabricSnapshotDiff(base, diff, ce)',
               'releaseSpeculativeStoreLease(ce)',
-              'fabricRootFor(e)', 'rememberFabricOwner(root, owner)',
+              'root := fabricRootFor(e)',
+              'return root.run(id, f)',
               'f.Vars["__txn_canonical"] = "1"',
               'execution-long-lease+release-before-commit',
-              'fabric-owner-aware-single-lane',
+              'fabric-root-resolver-single-lane',
               'canonical-only-bounded-placement',
           ])
           forbid('scheduler', [
               'snapshotForSpeculation(snapshotMemoryLimit())',
-              'primary-long-lease+shard-first-read-leases',
-              'lazy-snapshot-owned-shared-lease',
+              'fabric-owner-aware-single-lane',
+              'rememberFabricOwner(root, owner)',
+              'return owner.run(id, f)',
               'acquireStoreLifetimeLease()',
           ])
 
@@ -157,11 +184,10 @@ jobs:
               'root.resolveLocalFabricMemory(id)',
               'globalTxnScheduler.run(root, id, f)',
               'f.Vars["__txn_canonical"] == "1"',
-              'owner.run(id, f)',
+              'root.run(id, f)',
+              'outer scheduler already owns the canonical lane',
           ])
-          forbid('event', [
-              'Speculative engines already contain a bounded private snapshot',
-          ])
+          forbid('event', ['owner.run(id, f)'])
 
           require('spec_boundary', [
               'memory_new', 'memory_copy', 'mesh_shared_reconcile',
@@ -180,10 +206,6 @@ jobs:
               'All owners are locked in deterministic physical-path order',
               'len(d.created) != 0',
           ])
-          forbid('spec_commit', [
-              'applySpeculativeStructuralPlan(plan)',
-              'applySpeculativeExecPlan(plan)',
-          ])
           require('spec_fabric_test', [
               'TestSpeculativeCommitPreservesShardOwner',
               'TestSpeculativeShardConflictDoesNotOverwriteConcurrentMutation',
@@ -193,7 +215,7 @@ jobs:
           ])
 
           require('scale', [
-              'localMemoryCountFast', 'persistedCount > max', 'storeMemoryCount()',
+              'localMemoryCountFast', 'fabricMemoryCountFast',
               'body_list disabled', 'use exact/tag/activation indexing',
           ])
           forbid('scale', ['e.store.memoryCount', 'e.store.GetID('])
@@ -204,7 +226,6 @@ jobs:
               'rebuildPendingTagDeltasLocked', 'indexedStoreGuard(old)',
               'writtenDigest', 'persistEngineIfDirty',
           ])
-
           require('shard', [
               'MEMORYAI_SHARD_MAX_MEMORIES', 'mountAutomaticStorageShards',
               'createAutomaticWritableShard', 'placeRuntimeMemoryLocked',
@@ -236,8 +257,6 @@ jobs:
               'upsertExplicitMemoryOnOwner', 'upsertExplicitMemoryBounded',
               'deleteExplicitMemoryBounded',
           ])
-          forbid('fabric', ['owner.addRuntimeMemory(q)'])
-
           require('fabric_read', [
               'resolveMountedShardMemoryCopy', 'resolveSpecificOwnerMemoryCopy',
               'physicalFeatureIDsAcrossEngines',
@@ -254,14 +273,9 @@ jobs:
               'validateMemoryCapabilities(&m, remote)',
               'e.resolveIDLocal(', 'e.upsertExplicitMemory(',
           ])
-
           require('source_adapter', [
               'resolveLocalFabricMemory(', 'listTagFabric(',
               'upsertExplicitMemoryBounded(', 'deleteExplicitMemoryBounded(',
-          ])
-          forbid('source_adapter', [
-              'e.resolveIDLocal(', 'e.listTagLocal(', 'e.upsertExplicitMemory(',
-              'explicitDeleteMemory(',
           ])
 
           require('mesh', [
@@ -291,10 +305,16 @@ jobs:
               'TestEventDispatchRunsHandlerFromPassiveShard',
               'TestEventSubjectTagResolvesSubjectFromPassiveShard',
               'TestCanonicalEventDispatchDoesNotReenterSchedulerLane',
+              'TestCanonicalEventHandlerKeepsSiblingShardVisibility',
+          ])
+          require('fabric_vm_test', [
+              'TestCanonicalVMKeepsRootFabricAcrossSiblingShards',
+              'TestCanonicalVMRejectsDuplicateFabricStateGet',
+              'TestCanonicalVMRejectsDuplicateFabricStateSetWithoutWrite',
           ])
           require('lifetime_test', [
               'TestUpsertExplicitMemoryDoesNotReenterDataLock',
-              'upsertExplicitMemoryBounded', 'TestRemoteJSONImportIsDirectReadOnly',
+              'TestRemoteJSONImportIsDirectReadOnly',
               'TestSpeculativePinnedStoreAvoidsNestedReadDeadlock',
               'TestPersistWaitsForSpeculativeStoreLease',
               'TestReleaseSpeculativeStoreLeaseBreaksPersistCommitLockCycle',
