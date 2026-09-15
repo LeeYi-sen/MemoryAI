@@ -11,7 +11,7 @@ def apply_kernel_speculative_overlay(raw: bytes) -> bytes:
     required = (
         "RuntimeExecCount uint64",
         "bindMeshEngine(e)",
-        "func (e *Engine) execOp(",
+        "func (e *Engine) execPrimitive(",
     )
     missing = [token for token in required if token not in text]
     if missing:
