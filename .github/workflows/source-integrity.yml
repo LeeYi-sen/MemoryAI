@@ -68,8 +68,12 @@ jobs:
               for name, path in {
                   'kernel': 'Kernel/src/kernel.go',
                   'activation': 'Kernel/src/activation_runtime.go',
+                  'activation_fabric_test': 'Kernel/src/activation_fabric_test.go',
                   'scheduler': 'Kernel/src/scheduler_runtime.go',
                   'lazy': 'Kernel/src/speculative_lazy.go',
+                  'spec_boundary': 'Kernel/src/speculative_boundary_extra.go',
+                  'spec_commit': 'Kernel/src/speculative_fabric_commit.go',
+                  'spec_fabric_test': 'Kernel/src/speculative_fabric_test.go',
                   'mesh': 'Kernel/src/mesh_runtime.go',
                   'grant': 'Kernel/src/mesh_grant_runtime.go',
                   'transport': 'Kernel/src/mesh_transport_security.go',
@@ -78,6 +82,7 @@ jobs:
                   'shard': 'Kernel/src/shard_runtime.go',
                   'store': 'Kernel/src/store_access_runtime.go',
                   'fabric': 'Kernel/src/fabric_write_runtime.go',
+                  'fabric_read': 'Kernel/src/fabric_read_runtime.go',
                   'structure': 'Kernel/src/structure_runtime.go',
                   'source_adapter': 'Kernel/src/source_adapter_runtime.go',
                   'lifetime_test': 'Kernel/src/store_lifetime_test.go',
@@ -97,18 +102,13 @@ jobs:
                   raise SystemExit(f'{name} forbidden boundary regression: {bad}')
 
           require('kernel', [
-              'RuntimeExecCount uint64',
-              'bindMeshEngine(e)',
+              'RuntimeExecCount uint64', 'bindMeshEngine(e)',
               'speculativeAdditionalForbiddenPrimitive(op.Code)',
-              'recordSpeculativeBaseline(e, id, m)',
-              'localMemoryCountFast(e)',
-              'boundedLegacyBodyIDs(e)',
-              'remote_space_import disabled:',
-              'lockEnginePersistence(e)',
-              'snapshotMemoriesForPersistence(e)',
+              'recordSpeculativeBaseline(e, id, m)', 'localMemoryCountFast(e)',
+              'boundedLegacyBodyIDs(e)', 'remote_space_import disabled:',
+              'lockEnginePersistence(e)', 'snapshotMemoriesForPersistence(e)',
               'finalizePersistedBody(e, out, persistedSnapshot)',
-              'e.validateStore()',
-              'sp.validateStore()',
+              'e.validateStore()', 'sp.validateStore()',
           ])
           forbid('kernel', [
               'reuse_count,omitempty', 'real_trials,omitempty', 'successes,omitempty',
@@ -126,20 +126,41 @@ jobs:
               'e.store.HasPhysicalFeatureIndex()', 'e.store.PhysicalFeatureIDs(',
               'e.store.AllIDs()', 'e.store.GetID(',
           ])
+          require('activation_fabric_test', [
+              'TestActivationSeesPersistedPassiveShard',
+              'TestActivationShardDirtyOverlayShadowsPersistedPosting',
+          ])
 
           require('scheduler', [
               'snapshotForSpeculationLazy(snapshotMemoryLimit())',
-              'lazy-snapshot-owned-shared-lease',
+              'commitFabricSnapshotDiff(base, diff, ce)',
+              'primary-long-lease+shard-first-read-leases',
+              'canonical-only-bounded-placement',
           ])
           forbid('scheduler', [
               'snapshotForSpeculation(snapshotMemoryLimit())',
+              'lazy-snapshot-owned-shared-lease',
               'acquireStoreLifetimeLease()',
           ])
 
+          require('spec_boundary', [
+              'memory_new', 'memory_copy', 'mesh_shared_reconcile',
+              'mesh_route_cognition', 'cognition_concurrency_set',
+          ])
           require('lazy', [
               'releaseStore func()', 'pinnedSpeculativeStore',
+              'recordSpeculativeOwnerHints', 'speculativePhysicalOwner',
               'storeGuard := indexedStoreGuard(store)', 'storeGuard.RLock()',
               'snapshot working-set limit exceeded', 'LoadAndDelete',
+          ])
+          require('spec_commit', [
+              'commitFabricSnapshotDiff', 'speculativePhysicalOwner',
+              'physicalOwnerMemoryCopy', 'len(d.created) != 0',
+          ])
+          require('spec_fabric_test', [
+              'TestSpeculativeCommitPreservesShardOwner',
+              'TestSpeculativeShardConflictDoesNotOverwriteConcurrentMutation',
+              'TestSpeculativeShardFallbackDoesNotReenterPinnedPrimaryStore',
           ])
 
           require('scale', [
@@ -163,22 +184,36 @@ jobs:
 
           require('store', [
               'indexedStoreLifetime', 'indexedStoreGuard', 'pinnedSpeculativeStore',
+              'resolveMountedShardMemoryCopy', 'recordSpeculativeOwnerHints',
+              'listTagMountedShardsOwned', 'physicalFeatureIDsMountedShardsOwned',
+              'storePhysicalFeatureIDsLocal', 'storeHasPhysicalFeatureIndexLocal',
               'acquireStoreLifetimeLease', 'validateStore',
+          ])
+          forbid('store', [
+              'origin.listTagFabricOwned(tag)',
+              'origin.physicalFeatureIDsFabricOwned(feature)',
           ])
 
           require('fabric', [
               'resolveLocalFabricMemory', 'duplicate local Fabric Memory id',
-              'listTagFabric', 'automaticShardMu.Lock()',
-              'placeRuntimeMemoryLocked(q)', 'upsertExplicitMemoryOnOwner',
-              'upsertExplicitMemoryBounded', 'deleteExplicitMemoryBounded',
+              'listTagFabricOwned', 'listTagMountedShardsOwned',
+              'automaticShardMu.Lock()', 'placeRuntimeMemoryLocked(q)',
+              'upsertExplicitMemoryOnOwner', 'upsertExplicitMemoryBounded',
+              'deleteExplicitMemoryBounded',
           ])
           forbid('fabric', ['owner.addRuntimeMemory(q)'])
 
+          require('fabric_read', [
+              'resolveMountedShardMemoryCopy', 'resolveSpecificOwnerMemoryCopy',
+              'physicalFeatureIDsAcrossEngines',
+              'physicalFeatureIDsMountedShardsOwned',
+              'storeHasPhysicalFeatureIndexLocal', 'storeAllIDsLocal',
+          ])
+
           require('structure', [
               'remote Memory import disabled; use Sovereign Mesh direct read',
-              'q.RuntimeExecCount = 0',
-              'resolveLocalFabricMemory(', 'upsertExplicitMemoryBounded(',
-              'deleteExplicitMemoryBounded(',
+              'q.RuntimeExecCount = 0', 'resolveLocalFabricMemory(',
+              'upsertExplicitMemoryBounded(', 'deleteExplicitMemoryBounded(',
           ])
           forbid('structure', [
               'validateMemoryCapabilities(&m, remote)',
@@ -187,10 +222,11 @@ jobs:
 
           require('source_adapter', [
               'resolveLocalFabricMemory(', 'listTagFabric(',
-              'upsertExplicitMemoryBounded(', 'explicitDeleteMemory(',
+              'upsertExplicitMemoryBounded(', 'deleteExplicitMemoryBounded(',
           ])
           forbid('source_adapter', [
               'e.resolveIDLocal(', 'e.listTagLocal(', 'e.upsertExplicitMemory(',
+              'explicitDeleteMemory(',
           ])
 
           require('mesh', [
@@ -209,8 +245,7 @@ jobs:
 
           require('lifetime_test', [
               'TestUpsertExplicitMemoryDoesNotReenterDataLock',
-              'upsertExplicitMemoryBounded',
-              'TestRemoteJSONImportIsDirectReadOnly',
+              'upsertExplicitMemoryBounded', 'TestRemoteJSONImportIsDirectReadOnly',
               'TestSpeculativePinnedStoreAvoidsNestedReadDeadlock',
               'TestPersistWaitsForSpeculativeStoreLease',
           ])
