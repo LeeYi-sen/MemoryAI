@@ -75,22 +75,14 @@ func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
 // clean persisted records are page-loaded and baselined on first access. The
 // same maxWorkingSet applies to both the initial overlay and subsequent reads.
 //
-// The physical IndexedStore is pinned here, not in the scheduler, so every
-// caller of this primitive gets the same descriptor-lifetime guarantee.
+// Lock order is deliberately dataMu.RLock -> shared IndexedStore RLock. Store
+// selection, long-term pin acquisition and the mutable-delta snapshot happen in
+// one dataMu read critical section. Persistence uses dataMu.Lock -> Store Lock,
+// so it cannot slip between pinning and state capture and form a lock cycle.
 func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memorySnapshot, error) {
 	if e == nil {
 		return nil, nil, fmt.Errorf("lazy speculative snapshot requires engine")
 	}
-	store, releaseStore, err := e.acquireStoreLifetimeLease()
-	if err != nil {
-		return nil, nil, err
-	}
-	releaseOnError := true
-	defer func() {
-		if releaseOnError {
-			releaseStore()
-		}
-	}()
 
 	base := &memorySnapshot{
 		memories:   map[string]*Memory{},
@@ -102,6 +94,15 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	workingIDs := map[string]bool{}
 
 	e.dataMu.RLock()
+	store := e.store
+	if store == nil {
+		e.dataMu.RUnlock()
+		return nil, nil, fmt.Errorf("lazy speculative snapshot store unavailable")
+	}
+	storeGuard := indexedStoreGuard(store)
+	storeGuard.RLock()
+	releaseStore := storeGuard.RUnlock
+
 	for id := range e.dirtyIDs {
 		workingIDs[id] = true
 	}
@@ -110,6 +111,7 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	}
 	if maxWorkingSet > 0 && len(workingIDs) > maxWorkingSet {
 		e.dataMu.RUnlock()
+		releaseStore()
 		return nil, nil, fmt.Errorf(
 			"snapshot working-set limit exceeded: %d > %d", len(workingIDs), maxWorkingSet,
 		)
@@ -158,7 +160,6 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	lazySnapshotContexts.Store(ce, &lazySnapshotContext{
 		base: base, max: maxWorkingSet, store: store, releaseStore: releaseStore,
 	})
-	releaseOnError = false
 	return ce, base, nil
 }
 
