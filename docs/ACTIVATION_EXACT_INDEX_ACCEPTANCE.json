@@ -1,0 +1,20 @@
+{
+  "gate": "kernel-physical-exact-activation-index",
+  "status": "PASS",
+  "source_branch": "main",
+  "checks": {
+    "linux_amd64_build": true,
+    "semantic_metric_reads_in_activation": 0,
+    "hardcoded_semantic_activation_weights": 0,
+    "activation_score6_calls": 0,
+    "content_tokenization_in_activation": 0,
+    "queries": 48,
+    "exact_candidate_sets": 48,
+    "exact_topk_order": 48,
+    "max_score_diff": 0,
+    "indexed_nodes": 137110,
+    "reference_nodes": 137110
+  },
+  "qualification_mode": "full-scan-reference-vs-physical-exact-index",
+  "test_kernel_sha256": "a0d143298c406715d8e9424050855770235068017f765070cdaa69f5cb6fb5f5"
+}
