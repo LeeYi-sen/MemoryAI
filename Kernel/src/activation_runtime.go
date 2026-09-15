@@ -18,22 +18,25 @@ import (
 //   - Kernel may index opaque physical fields and return exact candidate sets.
 //   - Kernel must not decide semantic relevance, utility, confidence, priority,
 //     or cognitive rank.
-//   - Any result cap is therefore a deterministic physical page (stable ID
-//     order), never a "best candidate" Top-K.
+//   - Persisted physical secondary indexes are used when available so startup
+//     cost does not grow as O(total Memory records).
+//   - Any result cap is a deterministic physical page (stable ID order), never
+//     a "best candidate" Top-K.
 //
 // Score is retained in ActivationCandidate only for wire compatibility with
 // older clients. Kernel always emits Score=0; cognitive scoring belongs to
 // Memory-owned executable structures.
 type SparseActivationRuntime struct {
-	mu          sync.RWMutex
-	postings    map[string]map[string]struct{}
-	nodeFeature map[string][]string
-	fingerprint map[string]uint64
-	nodes       int64
-	queries     uint64
-	candidates  uint64
-	topK        int // legacy name: physical response cap, not cognitive Top-K
-	maxState    int
+	mu             sync.RWMutex
+	postings       map[string]map[string]struct{} // mutable/new overlay only when persistentBase=true
+	nodeFeature    map[string][]string
+	fingerprint    map[string]uint64
+	persistentBase bool
+	nodes          int64
+	queries        uint64
+	candidates     uint64
+	topK           int // legacy name: physical response cap, not cognitive Top-K
+	maxState       int // compatibility field; zero means all scalar State fields are indexed
 }
 
 type ActivationCandidate struct {
@@ -60,18 +63,12 @@ func newSparseActivationRuntime() *SparseActivationRuntime {
 			topK = n
 		}
 	}
-	maxState := 128
-	if s := os.Getenv("MEMORYAI_ACTIVATION_MAX_STATE_FIELDS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			maxState = n
-		}
-	}
 	return &SparseActivationRuntime{
 		postings:    map[string]map[string]struct{}{},
 		nodeFeature: map[string][]string{},
 		fingerprint: map[string]uint64{},
 		topK:        topK,
-		maxState:    maxState,
+		maxState:    0,
 	}
 }
 
@@ -98,7 +95,11 @@ func exactIndexValue(v any) (string, bool) {
 	}
 }
 
-func activationFeaturesForMemory(m *Memory, limit int) []string {
+// activationFeaturesForMemory indexes every scalar State field. The former
+// max-field cutoff could make valid Memory state physically unreachable once a
+// structure grew beyond the cutoff. The limit argument is retained only to
+// avoid breaking older call sites; it is intentionally ignored.
+func activationFeaturesForMemory(m *Memory, _ int) []string {
 	if m == nil {
 		return nil
 	}
@@ -123,10 +124,7 @@ func activationFeaturesForMemory(m *Memory, limit int) []string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	for i, k := range keys {
-		if limit > 0 && i >= limit {
-			break
-		}
+	for _, k := range keys {
 		add("state-key:" + k)
 		if v, ok := exactIndexValue(m.State[k]); ok {
 			add("state-kv:" + k + "=" + v)
@@ -187,7 +185,7 @@ func (r *SparseActivationRuntime) replaceNode(m *Memory) {
 		}
 		p[m.ID] = struct{}{}
 	}
-	if _, existed := r.nodeFeature[m.ID]; !existed {
+	if _, existed := r.nodeFeature[m.ID]; !existed && !r.persistentBase {
 		atomic.AddInt64(&r.nodes, 1)
 	}
 	r.nodeFeature[m.ID] = features
@@ -211,23 +209,47 @@ func (r *SparseActivationRuntime) removeNode(id string) {
 	}
 	delete(r.nodeFeature, id)
 	delete(r.fingerprint, id)
-	atomic.AddInt64(&r.nodes, -1)
+	if !r.persistentBase {
+		atomic.AddInt64(&r.nodes, -1)
+	}
+}
+
+func (r *SparseActivationRuntime) reset(persistent bool, baseNodes int) {
+	r.mu.Lock()
+	r.postings = map[string]map[string]struct{}{}
+	r.nodeFeature = map[string][]string{}
+	r.fingerprint = map[string]uint64{}
+	r.persistentBase = persistent
+	r.mu.Unlock()
+	atomic.StoreInt64(&r.nodes, int64(baseNodes))
 }
 
 func (r *SparseActivationRuntime) Build(e *Engine) error {
 	if e == nil || e.manifest.Role != "core" {
 		return fmt.Errorf("physical activation index requires core Memory.mem")
 	}
+
+	persisted, err := e.store.HasPhysicalFeatureIndex()
+	if err != nil {
+		return err
+	}
+	if persisted {
+		// New-format stores resolve exact physical features directly from the
+		// persisted secondary index. Only dirty/new in-memory records need an
+		// overlay; startup no longer walks the entire Memory body.
+		r.reset(true, e.store.memoryCount)
+		r.RefreshDirty(e)
+		return nil
+	}
+
+	// Legacy compatibility path. It is deliberately isolated and reported in
+	// Info(); the next rebuilt/persisted store will contain the physical index
+	// and subsequent startups take the non-scanning path above.
 	ids, err := e.store.AllIDs()
 	if err != nil {
 		return err
 	}
-	r.mu.Lock()
-	r.postings = map[string]map[string]struct{}{}
-	r.nodeFeature = map[string][]string{}
-	r.fingerprint = map[string]uint64{}
-	r.mu.Unlock()
-	atomic.StoreInt64(&r.nodes, 0)
+	r.reset(false, 0)
 	for _, id := range ids {
 		m, er := e.store.GetID(id)
 		if er == nil {
@@ -246,7 +268,7 @@ func (r *SparseActivationRuntime) Build(e *Engine) error {
 	return nil
 }
 
-// RefreshDirty incrementally keeps the physical exact index consistent with
+// RefreshDirty incrementally keeps the mutable overlay consistent with
 // new/dirty/deleted Memories. It does not interpret Memory semantics.
 func (r *SparseActivationRuntime) RefreshDirty(e *Engine) {
 	if e == nil {
@@ -300,13 +322,34 @@ func queryActivationFeatures(q string, _ int) []string {
 	return []string{"id:" + raw, "tag:" + raw, "trigger:" + raw}
 }
 
+func activationShadowedIDs(e *Engine) map[string]bool {
+	out := map[string]bool{}
+	if e == nil {
+		return out
+	}
+	e.dataMu.RLock()
+	defer e.dataMu.RUnlock()
+	for id := range e.dirtyIDs {
+		out[id] = true
+	}
+	for id := range e.newIDs {
+		out[id] = true
+	}
+	for id, deleted := range e.deletedIDs {
+		if deleted {
+			out[id] = true
+		}
+	}
+	return out
+}
+
 // Activate returns an exact physical candidate set.
 //
 // The legacy topK parameter is treated only as a transport/resource cap.
 // Candidates are sorted by stable physical identity, not FeatureHit or Score.
 // Memory-owned executable structures are responsible for relevance ranking and
 // choosing which candidate to activate cognitively.
-func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (ActivationResult, error) {
+func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (ActivationResult, error) {
 	start := time.Now()
 	atomic.AddUint64(&r.queries, 1)
 	if topK <= 0 {
@@ -323,6 +366,27 @@ func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (A
 	}
 
 	hit := map[string]int{}
+	r.mu.RLock()
+	persistent := r.persistentBase
+	r.mu.RUnlock()
+
+	if persistent {
+		shadowed := activationShadowedIDs(e)
+		for _, f := range qf {
+			ids, err := e.store.PhysicalFeatureIDs(f)
+			if err != nil {
+				return ActivationResult{}, err
+			}
+			for _, id := range ids {
+				if !shadowed[id] {
+					hit[id]++
+				}
+			}
+		}
+	}
+
+	// Overlay always wins for dirty/new records. On legacy stores it contains
+	// the complete in-memory index built by the compatibility scan.
 	r.mu.RLock()
 	for _, f := range qf {
 		for id := range r.postings[f] {
@@ -352,12 +416,16 @@ func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (A
 		})
 	}
 
+	backend := "cpu-exact-index-legacy-overlay"
+	if persistent {
+		backend = "persisted-exact-index+overlay"
+	}
 	return ActivationResult{
 		Query:          query,
 		Candidates:     out,
 		CandidateCount: count,
 		IndexedNodes:   int(atomic.LoadInt64(&r.nodes)),
-		Backend:        "cpu-exact-index-stable-page",
+		Backend:        backend,
 		ElapsedUS:      time.Since(start).Microseconds(),
 	}, nil
 }
@@ -365,6 +433,8 @@ func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (A
 func (r *SparseActivationRuntime) Info() map[string]any {
 	r.mu.RLock()
 	features := len(r.postings)
+	overlayNodes := len(r.nodeFeature)
+	persistent := r.persistentBase
 	r.mu.RUnlock()
 	q := atomic.LoadUint64(&r.queries)
 	c := atomic.LoadUint64(&r.candidates)
@@ -372,19 +442,27 @@ func (r *SparseActivationRuntime) Info() map[string]any {
 	if q > 0 {
 		avg = float64(c) / float64(q)
 	}
+	backend := "cpu-exact-index-legacy-overlay"
+	if persistent {
+		backend = "persisted-exact-index+overlay"
+	}
 	return map[string]any{
-		"mode":              "physical-exact-index",
-		"indexed_nodes":     atomic.LoadInt64(&r.nodes),
-		"features":          features,
-		"queries":           q,
-		"candidate_total":   c,
-		"avg_candidates":    avg,
-		"last_backend":      "cpu-exact-index-stable-page",
-		"default_top_k":     r.topK,
-		"physical_cap_only": true,
-		"selection_order":   "stable-memory-id",
-		"cognitive_ranking": false,
-		"qualification":     activationQualificationInfo(),
+		"mode":                      "physical-exact-index",
+		"indexed_nodes":             atomic.LoadInt64(&r.nodes),
+		"overlay_nodes":             overlayNodes,
+		"overlay_features":          features,
+		"queries":                   q,
+		"candidate_total":           c,
+		"avg_candidates":            avg,
+		"last_backend":              backend,
+		"default_top_k":             r.topK,
+		"physical_cap_only":         true,
+		"selection_order":           "stable-memory-id",
+		"state_field_limit":         0,
+		"persisted_secondary_index": persistent,
+		"legacy_full_scan_fallback": !persistent,
+		"cognitive_ranking":         false,
+		"qualification":             activationQualificationInfo(),
 	}
 }
 
