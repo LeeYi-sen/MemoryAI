@@ -27,7 +27,13 @@ func (e *Engine) localFabricEngines() []*Engine {
 	sort.Slice(items, func(i, j int) bool { return items[i].path < items[j].path })
 	out := make([]*Engine, 0, len(items)+1)
 	out = append(out, e)
+	if e.manifest.Role == "core" {
+		rememberFabricOwner(e, e)
+	}
 	for _, item := range items {
+		if e.manifest.Role == "core" {
+			rememberFabricOwner(e, item.eng)
+		}
 		out = append(out, item.eng)
 	}
 	return out
@@ -71,6 +77,7 @@ func (e *Engine) resolveLocalFabricMemory(id string) (*Engine, *Memory, error) {
 	if owner == nil {
 		return nil, nil, io.EOF
 	}
+	rememberFabricOwner(e, owner)
 	return owner, found, nil
 }
 
@@ -156,9 +163,10 @@ func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 	}
 	automaticShardMu.Lock()
 	defer automaticShardMu.Unlock()
-	owner, _, err := e.resolveLocalFabricMemory(q.ID)
+	root := fabricRootFor(e)
+	owner, _, err := root.resolveLocalFabricMemory(q.ID)
 	if err == nil {
-		if owner != e && owner.manifest.Role != "storage" {
+		if owner != root && owner.manifest.Role != "storage" {
 			return fmt.Errorf("Memory %q is owned by non-writable local body role %q", q.ID, owner.manifest.Role)
 		}
 		return upsertExplicitMemoryOnOwner(owner, q)
@@ -166,26 +174,27 @@ func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 	if !errors.Is(err, io.EOF) {
 		return err
 	}
-	switch e.manifest.Role {
+	switch root.manifest.Role {
 	case "core":
-		return e.placeRuntimeMemoryLocked(q)
+		return root.placeRuntimeMemoryLocked(q)
 	case "storage":
-		if !shardHasCapacity(e, 1) {
+		if !shardHasCapacity(root, 1) {
 			return fmt.Errorf("storage body full: %d Memory limit reached", memoryShardMax())
 		}
-		e.addRuntimeMemory(q)
+		root.addRuntimeMemory(q)
 		return nil
 	default:
-		return fmt.Errorf("explicit Memory creation requires core or storage body, got role %q", e.manifest.Role)
+		return fmt.Errorf("explicit Memory creation requires core or storage body, got role %q", root.manifest.Role)
 	}
 }
 
 func (e *Engine) deleteExplicitMemoryBounded(id string) error {
-	owner, m, err := e.resolveLocalFabricMemory(id)
+	root := fabricRootFor(e)
+	owner, m, err := root.resolveLocalFabricMemory(id)
 	if err != nil {
 		return err
 	}
-	if owner != e && owner.manifest.Role != "storage" {
+	if owner != root && owner.manifest.Role != "storage" {
 		return fmt.Errorf("Memory %q is owned by non-writable local body role %q", id, owner.manifest.Role)
 	}
 	owner.dataMu.Lock()
