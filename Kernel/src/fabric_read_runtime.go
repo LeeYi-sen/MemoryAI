@@ -83,24 +83,68 @@ func memoryHasActivationFeature(m *Memory, feature string) bool {
 	return false
 }
 
+func addFabricOwner(seen map[string]*Engine, id string, owner *Engine) error {
+	if id == "" || owner == nil {
+		return nil
+	}
+	if previous := seen[id]; previous != nil && previous != owner {
+		return duplicateFabricIdentityError(id)
+	}
+	seen[id] = owner
+	return nil
+}
+
 func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[string]*Engine, error) {
 	seen := map[string]*Engine{}
 	for _, candidate := range e.localFabricEngines() {
 		shadowed := activationShadowedIDs(candidate)
-		ids, err := candidate.storePhysicalFeatureIDsLocal(feature)
-		if err != nil && !errors.Is(err, io.EOF) {
+		indexed, err := candidate.storeHasPhysicalFeatureIndexLocal()
+		if err != nil {
 			return nil, nil, err
 		}
-		for _, id := range ids {
-			if shadowed[id] {
-				continue
+
+		if indexed {
+			ids, err := candidate.storePhysicalFeatureIDsLocal(feature)
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, nil, err
 			}
-			if previous := seen[id]; previous != nil && previous != candidate {
-				return nil, nil, duplicateFabricIdentityError(id)
+			for _, id := range ids {
+				if shadowed[id] {
+					continue
+				}
+				if err := addFabricOwner(seen, id, candidate); err != nil {
+					return nil, nil, err
+				}
 			}
-			seen[id] = candidate
+		} else {
+			// Compatibility is isolated to this legacy body. Other shards keep
+			// using their persisted exact index; one old file never forces a
+			// whole-Fabric startup or query scan.
+			ids, err := candidate.storeAllIDsLocal()
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, nil, err
+			}
+			for _, id := range ids {
+				if shadowed[id] {
+					continue
+				}
+				m, er := candidate.storeGetID(id)
+				if er != nil {
+					if errors.Is(er, io.EOF) {
+						continue
+					}
+					return nil, nil, er
+				}
+				if memoryHasActivationFeature(m, feature) {
+					if err := addFabricOwner(seen, id, candidate); err != nil {
+						return nil, nil, err
+					}
+				}
+			}
 		}
 
+		// Dirty/new overlay always shadows persisted state, whether the body is
+		// indexed or legacy.
 		candidate.dataMu.RLock()
 		for id := range shadowed {
 			if candidate.deletedIDs[id] {
@@ -110,11 +154,10 @@ func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[st
 			if m == nil || !memoryHasActivationFeature(m, feature) {
 				continue
 			}
-			if previous := seen[id]; previous != nil && previous != candidate {
+			if err := addFabricOwner(seen, id, candidate); err != nil {
 				candidate.dataMu.RUnlock()
-				return nil, nil, duplicateFabricIdentityError(id)
+				return nil, nil, err
 			}
-			seen[id] = candidate
 		}
 		candidate.dataMu.RUnlock()
 	}
