@@ -12,23 +12,27 @@ func (r *SparseActivationRuntime) ExactFeatureIDs(e *Engine, feature string) ([]
 	r.mu.RUnlock()
 
 	if persistent {
-		shadowed := activationShadowedIDs(e)
+		// storePhysicalFeatureIDs is the authoritative Fabric view: it already
+		// merges persisted postings with per-body dirty/new/deleted overlays.
+		// Filtering its result again through root-only shadow state would remove
+		// valid live records from the primary body.
 		ids, err := e.storePhysicalFeatureIDs(feature)
 		if err != nil {
 			return nil, err
 		}
 		for _, id := range ids {
-			if !shadowed[id] {
-				hit[id] = struct{}{}
-			}
+			hit[id] = struct{}{}
 		}
 	}
 
-	r.mu.RLock()
-	for id := range r.postings[feature] {
-		hit[id] = struct{}{}
+	// Historical non-persistent mode alone uses the in-memory posting map.
+	if !persistent {
+		r.mu.RLock()
+		for id := range r.postings[feature] {
+			hit[id] = struct{}{}
+		}
+		r.mu.RUnlock()
 	}
-	r.mu.RUnlock()
 
 	ids := make([]string, 0, len(hit))
 	for id := range hit {
