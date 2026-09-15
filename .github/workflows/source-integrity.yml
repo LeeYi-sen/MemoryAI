@@ -30,9 +30,10 @@ jobs:
       - name: Restore build source
         run: python3 tools/restore_source.py
 
-      - name: Compile migration tools
+      - name: Compile source migration tools
         run: |
           python3 -m py_compile tools/restore_source.py
+          python3 -m py_compile tools/kernel_*_overlay.py
           python3 -m py_compile tools/migrations/*.py
 
       - name: Enforce formatted Go source
@@ -44,23 +45,84 @@ jobs:
             exit 1
           fi
 
-      - name: Compile Kernel package
+      - name: Compile and test Kernel package
         env:
           GO111MODULE: "off"
         run: go test ./Kernel/src
 
-      - name: Assert activation remains physical-only
+      - name: Assert Kernel remains physical-only
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('Kernel/src/activation_runtime.go').read_text(encoding='utf-8')
-          required = ['Score:      0', 'selection_order', 'stable-memory-id', 'cognitive_ranking', 'false']
-          missing = [x for x in required if x not in p]
+
+          kernel = Path('Kernel/src/kernel.go').read_text(encoding='utf-8')
+          activation = Path('Kernel/src/activation_runtime.go').read_text(encoding='utf-8')
+          scheduler = Path('Kernel/src/scheduler_runtime.go').read_text(encoding='utf-8')
+          lazy = Path('Kernel/src/speculative_lazy.go').read_text(encoding='utf-8')
+          mesh = Path('Kernel/src/mesh_runtime.go').read_text(encoding='utf-8')
+
+          required_kernel = [
+              'RuntimeExecCount uint64',
+              'bindMeshEngine(e)',
+              'speculativeAdditionalForbiddenPrimitive(op.Code)',
+              'recordSpeculativeBaseline(e, id, m)',
+          ]
+          missing = [x for x in required_kernel if x not in kernel]
+          if missing:
+              raise SystemExit(f'generated Kernel boundary assertions missing: {missing}')
+
+          forbidden_kernel = [
+              'reuse_count,omitempty',
+              'real_trials,omitempty',
+              'successes,omitempty',
+              'total_reward,omitempty',
+              'total_cost,omitempty',
+              'stability,omitempty',
+              'case "metric_add"',
+              'm.Reuse++',
+              'if src.Reward > dst.Reward',
+              'if src.Stability > dst.Stability',
+          ]
+          bad = [x for x in forbidden_kernel if x in kernel]
+          if bad:
+              raise SystemExit(f'cognitive metric logic reintroduced into Kernel ABI: {bad}')
+
+          required_activation = [
+              'Score:      0',
+              'selection_order',
+              'stable-memory-id',
+              'cognitive_ranking',
+              'false',
+              'persisted_secondary_index',
+          ]
+          missing = [x for x in required_activation if x not in activation]
           if missing:
               raise SystemExit(f'activation physical-boundary assertions missing: {missing}')
-          forbidden = ['FeatureHit > out[j].FeatureHit', 'exactActivationScore(']
-          bad = [x for x in forbidden if x in p]
+          forbidden_activation = ['FeatureHit > out[j].FeatureHit', 'exactActivationScore(']
+          bad = [x for x in forbidden_activation if x in activation]
           if bad:
               raise SystemExit(f'cognitive activation ranking reintroduced: {bad}')
-          print('activation physical-only boundary: PASS')
+
+          if 'snapshotForSpeculationLazy(snapshotMemoryLimit())' not in scheduler:
+              raise SystemExit('scheduler no longer uses lazy speculative snapshots')
+          if 'snapshotForSpeculation(snapshotMemoryLimit())' in scheduler:
+              raise SystemExit('scheduler regressed to full Memory snapshot')
+          for token in ['ctx.max > 0', 'snapshot working-set limit exceeded', 'max: maxWorkingSet']:
+              if token not in lazy:
+                  raise SystemExit(f'lazy read-set bound missing: {token}')
+
+          mesh_required = [
+              'remote_memory_semantics',
+              'direct-read-no-import',
+              'shared_authorization',
+              'sovereign-memory-event',
+              'e.fireEvent("mesh.shared.proposal"',
+              'routing',
+              'stable-physical-availability-only',
+          ]
+          missing = [x for x in mesh_required if x not in mesh]
+          if missing:
+              raise SystemExit(f'Sovereign Mesh boundary assertions missing: {missing}')
+
+          print('Kernel physical-only/source-integrity boundaries: PASS')
           PY
