@@ -229,7 +229,7 @@ func (r *SparseActivationRuntime) Build(e *Engine) error {
 		return fmt.Errorf("physical activation index requires core Memory.mem")
 	}
 
-	persisted, err := e.store.HasPhysicalFeatureIndex()
+	persisted, err := e.storeHasPhysicalFeatureIndex()
 	if err != nil {
 		return err
 	}
@@ -237,7 +237,7 @@ func (r *SparseActivationRuntime) Build(e *Engine) error {
 		// New-format stores resolve exact physical features directly from the
 		// persisted secondary index. Only dirty/new in-memory records need an
 		// overlay; startup no longer walks the entire Memory body.
-		r.reset(true, e.store.memoryCount)
+		r.reset(true, e.storeMemoryCount())
 		r.RefreshDirty(e)
 		return nil
 	}
@@ -245,13 +245,13 @@ func (r *SparseActivationRuntime) Build(e *Engine) error {
 	// Legacy compatibility path. It is deliberately isolated and reported in
 	// Info(); the next rebuilt/persisted store will contain the physical index
 	// and subsequent startups take the non-scanning path above.
-	ids, err := e.store.AllIDs()
+	ids, err := e.storeAllIDs()
 	if err != nil {
 		return err
 	}
 	r.reset(false, 0)
 	for _, id := range ids {
-		m, er := e.store.GetID(id)
+		m, er := e.storeGetID(id)
 		if er == nil {
 			r.replaceNode(m)
 		}
@@ -373,7 +373,7 @@ func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (A
 	if persistent {
 		shadowed := activationShadowedIDs(e)
 		for _, f := range qf {
-			ids, err := e.store.PhysicalFeatureIDs(f)
+			ids, err := e.storePhysicalFeatureIDs(f)
 			if err != nil {
 				return ActivationResult{}, err
 			}
