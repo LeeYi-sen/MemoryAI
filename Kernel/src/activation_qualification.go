@@ -29,10 +29,8 @@ var activationQualification atomic.Value // ActivationQualificationReport
 type referenceActivationNode struct {
 	id       string
 	features []string
-	content  string
 	tags     []string
 	trigger  []string
-	fixed    [6]float32
 }
 
 func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error) {
@@ -52,12 +50,9 @@ func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error
 		if er != nil || m == nil {
 			continue
 		}
-		v := activationMetricVector(m, 0, 1)
-		out = append(out, referenceActivationNode{id: id, features: activationFeaturesForMemory(m, globalActivationRuntime.maxTokens), content: m.Content, tags: append([]string(nil), m.Tags...), trigger: append([]string(nil), m.Trigger...), fixed: v})
+		out = append(out, referenceActivationNode{id: id, features: activationFeaturesForMemory(m, globalActivationRuntime.maxState), tags: append([]string(nil), m.Tags...), trigger: append([]string(nil), m.Trigger...)})
 	}
-	// Overlay post-load canonical cache changes without consulting the sparse
-	// index. This keeps the reference independent while avoiding repeated disk
-	// scans for every qualification query.
+
 	e.dataMu.RLock()
 	cached := make([]*Memory, 0, len(e.cache))
 	deleted := make(map[string]bool, len(e.deletedIDs))
@@ -68,9 +63,11 @@ func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error
 		cp := *m
 		cp.Tags = append([]string(nil), m.Tags...)
 		cp.Trigger = append([]string(nil), m.Trigger...)
+		cp.State = cloneActivationState(m.State)
 		cached = append(cached, &cp)
 	}
 	e.dataMu.RUnlock()
+
 	byID := make(map[string]referenceActivationNode, len(out)+len(cached))
 	for _, n := range out {
 		if !deleted[n.id] {
@@ -81,8 +78,7 @@ func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error
 		if m == nil || m.ID == "" || deleted[m.ID] {
 			continue
 		}
-		v := activationMetricVector(m, 0, 1)
-		byID[m.ID] = referenceActivationNode{id: m.ID, features: activationFeaturesForMemory(m, globalActivationRuntime.maxTokens), content: m.Content, tags: append([]string(nil), m.Tags...), trigger: append([]string(nil), m.Trigger...), fixed: v}
+		byID[m.ID] = referenceActivationNode{id: m.ID, features: activationFeaturesForMemory(m, globalActivationRuntime.maxState), tags: append([]string(nil), m.Tags...), trigger: append([]string(nil), m.Trigger...)}
 	}
 	out = out[:0]
 	for _, n := range byID {
@@ -93,17 +89,15 @@ func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error
 }
 
 func referenceActivationFullScanCorpus(corpus []referenceActivationNode, query string, topK int) (ActivationResult, error) {
-	qf := queryActivationFeatures(query, globalActivationRuntime.maxTokens)
+	qf := queryActivationFeatures(query, globalActivationRuntime.maxState)
 	if len(qf) == 0 {
-		return ActivationResult{Query: query, Backend: "cpu-reference", IndexedNodes: len(corpus)}, nil
+		return ActivationResult{Query: query, Backend: "cpu-exact-reference", IndexedNodes: len(corpus)}, nil
 	}
 	qset := map[string]bool{}
 	for _, q := range qf {
 		qset[q] = true
 	}
-	vectors := make([][6]float32, 0)
-	kept := make([]string, 0)
-	hits := make([]int, 0)
+	out := make([]ActivationCandidate, 0)
 	for _, n := range corpus {
 		hitCount := 0
 		for _, f := range n.features {
@@ -114,29 +108,19 @@ func referenceActivationFullScanCorpus(corpus []referenceActivationNode, query s
 		if hitCount == 0 {
 			continue
 		}
-		v := n.fixed
-		v[0] = float32(hitCount) / float32(len(qf))
-		vectors = append(vectors, v)
-		kept = append(kept, n.id)
-		hits = append(hits, hitCount)
-	}
-	weights := [6]float32{0.52, 0.12, 0.10, 0.08, 0.10, 0.08}
-	scores := globalParallelRuntime.score6CPU(vectors, weights)
-	out := make([]ActivationCandidate, len(scores))
-	for i, sc := range scores {
-		out[i] = ActivationCandidate{ID: kept[i], Score: sc, FeatureHit: hits[i]}
+		out = append(out, ActivationCandidate{ID: n.id, Score: exactActivationScore(hitCount, len(qf)), FeatureHit: hitCount})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Score == out[j].Score {
-			return out[i].ID < out[j].ID
+		if out[i].FeatureHit != out[j].FeatureHit {
+			return out[i].FeatureHit > out[j].FeatureHit
 		}
-		return out[i].Score > out[j].Score
+		return out[i].ID < out[j].ID
 	})
 	count := len(out)
 	if topK > 0 && topK < len(out) {
 		out = out[:topK]
 	}
-	return ActivationResult{Query: query, Candidates: out, CandidateCount: count, IndexedNodes: len(corpus), Backend: "cpu-reference"}, nil
+	return ActivationResult{Query: query, Candidates: out, CandidateCount: count, IndexedNodes: len(corpus), Backend: "cpu-exact-reference"}, nil
 }
 
 func activationQualificationQueriesFromCorpus(corpus []referenceActivationNode, limit int) []string {
@@ -163,14 +147,10 @@ func activationQualificationQueriesFromCorpus(corpus []referenceActivationNode, 
 		n := corpus[i]
 		add(n.id)
 		if len(n.tags) > 0 {
-			add(n.tags[0])
+			add("tag:" + n.tags[0])
 		}
 		if len(n.trigger) > 0 {
-			add(n.trigger[0])
-		}
-		ts := activationTokens(n.content, 4)
-		if len(ts) > 0 {
-			add(ts[0])
+			add("trigger:" + n.trigger[0])
 		}
 	}
 	return queries
@@ -178,7 +158,7 @@ func activationQualificationQueriesFromCorpus(corpus []referenceActivationNode, 
 
 func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	start := time.Now()
-	report := ActivationQualificationReport{Mode: "full-scan-reference-vs-sparse-index-topk"}
+	report := ActivationQualificationReport{Mode: "full-scan-reference-vs-physical-exact-index"}
 	if err := globalActivationRuntime.Build(e); err != nil {
 		return report, err
 	}
@@ -196,7 +176,6 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	report.Queries = len(queries)
 	report.IndexedNodes = int(atomic.LoadInt64(&globalActivationRuntime.nodes))
 	topK := globalActivationRuntime.topK
-	tol := float32(1e-3)
 	for _, q := range queries {
 		sparse, er := globalActivationRuntime.Activate(e, q, topK)
 		if er != nil {
@@ -220,7 +199,7 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 		for i := range sparse.Candidates {
 			if sparse.Candidates[i].ID != ref.Candidates[i].ID || sparse.Candidates[i].FeatureHit != ref.Candidates[i].FeatureHit {
 				exact = false
-				report.Failure = fmt.Sprintf("topk semantic mismatch query=%q rank=%d sparse=%s reference=%s", q, i, sparse.Candidates[i].ID, ref.Candidates[i].ID)
+				report.Failure = fmt.Sprintf("topk physical mismatch query=%q rank=%d sparse=%s reference=%s", q, i, sparse.Candidates[i].ID, ref.Candidates[i].ID)
 				break
 			}
 			d := sparse.Candidates[i].Score - ref.Candidates[i].Score
@@ -230,7 +209,7 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 			if d > report.MaxScoreDiff {
 				report.MaxScoreDiff = d
 			}
-			if d > tol {
+			if d != 0 {
 				exact = false
 				report.Failure = fmt.Sprintf("score mismatch query=%q rank=%d diff=%g", q, i, d)
 				break
@@ -245,7 +224,7 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	report.ElapsedMS = float64(time.Since(start).Microseconds()) / 1000
 	activationQualification.Store(report)
 	if !report.OK {
-		return report, fmt.Errorf("sparse activation qualification failed: %s", report.Failure)
+		return report, fmt.Errorf("physical exact activation qualification failed: %s", report.Failure)
 	}
 	return report, nil
 }
