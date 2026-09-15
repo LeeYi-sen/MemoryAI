@@ -226,12 +226,13 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 			continue
 		}
 		if f.Vars["__txn_canonical"] == "1" {
-			owner, _, er := root.resolveLocalFabricMemory(id)
-			if er != nil {
+			// The outer scheduler already owns the canonical lane. Do not re-enter
+			// Scheduler/commitMu here, but keep the root Engine as execution context
+			// so a handler in one passive shard can call/read/write sibling shards.
+			if _, _, er := root.resolveLocalFabricMemory(id); er != nil {
 				return er
 			}
-			rememberFabricOwner(root, owner)
-			if err := owner.run(id, f); err != nil {
+			if err := root.run(id, f); err != nil {
 				return err
 			}
 			continue
