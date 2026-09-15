@@ -64,7 +64,7 @@ GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-j
 - Added Memory-owned Experience with observation/action/outcome, lineage, hashes and validation history.
 
 ### Entry 010
-- Base HEAD: `639b998e1f00d136ef7d83e43219cfd8e4ea81f7`.
+- Base HEAD: `639b998e1f00d136ef7f83e43219cfd8e4ea81f7`.
 - Added deterministic Experience recurrence -> candidate Memory Structure formation and provenance.
 
 ### Entry 011
@@ -99,4 +99,14 @@ GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-j
 - No new runtime artifact, database, executor, scheduler or sidecar was introduced. The complete state remains covered by the existing `memory.mem` Memory Growth persistence record.
 - Added regression coverage for successful repeated-feedback revision and the no-mutation single-feedback case.
 - Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
-- Next: move from single-Structure correction to repeated validated Structure recombination/mutation, then connect that to autonomous self-growth scheduling.
+
+### Entry 016
+- Base HEAD: `f5f988f19a55f5c9a80b7f043b0e886c30c337e7`.
+- Added deterministic validated-Structure recombination: two validated executable Structures can produce a recombination candidate by replacing one non-terminal Op at a deterministic boundary with an Op already present in the second parent.
+- Recombination preserves both parent Structure IDs, source Experience provenance, executable Program and mutation index; no arbitrary program generation is introduced.
+- Added a Memory-owned materialization bridge: after real execution creates an Experience, the recombination candidate adopts that real Experience pattern and enters the existing ordinary Candidate -> Reality Validation path.
+- Added finalization that restores recombination lineage and executable Program only after existing validation has promoted the candidate; parent Structures remain intact.
+- All new state is ordinary Memory Growth state and is covered by the existing `__memoryai.growth.core` record inside `memory.mem`; no database, sidecar, new executor, scheduler or ranking subsystem was introduced.
+- Added targeted tests for deterministic mutation, parent lineage, real-experience materialization, finalization and rejection of unvalidated parents.
+- Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
+- Next: connect repeated validated recombination candidates to autonomous self-growth scheduling and then build cross-Structure mutation selection from Memory-native evidence.
