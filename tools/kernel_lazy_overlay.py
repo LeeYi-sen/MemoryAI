@@ -25,7 +25,9 @@ def apply_kernel_lazy_overlay(raw: bytes) -> bytes:
 \tif err != nil {
 \t\treturn nil, err
 \t}
-\trecordSpeculativeBaseline(e, id, m)
+\tif err := recordSpeculativeBaseline(e, id, m); err != nil {
+\t\treturn nil, err
+\t}
 \te.dataMu.Lock()
 '''
     if text.count(old) != 1:
