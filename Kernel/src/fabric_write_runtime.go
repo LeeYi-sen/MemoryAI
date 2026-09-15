@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// localFabricEngines returns a deterministic snapshot of the primary body plus
-// mounted local bodies. It is physical ownership discovery only; it does not
-// infer semantic relationships between Memory structures.
 func (e *Engine) localFabricEngines() []*Engine {
 	if e == nil {
 		return nil
@@ -36,9 +33,17 @@ func (e *Engine) localFabricEngines() []*Engine {
 	return out
 }
 
-// resolveLocalFabricMemory finds the one physical local owner of an ID. More
-// than one owner is corruption: silently choosing one would preserve duplicate
-// identity across shards and make later persistence nondeterministic.
+func (e *Engine) mountedFabricEngines() []*Engine {
+	all := e.localFabricEngines()
+	out := make([]*Engine, 0, len(all))
+	for _, candidate := range all {
+		if candidate != nil && candidate != e {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
 func (e *Engine) resolveLocalFabricMemory(id string) (*Engine, *Memory, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -69,12 +74,12 @@ func (e *Engine) resolveLocalFabricMemory(id string) (*Engine, *Memory, error) {
 	return owner, found, nil
 }
 
-// listTagFabricOwned merges local tag indexes and preserves the physical owner
-// discovered by that same indexed lookup. Speculative activation can reuse the
-// owner hint instead of scanning every shard again for every returned ID.
-func (e *Engine) listTagFabricOwned(tag string) ([]string, map[string]*Engine, error) {
+func listTagAcrossEngines(engines []*Engine, tag string) ([]string, map[string]*Engine, error) {
 	seen := map[string]*Engine{}
-	for _, candidate := range e.localFabricEngines() {
+	for _, candidate := range engines {
+		if candidate == nil {
+			continue
+		}
 		ids, err := candidate.listTagLocal(tag)
 		if err != nil {
 			return nil, nil, err
@@ -94,7 +99,14 @@ func (e *Engine) listTagFabricOwned(tag string) ([]string, map[string]*Engine, e
 	return out, seen, nil
 }
 
-// listTagFabric keeps the historical API for non-speculative callers.
+func (e *Engine) listTagFabricOwned(tag string) ([]string, map[string]*Engine, error) {
+	return listTagAcrossEngines(e.localFabricEngines(), tag)
+}
+
+func (e *Engine) listTagMountedShardsOwned(tag string) ([]string, map[string]*Engine, error) {
+	return listTagAcrossEngines(e.mountedFabricEngines(), tag)
+}
+
 func (e *Engine) listTagFabric(tag string) ([]string, error) {
 	ids, _, err := e.listTagFabricOwned(tag)
 	return ids, err
@@ -104,14 +116,10 @@ func upsertExplicitMemoryOnOwner(owner *Engine, q *Memory) error {
 	if owner == nil || q == nil || strings.TrimSpace(q.ID) == "" {
 		return fmt.Errorf("explicit Memory update requires physical owner and id")
 	}
-
-	// Probe persisted state before taking dataMu; storeGetID itself briefly uses
-	// dataMu to pin the physical store descriptor.
 	persistedOld, persistedErr := owner.storeGetID(q.ID)
 	if persistedErr != nil && !errors.Is(persistedErr, io.EOF) {
 		return persistedErr
 	}
-
 	owner.dataMu.Lock()
 	if old := owner.cache[q.ID]; old != nil {
 		for _, tag := range old.Tags {
@@ -138,10 +146,6 @@ func upsertExplicitMemoryOnOwner(owner *Engine, q *Memory) error {
 	return nil
 }
 
-// upsertExplicitMemoryBounded is the only checked local import/sync write path.
-// Existing IDs are updated in their current physical owner. New IDs use the
-// same bounded shard placement lock as memory_new, so imports cannot bypass the
-// per-body bound or race a runtime insertion into a duplicate physical owner.
 func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("explicit Memory upsert requires engine and id")
@@ -150,10 +154,8 @@ func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 	if q.State == nil {
 		q.State = map[string]any{}
 	}
-
 	automaticShardMu.Lock()
 	defer automaticShardMu.Unlock()
-
 	owner, _, err := e.resolveLocalFabricMemory(q.ID)
 	if err == nil {
 		if owner != e && owner.manifest.Role != "storage" {
@@ -164,7 +166,6 @@ func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 	if !errors.Is(err, io.EOF) {
 		return err
 	}
-
 	switch e.manifest.Role {
 	case "core":
 		return e.placeRuntimeMemoryLocked(q)
