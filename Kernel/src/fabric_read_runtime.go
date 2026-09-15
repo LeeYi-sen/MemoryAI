@@ -6,29 +6,43 @@ import (
 	"sort"
 )
 
+// resolveSpecificOwnerMemoryCopy returns a detached snapshot from one already
+// known physical owner. It deliberately avoids Fabric-wide discovery.
+func resolveSpecificOwnerMemoryCopy(owner *Engine, id string) (*Memory, error) {
+	if owner == nil {
+		return nil, io.EOF
+	}
+	m, err := owner.resolveIDLocal(id)
+	if err != nil {
+		return nil, err
+	}
+	owner.dataMu.RLock()
+	defer owner.dataMu.RUnlock()
+	if owner.deletedIDs[id] {
+		return nil, io.EOF
+	}
+	if cached := owner.cache[id]; cached != nil {
+		return copyMemory(cached), nil
+	}
+	if m == nil {
+		return nil, io.EOF
+	}
+	return copyMemory(m), nil
+}
+
 // resolveLocalFabricMemoryCopy returns a detached snapshot of one local Memory
 // plus its physical owner. The copy boundary prevents speculative cognition from
 // retaining a live pointer into another shard's mutable cache.
 func (e *Engine) resolveLocalFabricMemoryCopy(id string) (*Engine, *Memory, error) {
-	owner, resolved, err := e.resolveLocalFabricMemory(id)
+	owner, _, err := e.resolveLocalFabricMemory(id)
 	if err != nil {
 		return nil, nil, err
 	}
-	owner.dataMu.RLock()
-	if owner.deletedIDs[id] {
-		owner.dataMu.RUnlock()
-		return nil, nil, io.EOF
+	out, err := resolveSpecificOwnerMemoryCopy(owner, id)
+	if err != nil {
+		return nil, nil, err
 	}
-	if cached := owner.cache[id]; cached != nil {
-		out := copyMemory(cached)
-		owner.dataMu.RUnlock()
-		return owner, out, nil
-	}
-	owner.dataMu.RUnlock()
-	if resolved == nil {
-		return nil, nil, io.EOF
-	}
-	return owner, copyMemory(resolved), nil
+	return owner, out, nil
 }
 
 // resolveMountedShardMemoryCopy is used only after a lazy speculative Engine
@@ -41,7 +55,6 @@ func (e *Engine) resolveMountedShardMemoryCopy(id string) (*Engine, *Memory, err
 		return nil, nil, io.EOF
 	}
 	var owner *Engine
-	var found *Memory
 	for _, candidate := range e.localFabricEngines() {
 		if candidate == nil || candidate == e {
 			continue
@@ -60,20 +73,15 @@ func (e *Engine) resolveMountedShardMemoryCopy(id string) (*Engine, *Memory, err
 			return nil, nil, duplicateFabricIdentityError(id)
 		}
 		owner = candidate
-		found = m
 	}
-	if owner == nil || found == nil {
+	if owner == nil {
 		return nil, nil, io.EOF
 	}
-	owner.dataMu.RLock()
-	defer owner.dataMu.RUnlock()
-	if owner.deletedIDs[id] {
-		return nil, nil, io.EOF
+	out, err := resolveSpecificOwnerMemoryCopy(owner, id)
+	if err != nil {
+		return nil, nil, err
 	}
-	if cached := owner.cache[id]; cached != nil {
-		return owner, copyMemory(cached), nil
-	}
-	return owner, copyMemory(found), nil
+	return owner, out, nil
 }
 
 func memoryHasActivationFeature(m *Memory, feature string) bool {
@@ -85,23 +93,24 @@ func memoryHasActivationFeature(m *Memory, feature string) bool {
 	return false
 }
 
-// physicalFeatureIDsFabric merges the exact physical secondary indexes of all
-// mounted local bodies. Dirty/new overlays shadow persisted postings in their
-// owning body. No semantic score or rank is introduced here.
-func (e *Engine) physicalFeatureIDsFabric(feature string) ([]string, error) {
+// physicalFeatureIDsFabricOwned merges the exact physical secondary indexes of
+// all mounted local bodies and preserves each result's physical owner. Dirty/new
+// overlays shadow persisted postings in their owning body. No semantic score or
+// rank is introduced here.
+func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[string]*Engine, error) {
 	seen := map[string]*Engine{}
 	for _, candidate := range e.localFabricEngines() {
 		shadowed := activationShadowedIDs(candidate)
 		ids, err := candidate.storePhysicalFeatureIDs(feature)
 		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, id := range ids {
 			if shadowed[id] {
 				continue
 			}
 			if previous := seen[id]; previous != nil && previous != candidate {
-				return nil, duplicateFabricIdentityError(id)
+				return nil, nil, duplicateFabricIdentityError(id)
 			}
 			seen[id] = candidate
 		}
@@ -117,7 +126,7 @@ func (e *Engine) physicalFeatureIDsFabric(feature string) ([]string, error) {
 			}
 			if previous := seen[id]; previous != nil && previous != candidate {
 				candidate.dataMu.RUnlock()
-				return nil, duplicateFabricIdentityError(id)
+				return nil, nil, duplicateFabricIdentityError(id)
 			}
 			seen[id] = candidate
 		}
@@ -129,7 +138,12 @@ func (e *Engine) physicalFeatureIDsFabric(feature string) ([]string, error) {
 		out = append(out, id)
 	}
 	sort.Strings(out)
-	return out, nil
+	return out, seen, nil
+}
+
+func (e *Engine) physicalFeatureIDsFabric(feature string) ([]string, error) {
+	ids, _, err := e.physicalFeatureIDsFabricOwned(feature)
+	return ids, err
 }
 
 func duplicateFabricIdentityError(id string) error {
