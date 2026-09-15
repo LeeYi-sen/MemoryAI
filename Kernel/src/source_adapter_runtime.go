@@ -104,7 +104,7 @@ func (e *Engine) deleteSourceAdapter(id string) error {
 	if !memoryHasTag(m, sourceAdapterTag) {
 		return fmt.Errorf("Memory id %s is not a source adapter", id)
 	}
-	return e.explicitDeleteMemory(m.ID)
+	return e.deleteExplicitMemoryBounded(m.ID)
 }
 
 func (e *Engine) listSourceAdapters() []map[string]any {
