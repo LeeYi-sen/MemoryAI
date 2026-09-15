@@ -67,6 +67,7 @@ func fabricRootFor(e *Engine) *Engine {
 			if root == e {
 				fabricRootRegistry.Delete(root)
 				unregisterActivePhysicalBody(root)
+				forgetMeshProposalReplayState(root)
 			}
 		} else {
 			registerActivePhysicalBody(root)
@@ -84,6 +85,9 @@ func fabricRootFor(e *Engine) *Engine {
 
 func forgetFabricOwner(e *Engine) {
 	if e != nil {
+		if e.manifest.Role == "core" {
+			forgetMeshProposalReplayState(e)
+		}
 		fabricRootRegistry.Delete(e)
 		unregisterActivePhysicalBody(e)
 	}

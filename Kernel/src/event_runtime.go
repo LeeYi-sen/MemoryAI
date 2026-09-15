@@ -278,5 +278,11 @@ func (e *Engine) fireEvent(name, subject string, f *Frame) error {
 			vars[k] = v
 		}
 	}
-	return e.enqueueEvent(f, newPhysicalEvent(name, subject, vars))
+	ev := newPhysicalEvent(name, subject, vars)
+	if strings.TrimSpace(name) == "mesh.shared.proposal" {
+		return executeMeshProposalEventOnce(e, f, ev, func() error {
+			return e.enqueueEvent(f, ev)
+		})
+	}
+	return e.enqueueEvent(f, ev)
 }
