@@ -6,11 +6,19 @@ import (
 	"sync"
 )
 
+type remoteBodyTxnLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
 // remoteBodyTxnLocks serializes a complete passive-body mutation lifecycle by
-// physical path: open -> mutate -> persist -> close. It is deliberately a
-// physical storage primitive only; no Memory semantics or routing policy live
-// here. Different body paths remain fully parallel.
-var remoteBodyTxnLocks sync.Map // map[string]*sync.Mutex
+// physical path: open -> mutate -> persist -> close. Registry entries are
+// reference-counted across both holders and waiters, so old shard paths do not
+// accumulate forever after their last transaction completes.
+var (
+	remoteBodyTxnLocksMu sync.Mutex
+	remoteBodyTxnLocks   = map[string]*remoteBodyTxnLockEntry{}
+)
 
 // passiveBodyTxnRelease binds a held physical-body lease to the temporary
 // passive Engine returned to one remote-node request. Engine.close releases it
@@ -31,10 +39,34 @@ func canonicalPhysicalBodyPath(path string) string {
 
 func acquireRemoteBodyTransaction(path string) func() {
 	key := canonicalPhysicalBodyPath(path)
-	actual, _ := remoteBodyTxnLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := actual.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	remoteBodyTxnLocksMu.Lock()
+	entry := remoteBodyTxnLocks[key]
+	if entry == nil {
+		entry = &remoteBodyTxnLockEntry{}
+		remoteBodyTxnLocks[key] = entry
+	}
+	entry.refs++
+	remoteBodyTxnLocksMu.Unlock()
+
+	entry.mu.Lock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			entry.mu.Unlock()
+			remoteBodyTxnLocksMu.Lock()
+			entry.refs--
+			if entry.refs == 0 && remoteBodyTxnLocks[key] == entry {
+				delete(remoteBodyTxnLocks, key)
+			}
+			remoteBodyTxnLocksMu.Unlock()
+		})
+	}
+}
+
+func remoteBodyTransactionRegistrySize() int {
+	remoteBodyTxnLocksMu.Lock()
+	defer remoteBodyTxnLocksMu.Unlock()
+	return len(remoteBodyTxnLocks)
 }
 
 func registerActivePhysicalBody(e *Engine) {
