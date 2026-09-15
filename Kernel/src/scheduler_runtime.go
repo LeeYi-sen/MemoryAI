@@ -22,8 +22,6 @@ var globalTxnScheduler = &txnScheduler{}
 
 func (s *txnScheduler) canonical(e *Engine, id string, f *Frame) error {
 	atomic.AddUint64(&s.canonicalRuns, 1)
-	// commitMu is also the canonical mutation lane. This guarantees that a
-	// conflict replay cannot interleave with another snapshot commit.
 	return e.run(id, f)
 }
 
@@ -34,8 +32,6 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	if f == nil {
 		return errors.New("transaction scheduler requires frame")
 	}
-	// Nested speculative execution stays inside the existing private snapshot.
-	// Its lazySnapshotContext already owns the shared physical store lease.
 	if e.speculative {
 		return e.run(id, f)
 	}
@@ -51,9 +47,6 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	}
 	defer atomic.AddInt64(&speculativeInflight, -1)
 
-	// snapshotForSpeculationLazy pins its own physical IndexedStore and releases
-	// it through releaseLazySpeculation. Keeping lease ownership in the snapshot
-	// primitive protects direct callers and avoids recursively acquiring RLock.
 	ce, base, err := e.snapshotForSpeculationLazy(snapshotMemoryLimit())
 	if err != nil {
 		if strings.Contains(err.Error(), "snapshot working-set limit exceeded") {
@@ -81,7 +74,7 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	diff := diffSnapshot(base, ce)
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
-	if !e.commitSnapshotDiff(base, diff) {
+	if !e.commitFabricSnapshotDiff(base, diff, ce) {
 		atomic.AddUint64(&speculativeConflicted, 1)
 		return s.canonical(e, id, f)
 	}
@@ -90,15 +83,12 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	return nil
 }
 
-// classifyTargets reports only physical execution properties. It intentionally
-// contains no utility/priority/confidence class and is diagnostic, not a
-// scheduling policy input.
 func (s *txnScheduler) classifyTargets(e *Engine, ids []string) []map[string]any {
 	rows := make([]map[string]any, 0, len(ids))
 	ordered := append([]string(nil), ids...)
 	sort.Strings(ordered)
 	for _, id := range ordered {
-		m, err := e.resolveIDLocal(id)
+		_, m, err := e.resolveLocalFabricMemory(id)
 		if err != nil || m == nil || len(m.Program) == 0 {
 			continue
 		}
@@ -121,12 +111,13 @@ func (s *txnScheduler) classifyTargets(e *Engine, ids []string) []map[string]any
 
 func (s *txnScheduler) Info() map[string]any {
 	return map[string]any{
-		"mode":                "lazy-readset-snapshot-diff-conflict-replay",
+		"mode":                "lazy-local-fabric-readset-conflict-replay",
 		"runs":                atomic.LoadUint64(&s.runs),
 		"canonical_runs":      atomic.LoadUint64(&s.canonicalRuns),
 		"speculative":         speculativeInfo(),
-		"snapshot_scope":      "dirty-new-plus-first-read",
-		"store_lifetime":      "lazy-snapshot-owned-shared-lease",
+		"snapshot_scope":      "first-read-across-local-fabric",
+		"store_lifetime":      "primary-long-lease+shard-first-read-leases",
+		"creation_policy":     "canonical-only-bounded-placement",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
 	}
