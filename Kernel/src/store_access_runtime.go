@@ -101,6 +101,15 @@ func (e *Engine) storeMemoryCount() int {
 	return st.memoryCount
 }
 
+func (e *Engine) validateStore() error {
+	st, release, err := e.acquireStoreLifetimeLease()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return validateIndexedStore(st)
+}
+
 // closeStore is used only when an Engine is no longer available to new work.
 // The write guard waits for any in-flight physical reads before closing the
 // descriptor.
