@@ -66,6 +66,7 @@ func TestSpeculativeCommitPreservesShardOwner(t *testing.T) {
 	ce.dataMu.Unlock()
 
 	diff := diffSnapshot(base, ce)
+	releaseSpeculativeStoreLease(ce)
 	if !e.commitFabricSnapshotDiff(base, diff, ce) {
 		t.Fatal("cross-shard speculative commit unexpectedly conflicted")
 	}
@@ -116,6 +117,7 @@ func TestSpeculativeShardConflictDoesNotOverwriteConcurrentMutation(t *testing.T
 	}
 
 	diff := diffSnapshot(base, ce)
+	releaseSpeculativeStoreLease(ce)
 	if e.commitFabricSnapshotDiff(base, diff, ce) {
 		t.Fatal("conflicting shard transaction committed instead of replaying")
 	}
@@ -129,6 +131,66 @@ func TestSpeculativeShardConflictDoesNotOverwriteConcurrentMutation(t *testing.T
 	}
 	if _, err := os.Stat(owner.bodyPath); err != nil {
 		t.Fatalf("shard body unexpectedly disappeared: %v", err)
+	}
+}
+
+func TestSpeculativeCrossOwnerConflictIsZeroWrite(t *testing.T) {
+	e, shardOwner := newSpeculativeFabricTestEngine(t)
+	ce, base, err := e.snapshotForSpeculationLazy(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLazySpeculation(ce)
+
+	root, err := ce.resolveIDLocal("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := ce.resolveIDLocal("shard.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.State["txn"] = "must-not-partially-commit"
+	target.State["value"] = "speculative"
+	ce.dataMu.Lock()
+	ce.dirtyIDs[root.ID] = true
+	ce.dirtyIDs[target.ID] = true
+	ce.dirty = true
+	ce.dataMu.Unlock()
+
+	// Conflict only the shard owner after both baselines were read. If commit
+	// applies the primary plan before validating the shard plan, root would be
+	// left partially mutated even though the transaction reports conflict.
+	current, err := shardOwner.resolveIDLocal(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := copyMemory(current)
+	q.State["value"] = "concurrent"
+	q.Revision++
+	if err := upsertExplicitMemoryOnOwner(shardOwner, q); err != nil {
+		t.Fatal(err)
+	}
+
+	diff := diffSnapshot(base, ce)
+	releaseSpeculativeStoreLease(ce)
+	if e.commitFabricSnapshotDiff(base, diff, ce) {
+		t.Fatal("cross-owner conflict unexpectedly committed")
+	}
+
+	primary, err := e.resolveIDLocal("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := primary.State["txn"]; exists {
+		t.Fatalf("primary owner was partially committed before shard conflict: %#v", primary.State)
+	}
+	shard, err := shardOwner.resolveIDLocal(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shard.State["value"] != "concurrent" {
+		t.Fatalf("shard conflict state was overwritten: %v", shard.State["value"])
 	}
 }
 
@@ -183,7 +245,6 @@ func TestSpeculativeUnreadOwnerHintRetargetsAfterShardMove(t *testing.T) {
 	}
 	defer releaseLazySpeculation(ce)
 
-	// Discover a physical owner without actually reading/baselining the Memory.
 	ids, err := ce.storeTagIDs("txn-shard")
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +259,6 @@ func TestSpeculativeUnreadOwnerHintRetargetsAfterShardMove(t *testing.T) {
 		t.Fatalf("old owner hint missing: owner=%v ok=%v", hinted, ok)
 	}
 
-	// Move the same physical identity after the hint but before the first read.
 	if err := e.deleteExplicitMemoryBounded("shard.target"); err != nil {
 		t.Fatal(err)
 	}
