@@ -13,10 +13,7 @@ func localMemoryCountFast(e *Engine) int {
 	if e == nil {
 		return 0
 	}
-	base := 0
-	if e.store != nil {
-		base = e.store.memoryCount
-	}
+	base := e.storeMemoryCount()
 
 	e.dataMu.RLock()
 	newCount := 0
@@ -34,15 +31,13 @@ func localMemoryCountFast(e *Engine) int {
 	e.dataMu.RUnlock()
 
 	deletedPersisted := 0
-	if e.store != nil {
-		for _, id := range deleted {
-			if _, err := e.store.GetID(id); err == nil {
-				deletedPersisted++
-			} else if err != io.EOF {
-				// Counting is diagnostic/physical telemetry. On index read failure,
-				// preserve a conservative non-negative estimate instead of scanning.
-				continue
-			}
+	for _, id := range deleted {
+		if _, err := e.storeGetID(id); err == nil {
+			deletedPersisted++
+		} else if err != io.EOF {
+			// Counting is diagnostic/physical telemetry. On index read failure,
+			// preserve a conservative non-negative estimate instead of scanning.
+			continue
 		}
 	}
 	count := base + newCount - deletedPersisted
@@ -80,7 +75,8 @@ func boundedLegacyBodyIDs(e *Engine) ([]string, error) {
 
 	// Check persisted cardinality before AllIDs so a large Store is rejected
 	// without touching its record index sequentially.
-	if e.store.memoryCount > max {
+	persistedCount := e.storeMemoryCount()
+	if persistedCount > max {
 		return nil, fmt.Errorf(
 			"body_list bounded at %d persisted memories; use exact/tag/activation indexing",
 			max,
@@ -89,7 +85,7 @@ func boundedLegacyBodyIDs(e *Engine) ([]string, error) {
 	e.dataMu.RLock()
 	newCount := len(e.newIDs)
 	e.dataMu.RUnlock()
-	if e.store.memoryCount+newCount > max {
+	if persistedCount+newCount > max {
 		return nil, fmt.Errorf(
 			"body_list bounded at %d memories; use exact/tag/activation indexing",
 			max,
