@@ -11,24 +11,33 @@ import (
 type lazySnapshotContext struct {
 	mu   sync.Mutex
 	base *memorySnapshot
+	max  int
 }
 
 var lazySnapshotContexts sync.Map // map[*Engine]*lazySnapshotContext
 
-func recordSpeculativeBaseline(e *Engine, id string, m *Memory) {
+func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
 	if e == nil || !e.speculative || m == nil || id == "" {
-		return
+		return nil
 	}
 	v, ok := lazySnapshotContexts.Load(e)
 	if !ok {
-		return
+		return nil
 	}
 	ctx := v.(*lazySnapshotContext)
 	ctx.mu.Lock()
-	if _, exists := ctx.base.memories[id]; !exists {
-		ctx.base.memories[id] = copyMemory(m)
+	defer ctx.mu.Unlock()
+	if _, exists := ctx.base.memories[id]; exists {
+		return nil
 	}
-	ctx.mu.Unlock()
+	if ctx.max > 0 && len(ctx.base.memories) >= ctx.max {
+		return fmt.Errorf(
+			"snapshot working-set limit exceeded: next=%d max=%d",
+			len(ctx.base.memories)+1, ctx.max,
+		)
+	}
+	ctx.base.memories[id] = copyMemory(m)
+	return nil
 }
 
 func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
@@ -45,7 +54,8 @@ func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
 
 // snapshotForSpeculationLazy creates a private overlay without enumerating the
 // persisted Memory body. Only dirty/new local records must be copied up front;
-// clean persisted records are page-loaded and baselined on first access.
+// clean persisted records are page-loaded and baselined on first access. The
+// same maxWorkingSet applies to both the initial overlay and subsequent reads.
 func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memorySnapshot, error) {
 	if e == nil {
 		return nil, nil, fmt.Errorf("lazy speculative snapshot requires engine")
@@ -110,7 +120,7 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	for id, v := range base.dirtyIDs {
 		ce.dirtyIDs[id] = v
 	}
-	lazySnapshotContexts.Store(ce, &lazySnapshotContext{base: base})
+	lazySnapshotContexts.Store(ce, &lazySnapshotContext{base: base, max: maxWorkingSet})
 	return ce, base, nil
 }
 
