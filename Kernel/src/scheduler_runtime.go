@@ -26,13 +26,11 @@ func (s *txnScheduler) canonical(e *Engine, id string, f *Frame) error {
 	if root == nil {
 		root = e
 	}
-	owner, _, err := root.resolveLocalFabricMemory(id)
-	if err != nil || owner == nil {
-		owner = e
-	} else {
-		rememberFabricOwner(root, owner)
-	}
 
+	// Canonical execution must keep the full mounted Fabric as its resolver
+	// context. Engine.run/resolveMutable already route reads and writes to the
+	// true physical owner; executing on the passive owner itself would discard
+	// sibling shards because storage Engines do not own the root spaces map.
 	oldCanonical, hadCanonical := f.Vars["__txn_canonical"]
 	f.Vars["__txn_canonical"] = "1"
 	defer func() {
@@ -42,7 +40,7 @@ func (s *txnScheduler) canonical(e *Engine, id string, f *Frame) error {
 			delete(f.Vars, "__txn_canonical")
 		}
 	}()
-	return owner.run(id, f)
+	return root.run(id, f)
 }
 
 func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
@@ -156,7 +154,7 @@ func (s *txnScheduler) Info() map[string]any {
 		"speculative":         speculativeInfo(),
 		"snapshot_scope":      "first-read-across-local-fabric",
 		"store_lifetime":      "execution-long-lease+release-before-commit",
-		"canonical_replay":    "fabric-owner-aware-single-lane",
+		"canonical_replay":    "fabric-root-resolver-single-lane",
 		"creation_policy":     "canonical-only-bounded-placement",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
