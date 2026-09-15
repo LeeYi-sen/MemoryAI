@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -33,65 +35,78 @@ type referenceActivationNode struct {
 	trigger  []string
 }
 
+func referenceActivationNodeFromMemory(m *Memory) referenceActivationNode {
+	return referenceActivationNode{
+		id:       m.ID,
+		features: activationFeaturesForMemory(m, globalActivationRuntime.maxState),
+		tags:     append([]string(nil), m.Tags...),
+		trigger:  append([]string(nil), m.Trigger...),
+	}
+}
+
+// buildReferenceActivationCorpus is an explicit qualification full scan. It is
+// intentionally not a production activation path. The reference must cover the
+// entire mounted local Fabric, including live dirty/new/deleted overlays, or a
+// correct Fabric-wide exact index could be falsely compared against a
+// primary-only baseline.
 func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error) {
-	ids, err := e.storeAllIDs()
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(ids)
-	seen := map[string]bool{}
-	out := make([]referenceActivationNode, 0, len(ids))
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		m, er := e.storeGetID(id)
-		if er != nil || m == nil {
-			continue
-		}
-		out = append(out, referenceActivationNode{
-			id:       id,
-			features: activationFeaturesForMemory(m, globalActivationRuntime.maxState),
-			tags:     append([]string(nil), m.Tags...),
-			trigger:  append([]string(nil), m.Trigger...),
-		})
+	root := fabricRootFor(e)
+	if root == nil {
+		return nil, fmt.Errorf("activation qualification requires local Fabric")
 	}
 
-	e.dataMu.RLock()
-	cached := make([]*Memory, 0, len(e.cache))
-	deleted := make(map[string]bool, len(e.deletedIDs))
-	for id, v := range e.deletedIDs {
-		deleted[id] = v
-	}
-	for _, m := range e.cache {
-		cp := *m
-		cp.Tags = append([]string(nil), m.Tags...)
-		cp.Trigger = append([]string(nil), m.Trigger...)
-		cp.State = cloneActivationState(m.State)
-		cached = append(cached, &cp)
-	}
-	e.dataMu.RUnlock()
-
-	byID := make(map[string]referenceActivationNode, len(out)+len(cached))
-	for _, n := range out {
-		if !deleted[n.id] {
-			byID[n.id] = n
-		}
-	}
-	for _, m := range cached {
-		if m == nil || m.ID == "" || deleted[m.ID] {
+	byID := map[string]referenceActivationNode{}
+	owners := map[string]*Engine{}
+	for _, body := range root.localFabricEngines() {
+		if body == nil {
 			continue
 		}
-		byID[m.ID] = referenceActivationNode{
-			id:       m.ID,
-			features: activationFeaturesForMemory(m, globalActivationRuntime.maxState),
-			tags:     append([]string(nil), m.Tags...),
-			trigger:  append([]string(nil), m.Trigger...),
+		persistedIDs, err := body.storeAllIDsLocal()
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		ids := map[string]bool{}
+		for _, id := range persistedIDs {
+			ids[id] = true
+		}
+		body.dataMu.RLock()
+		for id := range body.cache {
+			ids[id] = true
+		}
+		deleted := make(map[string]bool, len(body.deletedIDs))
+		for id, yes := range body.deletedIDs {
+			deleted[id] = yes
+		}
+		body.dataMu.RUnlock()
+
+		ordered := make([]string, 0, len(ids))
+		for id := range ids {
+			ordered = append(ordered, id)
+		}
+		sort.Strings(ordered)
+		for _, id := range ordered {
+			if deleted[id] {
+				continue
+			}
+			m, err := body.resolveIDLocal(id)
+			if errors.Is(err, io.EOF) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if m == nil {
+				continue
+			}
+			if previous := owners[id]; previous != nil && previous != body {
+				return nil, duplicateFabricIdentityError(id)
+			}
+			owners[id] = body
+			byID[id] = referenceActivationNodeFromMemory(m)
 		}
 	}
 
-	out = out[:0]
+	out := make([]referenceActivationNode, 0, len(byID))
 	for _, n := range byID {
 		out = append(out, n)
 	}
@@ -191,9 +206,13 @@ func activationQualificationQueriesFromCorpus(corpus []referenceActivationNode, 
 func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	start := time.Now()
 	report := ActivationQualificationReport{
-		Mode: "full-scan-reference-vs-physical-exact-index-no-cognitive-ranking",
+		Mode: "full-fabric-scan-reference-vs-physical-exact-index-no-cognitive-ranking",
 	}
-	if err := globalActivationRuntime.Build(e); err != nil {
+	root := fabricRootFor(e)
+	if root == nil {
+		return report, fmt.Errorf("activation qualification requires local Fabric")
+	}
+	if err := globalActivationRuntime.Build(root); err != nil {
 		return report, err
 	}
 	n := 48
@@ -203,17 +222,18 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 		}
 	}
 
-	corpus, err := buildReferenceActivationCorpus(e)
+	corpus, err := buildReferenceActivationCorpus(root)
 	if err != nil {
 		return report, err
 	}
 	queries := activationQualificationQueriesFromCorpus(corpus, n)
 	report.Queries = len(queries)
 	report.IndexedNodes = int(atomic.LoadInt64(&globalActivationRuntime.nodes))
+	report.ReferenceNodes = len(corpus)
 	limit := globalActivationRuntime.topK
 
 	for _, q := range queries {
-		sparse, er := globalActivationRuntime.Activate(e, q, limit)
+		sparse, er := globalActivationRuntime.Activate(root, q, limit)
 		if er != nil {
 			return report, er
 		}
@@ -221,7 +241,6 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 		if er != nil {
 			return report, er
 		}
-		report.ReferenceNodes = ref.IndexedNodes
 
 		if sparse.CandidateCount != ref.CandidateCount {
 			report.Failure = fmt.Sprintf(
@@ -276,10 +295,18 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	report.OK = report.Failure == "" &&
 		report.ExactCandidate == report.Queries &&
 		report.ExactTopK == report.Queries &&
-		report.MaxScoreDiff == 0
+		report.MaxScoreDiff == 0 &&
+		report.IndexedNodes == report.ReferenceNodes
 	report.ElapsedMS = float64(time.Since(start).Microseconds()) / 1000
 	activationQualification.Store(report)
 	if !report.OK {
+		if report.Failure == "" {
+			report.Failure = fmt.Sprintf(
+				"Fabric node count mismatch indexed=%d reference=%d",
+				report.IndexedNodes, report.ReferenceNodes,
+			)
+			activationQualification.Store(report)
+		}
 		return report, fmt.Errorf("physical exact activation qualification failed: %s", report.Failure)
 	}
 	return report, nil
