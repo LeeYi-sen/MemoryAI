@@ -142,7 +142,9 @@ func adapterStateString(m *Memory, key string) string {
 	return ""
 }
 
-func (e *Engine) testSourceAdapter(id string, timeout time.Duration) (map[string]any, error) {
+// executeSourceAdapter 是 source adapter 的物理 I/O 原语。
+// Memory Growth / Grounding 复用这里已有的 HTTP/TCP/TLS 边界，不创建第二套网络执行器。
+func (e *Engine) executeSourceAdapter(id string, timeout time.Duration) (map[string]any, error) {
 	_, m, err := e.resolveLocalFabricMemory(strings.TrimSpace(id))
 	if err != nil {
 		return nil, err
@@ -219,4 +221,9 @@ func (e *Engine) testSourceAdapter(id string, timeout time.Duration) (map[string
 		return result, fmt.Errorf("source adapter returned HTTP %d", resp.StatusCode)
 	}
 	return result, nil
+}
+
+// testSourceAdapter 保留既有管理/诊断入口；真实执行与诊断现在共享同一个物理 I/O 原语。
+func (e *Engine) testSourceAdapter(id string, timeout time.Duration) (map[string]any, error) {
+	return e.executeSourceAdapter(id, timeout)
 }

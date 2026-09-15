@@ -61,21 +61,28 @@ func daemonFrameFromArgs(args []string) *Frame {
 	return f
 }
 
-// runMemoryGrowthAfterLiveActivity 把真实 live 活动与 Memory Growth 闭环连接起来。
-// 这里不创建新的后台 scheduler；每个完成的 run/input/event 仅机会式推进一次 Memory-native 生长。
+// runMemoryGrowthAfterLiveActivity 把真实 live 活动与 Grounding + Memory Growth 闭环连接起来。
+// 每个完成的 run/input/event 最多机会式推进一个 Memory 明确授权的外部动作和一个内部生长步骤；
+// 这里仍然没有独立后台 cognitive scheduler。
 func (e *Engine) runMemoryGrowthAfterLiveActivity(f *Frame) {
 	if e == nil {
 		return
 	}
-	_, err := RunAutonomousMemoryGrowthCycle(e)
-	if err == nil || f == nil {
+	_, groundedErr := RunAutonomousGroundedActionCycle(e)
+	_, growthErr := RunAutonomousMemoryGrowthCycle(e)
+	if f == nil || (groundedErr == nil && growthErr == nil) {
 		return
 	}
 	if f.Vars == nil {
 		f.Vars = map[string]string{}
 	}
-	// 生长失败不回滚已经完成的外部事件，只把物理故障暴露到当前 Frame 供 Memory/调用方观察。
-	f.Vars["__memory_growth_error"] = err.Error()
+	// 外部动作/生长失败不回滚已经完成的用户事件；把物理故障暴露给 Memory/调用方观察。
+	if groundedErr != nil {
+		f.Vars["__memory_grounded_error"] = groundedErr.Error()
+	}
+	if growthErr != nil {
+		f.Vars["__memory_growth_error"] = growthErr.Error()
+	}
 }
 
 func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {

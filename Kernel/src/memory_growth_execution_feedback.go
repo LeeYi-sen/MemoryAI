@@ -164,6 +164,11 @@ func ExecuteMemoryStructure(e *Engine, structure *MemoryStructure, experiences *
 	if err != nil {
 		return nil, err
 	}
+	// VM 内部现实反馈与外部 Grounded Action 共用同一 Dynamic Belief Memory 更新路径。
+	// Belief 只累计 Experience 事实，不生成 confidence 或固定认知向量。
+	if _, err := UpdateMemoryBeliefsFromExperience(e, structure, experience); err != nil {
+		return nil, fmt.Errorf("update memory belief from execution: %w", err)
+	}
 	return &MemoryStructureExecutionFeedback{
 		StructureID:      structure.ID,
 		PredictedOutcome: predicted,
