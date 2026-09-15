@@ -13,6 +13,7 @@ from kernel_lazy_overlay import apply_kernel_lazy_overlay
 from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
 from kernel_owner_lock_overlay import apply_kernel_owner_lock_overlay
+from kernel_parallel_boundary_overlay import apply_kernel_parallel_boundary_overlay
 from kernel_persistence_overlay import apply_kernel_persistence_overlay
 from kernel_remote_body_txn_overlay import apply_kernel_remote_body_txn_overlay
 from kernel_remote_memory_overlay import apply_kernel_remote_memory_overlay
@@ -40,6 +41,7 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
         current = apply_kernel_overlay(raw)
         current = apply_kernel_mesh_overlay(current)
         current = apply_kernel_speculative_overlay(current)
+        current = apply_kernel_parallel_boundary_overlay(current)
         current = apply_kernel_lazy_overlay(current)
         current = apply_kernel_scale_overlay(current)
         current = apply_kernel_remote_memory_overlay(current)
