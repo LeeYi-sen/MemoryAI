@@ -73,13 +73,21 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 		}
 		if hinted, exists := speculativePhysicalOwner(e, id); exists && hinted != nil && hinted != origin {
 			snapshot, er := resolveSpecificOwnerMemoryCopy(hinted, id)
-			if er != nil {
+			if er == nil {
+				if er := recordSpeculativeBaselineOwned(e, id, snapshot, hinted); er != nil {
+					return nil, er
+				}
+				return snapshot, nil
+			}
+			if !errors.Is(er, io.EOF) {
 				return nil, er
 			}
-			if er := recordSpeculativeBaselineOwned(e, id, snapshot, hinted); er != nil {
-				return nil, er
-			}
-			return snapshot, nil
+			// The index-derived owner was only an unread routing hint. A local
+			// topology mutation may have moved or deleted the Memory since the
+			// candidate set was produced, so invalidate the hint and rediscover
+			// across the currently mounted shards. Baselined owners are never
+			// cleared by clearSpeculativeOwnerHint.
+			clearSpeculativeOwnerHint(e, id, hinted)
 		}
 		owner, snapshot, err := origin.resolveMountedShardMemoryCopy(id)
 		if err != nil {
