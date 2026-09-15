@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -11,14 +10,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 )
 
-// SparseActivationRuntime is an engineering accelerator only. It never mutates
-// cognition semantics and never becomes another AI. It maintains a sparse,
-// local inverted index over the single executable Memory.mem core so candidate
-// discovery is proportional to the stimulated neighborhood rather than the
-// total number of memories.
+// SparseActivationRuntime is a physical diagnostic/indexing accelerator.
+// It does not interpret cognitive meaning and does not rank by Memory-owned
+// metrics. It indexes exact opaque identifiers, tags, triggers and scalar
+// state key/value pairs so lookup cost is proportional to the stimulated
+// physical neighborhood rather than the total body size.
 type SparseActivationRuntime struct {
 	mu          sync.RWMutex
 	postings    map[string]map[string]struct{}
@@ -27,11 +25,8 @@ type SparseActivationRuntime struct {
 	nodes       int64
 	queries     uint64
 	candidates  uint64
-	batches     uint64
-	scored      uint64
-	lastBackend atomic.Value // string
 	topK        int
-	maxTokens   int
+	maxState    int
 }
 
 type ActivationCandidate struct {
@@ -58,57 +53,42 @@ func newSparseActivationRuntime() *SparseActivationRuntime {
 			topK = n
 		}
 	}
-	maxTokens := 128
-	if s := os.Getenv("MEMORYAI_ACTIVATION_MAX_TOKENS"); s != "" {
+	maxState := 128
+	if s := os.Getenv("MEMORYAI_ACTIVATION_MAX_STATE_FIELDS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			maxTokens = n
+			maxState = n
 		}
 	}
-	r := &SparseActivationRuntime{
+	return &SparseActivationRuntime{
 		postings:    map[string]map[string]struct{}{},
 		nodeFeature: map[string][]string{},
 		fingerprint: map[string]uint64{},
 		topK:        topK,
-		maxTokens:   maxTokens,
+		maxState:    maxState,
 	}
-	r.lastBackend.Store("uninitialized")
-	return r
 }
 
-func activationTokens(s string, limit int) []string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if s == "" {
+func cloneActivationState(in map[string]any) map[string]any {
+	if in == nil {
 		return nil
 	}
-	seen := map[string]bool{}
-	out := make([]string, 0, 16)
-	var b strings.Builder
-	flush := func() {
-		if b.Len() == 0 {
-			return
-		}
-		q := b.String()
-		b.Reset()
-		if !seen[q] {
-			seen[q] = true
-			out = append(out, q)
-		}
-	}
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
-			b.WriteRune(r)
-		} else {
-			flush()
-		}
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	flush()
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
+}
+
+func exactIndexValue(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return x, true
+	case float64, float32, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, bool:
+		return fmt.Sprint(x), true
+	default:
+		return "", false
+	}
 }
 
 func activationFeaturesForMemory(m *Memory, limit int) []string {
@@ -117,7 +97,7 @@ func activationFeaturesForMemory(m *Memory, limit int) []string {
 	}
 	seen := map[string]bool{}
 	add := func(x string) {
-		x = strings.ToLower(strings.TrimSpace(x))
+		x = strings.TrimSpace(x)
 		if x == "" || seen[x] {
 			return
 		}
@@ -126,37 +106,26 @@ func activationFeaturesForMemory(m *Memory, limit int) []string {
 	add("id:" + m.ID)
 	for _, t := range m.Tags {
 		add("tag:" + t)
-		for _, q := range activationTokens(t, limit) {
-			add("tok:" + q)
-		}
 	}
 	for _, t := range m.Trigger {
 		add("trigger:" + t)
-		for _, q := range activationTokens(t, limit) {
-			add("tok:" + q)
-		}
 	}
-	for _, q := range activationTokens(m.Content, limit) {
-		add("tok:" + q)
+
+	keys := make([]string, 0, len(m.State))
+	for k := range m.State {
+		keys = append(keys, k)
 	}
-	// State is part of memory evidence. Only index scalar textual/numeric values;
-	// nested structures stay in the canonical Memory and are read on demand.
-	nstate := 0
-	for k, v := range m.State {
-		if nstate >= limit {
+	sort.Strings(keys)
+	for i, k := range keys {
+		if limit > 0 && i >= limit {
 			break
 		}
 		add("state-key:" + k)
-		switch x := v.(type) {
-		case string:
-			for _, q := range activationTokens(x, 8) {
-				add("tok:" + q)
-			}
-		case float64, float32, int, int64, uint64, bool:
-			add("state-val:" + fmt.Sprint(x))
+		if v, ok := exactIndexValue(m.State[k]); ok {
+			add("state-kv:" + k + "=" + v)
 		}
-		nstate++
 	}
+
 	out := make([]string, 0, len(seen))
 	for k := range seen {
 		out = append(out, k)
@@ -165,11 +134,10 @@ func activationFeaturesForMemory(m *Memory, limit int) []string {
 	return out
 }
 
-func activationFingerprint(m *Memory) uint64 {
+func activationFingerprint(m *Memory, limit int) uint64 {
 	if m == nil {
 		return 0
 	}
-	// FNV-like compact fingerprint without adding another package dependency.
 	var h uint64 = 1469598103934665603
 	mix := func(s string) {
 		for i := 0; i < len(s); i++ {
@@ -177,19 +145,9 @@ func activationFingerprint(m *Memory) uint64 {
 			h *= 1099511628211
 		}
 	}
-	mix(m.ID)
-	mix(m.Content)
-	for _, x := range m.Tags {
-		mix(x)
+	for _, f := range activationFeaturesForMemory(m, limit) {
+		mix(f)
 	}
-	for _, x := range m.Trigger {
-		mix(x)
-	}
-	mix(strconv.FormatUint(m.Reuse, 10))
-	mix(strconv.FormatUint(m.Trials, 10))
-	mix(strconv.FormatUint(m.Successes, 10))
-	mix(strconv.FormatFloat(m.Reward, 'g', -1, 64))
-	mix(strconv.FormatFloat(m.Stability, 'g', -1, 64))
 	return h
 }
 
@@ -197,8 +155,8 @@ func (r *SparseActivationRuntime) replaceNode(m *Memory) {
 	if m == nil || m.ID == "" {
 		return
 	}
-	features := activationFeaturesForMemory(m, r.maxTokens)
-	fp := activationFingerprint(m)
+	features := activationFeaturesForMemory(m, r.maxState)
+	fp := activationFingerprint(m, r.maxState)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.fingerprint[m.ID] == fp {
@@ -251,13 +209,12 @@ func (r *SparseActivationRuntime) removeNode(id string) {
 
 func (r *SparseActivationRuntime) Build(e *Engine) error {
 	if e == nil || e.manifest.Role != "core" {
-		return fmt.Errorf("sparse activation requires core Memory.mem")
+		return fmt.Errorf("physical activation index requires core Memory.mem")
 	}
 	ids, err := e.store.AllIDs()
 	if err != nil {
 		return err
 	}
-	// Reset only this engineering index; the canonical Memory is untouched.
 	r.mu.Lock()
 	r.postings = map[string]map[string]struct{}{}
 	r.nodeFeature = map[string][]string{}
@@ -270,7 +227,6 @@ func (r *SparseActivationRuntime) Build(e *Engine) error {
 			r.replaceNode(m)
 		}
 	}
-	// Include post-load acquired/emergent nodes already present in cache.
 	e.dataMu.RLock()
 	cached := make([]*Memory, 0, len(e.cache))
 	for _, m := range e.cache {
@@ -283,8 +239,8 @@ func (r *SparseActivationRuntime) Build(e *Engine) error {
 	return nil
 }
 
-// RefreshDirty is called only while the daemon commit barrier is held exclusively.
-// It incrementally updates the engineering index without rescanning the full body.
+// RefreshDirty incrementally keeps the physical exact index consistent with
+// new/dirty/deleted Memories. It does not interpret Memory semantics.
 func (r *SparseActivationRuntime) RefreshDirty(e *Engine) {
 	if e == nil {
 		return
@@ -310,6 +266,7 @@ func (r *SparseActivationRuntime) RefreshDirty(e *Engine) {
 			cp.Tags = append([]string(nil), m.Tags...)
 			cp.Trigger = append([]string(nil), m.Trigger...)
 			cp.Parents = append([]string(nil), m.Parents...)
+			cp.State = cloneActivationState(m.State)
 			changed = append(changed, &cp)
 		}
 	}
@@ -322,66 +279,34 @@ func (r *SparseActivationRuntime) RefreshDirty(e *Engine) {
 	}
 }
 
-func queryActivationFeatures(q string, limit int) []string {
-	toks := activationTokens(q, limit)
-	seen := map[string]bool{}
-	out := make([]string, 0, len(toks)*3+1)
-	add := func(x string) {
-		if x != "" && !seen[x] {
-			seen[x] = true
-			out = append(out, x)
+func queryActivationFeatures(q string, _ int) []string {
+	raw := strings.TrimSpace(q)
+	if raw == "" {
+		return nil
+	}
+	prefixes := []string{"id:", "tag:", "trigger:", "state-key:", "state-kv:"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(raw, p) {
+			return []string{raw}
 		}
 	}
-	raw := strings.ToLower(strings.TrimSpace(q))
-	if raw != "" {
-		add("tag:" + raw)
-		add("trigger:" + raw)
-		add("id:" + raw)
-	}
-	for _, t := range toks {
-		add("tok:" + t)
-		add("tag:" + t)
-		add("trigger:" + t)
-	}
-	return out
+	return []string{"id:" + raw, "tag:" + raw, "trigger:" + raw}
 }
 
-func activationMetricVector(m *Memory, hits int, qn int) [6]float32 {
+func exactActivationScore(hits, qn int) float32 {
 	if qn < 1 {
-		qn = 1
+		return 0
 	}
-	hitRatio := float32(hits) / float32(qn)
-	stability := float32(m.Stability)
-	if stability < 0 {
-		stability = 0
-	}
-	if stability > 4 {
-		stability = 4
-	}
-	stability /= 4
-	reward := float32(1.0 / (1.0 + math.Exp(-m.Reward)))
-	reuse := float32(math.Log1p(float64(m.Reuse)) / 8.0)
-	if reuse > 1 {
-		reuse = 1
-	}
-	success := float32(0)
-	if m.Trials > 0 {
-		success = float32(m.Successes) / float32(m.Trials)
-	}
-	executable := float32(0)
-	if len(m.Program) > 0 {
-		executable = 1
-	}
-	return [6]float32{hitRatio, stability, reward, reuse, success, executable}
+	return float32(hits) / float32(qn)
 }
 
-func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (ActivationResult, error) {
+func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (ActivationResult, error) {
 	start := time.Now()
 	atomic.AddUint64(&r.queries, 1)
 	if topK <= 0 {
 		topK = r.topK
 	}
-	qf := queryActivationFeatures(query, r.maxTokens)
+	qf := queryActivationFeatures(query, r.maxState)
 	if len(qf) == 0 {
 		return ActivationResult{Query: query, IndexedNodes: int(atomic.LoadInt64(&r.nodes)), Backend: "none", ElapsedUS: time.Since(start).Microseconds()}, nil
 	}
@@ -393,60 +318,29 @@ func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (A
 		}
 	}
 	r.mu.RUnlock()
-	if len(hit) == 0 {
-		return ActivationResult{Query: query, IndexedNodes: int(atomic.LoadInt64(&r.nodes)), Backend: "none", ElapsedUS: time.Since(start).Microseconds()}, nil
-	}
-	ids := make([]string, 0, len(hit))
-	for id := range hit {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	vectors := make([][6]float32, 0, len(ids))
-	kept := make([]string, 0, len(ids))
-	keptHits := make([]int, 0, len(ids))
-	for _, id := range ids {
-		m, er := e.resolveIDLocal(id)
-		if er != nil || m == nil {
-			continue
-		}
-		// Snapshot metrics under the canonical core lock. The index itself never mutates Memory.
-		e.dataMu.RLock()
-		cp := *m
-		e.dataMu.RUnlock()
-		vectors = append(vectors, activationMetricVector(&cp, hit[id], len(qf)))
-		kept = append(kept, id)
-		keptHits = append(keptHits, hit[id])
-	}
-	atomic.AddUint64(&r.candidates, uint64(len(vectors)))
-	atomic.AddUint64(&r.scored, uint64(len(vectors)))
-	scores, backend, batchRequests, batchVectors, er := globalActivationScoreBatcher.Score(vectors)
-	if er != nil {
-		return ActivationResult{}, er
-	}
-	r.lastBackend.Store(backend)
-	_ = batchRequests
-	_ = batchVectors
-	out := make([]ActivationCandidate, len(scores))
-	for i, s := range scores {
-		out[i] = ActivationCandidate{ID: kept[i], Score: s, FeatureHit: keptHits[i]}
+	atomic.AddUint64(&r.candidates, uint64(len(hit)))
+
+	out := make([]ActivationCandidate, 0, len(hit))
+	for id, hits := range hit {
+		out = append(out, ActivationCandidate{ID: id, Score: exactActivationScore(hits, len(qf)), FeatureHit: hits})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Score == out[j].Score {
-			return out[i].ID < out[j].ID
+		if out[i].FeatureHit != out[j].FeatureHit {
+			return out[i].FeatureHit > out[j].FeatureHit
 		}
-		return out[i].Score > out[j].Score
+		return out[i].ID < out[j].ID
 	})
+	count := len(out)
 	if topK < len(out) {
 		out = out[:topK]
 	}
-	return ActivationResult{Query: query, Candidates: out, CandidateCount: len(hit), IndexedNodes: int(atomic.LoadInt64(&r.nodes)), Backend: backend, ElapsedUS: time.Since(start).Microseconds()}, nil
+	return ActivationResult{Query: query, Candidates: out, CandidateCount: count, IndexedNodes: int(atomic.LoadInt64(&r.nodes)), Backend: "cpu-exact-index", ElapsedUS: time.Since(start).Microseconds()}, nil
 }
 
 func (r *SparseActivationRuntime) Info() map[string]any {
 	r.mu.RLock()
 	features := len(r.postings)
 	r.mu.RUnlock()
-	backend, _ := r.lastBackend.Load().(string)
 	q := atomic.LoadUint64(&r.queries)
 	c := atomic.LoadUint64(&r.candidates)
 	avg := float64(0)
@@ -454,111 +348,20 @@ func (r *SparseActivationRuntime) Info() map[string]any {
 		avg = float64(c) / float64(q)
 	}
 	return map[string]any{
-		"mode":          "sparse-local-stimulus-index",
-		"indexed_nodes": atomic.LoadInt64(&r.nodes), "features": features,
-		"queries": q, "candidate_total": c, "avg_candidates": avg,
-		"score_batches": atomic.LoadUint64(&globalActivationScoreBatcher.batches), "score_batch_requests": atomic.LoadUint64(&globalActivationScoreBatcher.requests), "score_batch_vectors": atomic.LoadUint64(&globalActivationScoreBatcher.vectors), "scored_vectors": atomic.LoadUint64(&r.scored),
-		"last_backend": backend, "default_top_k": r.topK, "memory_semantics": "qualified-current-core-reference",
-		"qualification": activationQualificationInfo(),
+		"mode":              "physical-exact-index",
+		"indexed_nodes":     atomic.LoadInt64(&r.nodes),
+		"features":          features,
+		"queries":           q,
+		"candidate_total":   c,
+		"avg_candidates":    avg,
+		"last_backend":      "cpu-exact-index",
+		"default_top_k":     r.topK,
+		"cognitive_ranking": false,
+		"qualification":     activationQualificationInfo(),
 	}
 }
 
 func activationInfoJSON() string {
 	b, _ := json.MarshalIndent(globalActivationRuntime.Info(), "", "  ")
 	return string(b)
-}
-
-type activationScoreResponse struct {
-	scores        []float32
-	backend       string
-	batchRequests int
-	batchVectors  int
-	err           error
-}
-type activationScoreJob struct {
-	vectors [][6]float32
-	ch      chan activationScoreResponse
-}
-type activationScoreBatcher struct {
-	once       sync.Once
-	ch         chan activationScoreJob
-	window     time.Duration
-	maxVectors int
-	batches    uint64
-	requests   uint64
-	vectors    uint64
-}
-
-var globalActivationScoreBatcher = newActivationScoreBatcher()
-
-func newActivationScoreBatcher() *activationScoreBatcher {
-	window := 1200 * time.Microsecond
-	if s := os.Getenv("MEMORYAI_GPU_BATCH_WINDOW_US"); s != "" {
-		if n, er := strconv.Atoi(s); er == nil && n >= 0 {
-			window = time.Duration(n) * time.Microsecond
-		}
-	}
-	maxv := 65536
-	if s := os.Getenv("MEMORYAI_GPU_BATCH_MAX_VECTORS"); s != "" {
-		if n, er := strconv.Atoi(s); er == nil && n > 0 {
-			maxv = n
-		}
-	}
-	return &activationScoreBatcher{ch: make(chan activationScoreJob, 1024), window: window, maxVectors: maxv}
-}
-func (b *activationScoreBatcher) start() { b.once.Do(func() { go b.loop() }) }
-func (b *activationScoreBatcher) Score(v [][6]float32) ([]float32, string, int, int, error) {
-	if len(v) == 0 {
-		return nil, "none", 1, 0, nil
-	}
-	b.start()
-	ch := make(chan activationScoreResponse, 1)
-	b.ch <- activationScoreJob{vectors: v, ch: ch}
-	r := <-ch
-	return r.scores, r.backend, r.batchRequests, r.batchVectors, r.err
-}
-func (b *activationScoreBatcher) loop() {
-	weights := [6]float32{0.52, 0.12, 0.10, 0.08, 0.10, 0.08}
-	for first := range b.ch {
-		jobs := []activationScoreJob{first}
-		total := len(first.vectors)
-		timer := time.NewTimer(b.window)
-	collect:
-		for total < b.maxVectors {
-			select {
-			case j := <-b.ch:
-				jobs = append(jobs, j)
-				total += len(j.vectors)
-				if total >= b.maxVectors {
-					break collect
-				}
-			case <-timer.C:
-				break collect
-			}
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		all := make([][6]float32, 0, total)
-		for _, j := range jobs {
-			all = append(all, j.vectors...)
-		}
-		scores, backend, err := globalParallelRuntime.Score6(all, weights)
-		atomic.AddUint64(&b.batches, 1)
-		atomic.AddUint64(&b.requests, uint64(len(jobs)))
-		atomic.AddUint64(&b.vectors, uint64(len(all)))
-		off := 0
-		for _, j := range jobs {
-			n := len(j.vectors)
-			part := []float32(nil)
-			if err == nil {
-				part = append([]float32(nil), scores[off:off+n]...)
-			}
-			j.ch <- activationScoreResponse{scores: part, backend: backend, batchRequests: len(jobs), batchVectors: len(all), err: err}
-			off += n
-		}
-	}
 }
