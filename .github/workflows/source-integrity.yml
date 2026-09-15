@@ -1,0 +1,67 @@
+name: source-integrity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify bootstrap source hashes
+        run: python3 tools/restore_source.py --check
+
+      - name: Restore build source
+        run: python3 tools/restore_source.py
+
+      - name: Compile migration tools
+        run: |
+          python3 -m py_compile tools/restore_source.py
+          python3 -m py_compile tools/migrations/*.py
+
+      - name: Enforce formatted Go source
+        run: |
+          UNFORMATTED="$(gofmt -l Kernel/src/*.go)"
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted Go source:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Compile Kernel package
+        env:
+          GO111MODULE: "off"
+        run: go test ./Kernel/src
+
+      - name: Assert activation remains physical-only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Kernel/src/activation_runtime.go').read_text(encoding='utf-8')
+          required = [
+              'Score:      0',
+              'selection_order',
+              'stable-memory-id',
+              'cognitive_ranking',
+              'false',
+          ]
+          missing = [x for x in required if x not in p]
+          if missing:
+              raise SystemExit(f'activation physical-boundary assertions missing: {missing}')
+          forbidden = [
+              'FeatureHit > out[j].FeatureHit',
+              'exactActivationScore(',
+          ]
+          bad = [x for x in forbidden if x in p]
+          if bad:
+              raise SystemExit(f'cognitive activation ranking reintroduced: {bad}')
+          print('activation physical-only boundary: PASS')
+          PY
