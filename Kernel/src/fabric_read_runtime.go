@@ -45,10 +45,7 @@ func (e *Engine) resolveMountedShardMemoryCopy(id string) (*Engine, *Memory, err
 		return nil, nil, io.EOF
 	}
 	var owner *Engine
-	for _, candidate := range e.localFabricEngines() {
-		if candidate == nil || candidate == e {
-			continue
-		}
+	for _, candidate := range e.mountedFabricEngines() {
 		m, err := candidate.resolveIDLocal(id)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -94,9 +91,12 @@ func addFabricOwner(seen map[string]*Engine, id string, owner *Engine) error {
 	return nil
 }
 
-func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[string]*Engine, error) {
+func physicalFeatureIDsAcrossEngines(engines []*Engine, feature string) ([]string, map[string]*Engine, error) {
 	seen := map[string]*Engine{}
-	for _, candidate := range e.localFabricEngines() {
+	for _, candidate := range engines {
+		if candidate == nil {
+			continue
+		}
 		shadowed := activationShadowedIDs(candidate)
 		indexed, err := candidate.storeHasPhysicalFeatureIndexLocal()
 		if err != nil {
@@ -117,9 +117,6 @@ func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[st
 				}
 			}
 		} else {
-			// Compatibility is isolated to this legacy body. Other shards keep
-			// using their persisted exact index; one old file never forces a
-			// whole-Fabric startup or query scan.
 			ids, err := candidate.storeAllIDsLocal()
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, nil, err
@@ -143,8 +140,6 @@ func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[st
 			}
 		}
 
-		// Dirty/new overlay always shadows persisted state, whether the body is
-		// indexed or legacy.
 		candidate.dataMu.RLock()
 		for id := range shadowed {
 			if candidate.deletedIDs[id] {
@@ -168,6 +163,14 @@ func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[st
 	}
 	sort.Strings(out)
 	return out, seen, nil
+}
+
+func (e *Engine) physicalFeatureIDsFabricOwned(feature string) ([]string, map[string]*Engine, error) {
+	return physicalFeatureIDsAcrossEngines(e.localFabricEngines(), feature)
+}
+
+func (e *Engine) physicalFeatureIDsMountedShardsOwned(feature string) ([]string, map[string]*Engine, error) {
+	return physicalFeatureIDsAcrossEngines(e.mountedFabricEngines(), feature)
 }
 
 func (e *Engine) physicalFeatureIDsFabric(feature string) ([]string, error) {
