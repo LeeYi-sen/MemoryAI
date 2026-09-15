@@ -10,10 +10,9 @@ import (
 	"sync"
 )
 
-// automaticShardMu serializes physical placement so concurrent memory_new
-// operations cannot race past the per-body bound or create duplicate shards.
-// This is storage coordination only; Memory decides that a new Memory should
-// exist, Kernel only chooses a bounded physical container for its bytes.
+// automaticShardMu serializes every physical placement decision. Runtime
+// memory_new and explicit structure/import writes share this lock so two paths
+// cannot both decide that the same bounded body still has capacity.
 var automaticShardMu sync.Mutex
 
 func memoryShardMax() int {
@@ -153,17 +152,13 @@ func (e *Engine) createAutomaticWritableShard() (*Engine, error) {
 	return sp, nil
 }
 
-// placeRuntimeMemory atomically chooses/creates one bounded physical shard and
-// inserts a newly-created Memory. Boot already recovered Memory.N.mem files, and
-// shards created during this process are mounted immediately; therefore this
-// hot path performs no filesystem glob or all-shard discovery scan.
-func (e *Engine) placeRuntimeMemory(m *Memory) error {
+// placeRuntimeMemoryLocked performs one bounded placement while
+// automaticShardMu is already held. Explicit Fabric upserts use this primitive
+// so duplicate-ID detection and placement are atomic with normal memory_new.
+func (e *Engine) placeRuntimeMemoryLocked(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("runtime Memory placement requires engine and id")
 	}
-	automaticShardMu.Lock()
-	defer automaticShardMu.Unlock()
-
 	if target := e.mountedWritableShard(); target != nil {
 		target.addRuntimeMemory(m)
 		return nil
@@ -174,4 +169,14 @@ func (e *Engine) placeRuntimeMemory(m *Memory) error {
 	}
 	target.addRuntimeMemory(m)
 	return nil
+}
+
+// placeRuntimeMemory atomically chooses/creates one bounded physical shard and
+// inserts a newly-created Memory. Boot already recovered Memory.N.mem files, and
+// shards created during this process are mounted immediately; therefore this
+// hot path performs no filesystem glob or all-shard discovery scan.
+func (e *Engine) placeRuntimeMemory(m *Memory) error {
+	automaticShardMu.Lock()
+	defer automaticShardMu.Unlock()
+	return e.placeRuntimeMemoryLocked(m)
 }
