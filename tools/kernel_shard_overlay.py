@@ -12,7 +12,7 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
 def apply_kernel_shard_overlay(raw: bytes) -> bytes:
     text = raw.decode("utf-8")
     required = (
-        "finalizePersistedBody(e, out)",
+        "finalizePersistedBody(e, out, persistedSnapshot)",
         "remote_space_import disabled:",
         "func (e *Engine) mountRegisteredStorageForIntegrity()",
     )
