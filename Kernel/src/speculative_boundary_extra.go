@@ -6,7 +6,7 @@ package main
 // canonical path.
 func speculativeAdditionalForbiddenPrimitive(code string) bool {
 	switch code {
-	case "mesh_shared_reconcile", "mesh_route_cognition", "cognition_concurrency_set",
+	case "mesh_shared_reconcile", "mesh_route_execution", "physical_execution_concurrency_set",
 		"memory_new", "memory_copy":
 		// memory_new/memory_copy eventually choose/create a bounded physical
 		// shard. That placement is a real storage-topology side effect and cannot

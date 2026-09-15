@@ -9,7 +9,8 @@ import (
 )
 
 // parallelRuntime is a physical execution accelerator only. It never chooses
-// cognitive work, assigns semantic priority, or interprets vector dimensions.
+// which executable Memory should run, assigns semantic priority, or interprets
+// vector dimensions.
 type parallelRuntime struct {
 	concurrency int64
 	jobs        uint64
@@ -27,7 +28,7 @@ func newParallelRuntime() *parallelRuntime {
 	return &parallelRuntime{concurrency: int64(n)}
 }
 
-func setCognitionConcurrency(n int) {
+func setPhysicalExecutionConcurrency(n int) {
 	if n < 1 {
 		n = 1
 	}
@@ -107,7 +108,7 @@ func parallelCPUFor(count, maxParallel int, fn func(int)) {
 
 // Dot is dimension-agnostic physical arithmetic. Kernel knows only that each
 // row has the same number of scalar lanes as weights; lane meaning, weighting,
-// interpretation and any notion of "score" belong entirely to Memory.
+// interpretation and any notion of a semantic score belong entirely to Memory.
 func (r *parallelRuntime) Dot(vectors [][]float32, weights []float32) ([]float32, string, error) {
 	if len(weights) == 0 {
 		return nil, "", fmt.Errorf("parallel dot requires at least one physical lane")
@@ -130,14 +131,12 @@ func (r *parallelRuntime) Dot(vectors [][]float32, weights []float32) ([]float32
 
 func (r *parallelRuntime) Info() map[string]any {
 	return map[string]any{
-		"backend":             "cpu",
+		"backend":              "cpu",
 		"physical_concurrency": atomic.LoadInt64(&r.concurrency),
 		"gomaxprocs":           runtime.GOMAXPROCS(0),
 		"jobs":                 atomic.LoadUint64(&r.jobs),
 		"inflight":             atomic.LoadInt64(&r.inflight),
 		"peak_parallel":        atomic.LoadInt64(&r.peak),
-		"cognitive_selection":  false,
-		"fixed_semantic_lanes": false,
 	}
 }
 
@@ -146,7 +145,7 @@ func parallelRuntimeJSON() string {
 	return string(b)
 }
 
-func cognitionInfo() map[string]any {
+func physicalRuntimeInfo() map[string]any {
 	return map[string]any{
 		"parallel":    globalParallelRuntime.Info(),
 		"speculative": speculativeInfo(),
