@@ -6,20 +6,22 @@ import (
 )
 
 // lazySnapshotContext records the exact read-set baseline of one speculative
-// Engine. It also owns one long physical-store lease. Speculative reads reuse
-// this lease instead of recursively acquiring another RLock, which avoids a
-// writer-preference deadlock when persistence is waiting to swap the store.
+// Engine. It also owns one long primary-store lease. IDs first read from passive
+// local shards record their real physical owner so commit never collapses shard
+// state back into the primary body.
 type lazySnapshotContext struct {
 	mu           sync.Mutex
 	base         *memorySnapshot
 	max          int
 	store        *IndexedStore
 	releaseStore func()
+	origin       *Engine
+	owners       map[string]*Engine
 }
 
 var lazySnapshotContexts sync.Map // map[*Engine]*lazySnapshotContext
 
-func pinnedSpeculativeStore(e *Engine) (*IndexedStore, bool) {
+func speculativeLazyContext(e *Engine) (*lazySnapshotContext, bool) {
 	if e == nil || !e.speculative {
 		return nil, false
 	}
@@ -27,25 +29,50 @@ func pinnedSpeculativeStore(e *Engine) (*IndexedStore, bool) {
 	if !ok {
 		return nil, false
 	}
-	ctx := v.(*lazySnapshotContext)
-	if ctx.store == nil {
+	return v.(*lazySnapshotContext), true
+}
+
+func pinnedSpeculativeStore(e *Engine) (*IndexedStore, bool) {
+	ctx, ok := speculativeLazyContext(e)
+	if !ok || ctx.store == nil {
 		return nil, false
 	}
 	return ctx.store, true
 }
 
-func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
+func speculativeOriginEngine(e *Engine) (*Engine, bool) {
+	ctx, ok := speculativeLazyContext(e)
+	if !ok || ctx.origin == nil {
+		return nil, false
+	}
+	return ctx.origin, true
+}
+
+func speculativePhysicalOwner(e *Engine, id string) (*Engine, bool) {
+	ctx, ok := speculativeLazyContext(e)
+	if !ok {
+		return nil, false
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	owner := ctx.owners[id]
+	return owner, owner != nil
+}
+
+func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engine) error {
 	if e == nil || !e.speculative || m == nil || id == "" {
 		return nil
 	}
-	v, ok := lazySnapshotContexts.Load(e)
+	ctx, ok := speculativeLazyContext(e)
 	if !ok {
 		return nil
 	}
-	ctx := v.(*lazySnapshotContext)
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 	if _, exists := ctx.base.memories[id]; exists {
+		if ctx.owners[id] == nil && owner != nil {
+			ctx.owners[id] = owner
+		}
 		return nil
 	}
 	if ctx.max > 0 && len(ctx.base.memories) >= ctx.max {
@@ -55,7 +82,18 @@ func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
 		)
 	}
 	ctx.base.memories[id] = copyMemory(m)
+	if owner != nil {
+		ctx.owners[id] = owner
+	}
 	return nil
+}
+
+// Generated kernel.go invokes this hook for a clean record first loaded through
+// the primary store. Shard-aware store fallback records an explicit owner before
+// this hook is reached, so the first owner assignment remains authoritative.
+func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
+	origin, _ := speculativeOriginEngine(e)
+	return recordSpeculativeBaselineOwned(e, id, m, origin)
 }
 
 func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
@@ -71,14 +109,13 @@ func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
 }
 
 // snapshotForSpeculationLazy creates a private overlay without enumerating the
-// persisted Memory body. Only dirty/new local records must be copied up front;
-// clean persisted records are page-loaded and baselined on first access. The
-// same maxWorkingSet applies to both the initial overlay and subsequent reads.
+// persisted Memory Fabric. Only dirty/new records already in the primary body
+// are copied up front; other primary or shard records are copied and baselined
+// on first access. The same maxWorkingSet bounds both phases.
 //
-// Lock order is deliberately dataMu.RLock -> shared IndexedStore RLock. Store
-// selection, long-term pin acquisition and the mutable-delta snapshot happen in
-// one dataMu read critical section. Persistence uses dataMu.Lock -> Store Lock,
-// so it cannot slip between pinning and state capture and form a lock cycle.
+// Lock order is deliberately dataMu.RLock -> shared primary IndexedStore RLock.
+// Shard stores are leased only for the duration of an individual first read;
+// optimistic digest validation protects them through commit.
 func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memorySnapshot, error) {
 	if e == nil {
 		return nil, nil, fmt.Errorf("lazy speculative snapshot requires engine")
@@ -92,6 +129,7 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	}
 	cloneCache := map[string]*Memory{}
 	workingIDs := map[string]bool{}
+	owners := map[string]*Engine{}
 
 	e.dataMu.RLock()
 	store := e.store
@@ -124,6 +162,7 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 			cm := copyMemory(m)
 			cloneCache[id] = cm
 			base.memories[id] = copyMemory(m)
+			owners[id] = e
 		}
 	}
 	for id, v := range e.newIDs {
@@ -159,6 +198,7 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	}
 	lazySnapshotContexts.Store(ce, &lazySnapshotContext{
 		base: base, max: maxWorkingSet, store: store, releaseStore: releaseStore,
+		origin: e, owners: owners,
 	})
 	return ce, base, nil
 }
