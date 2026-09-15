@@ -138,7 +138,13 @@ func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engi
 	return nil
 }
 
+// Generated kernel.go invokes this hook after storeGetID. A shard-aware
+// storeGetID may already have baselined the record with its real physical owner,
+// so preserve that owner instead of blindly rewriting it to the primary origin.
 func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
+	if owner, ok := speculativePhysicalOwner(e, id); ok && owner != nil {
+		return recordSpeculativeBaselineOwned(e, id, m, owner)
+	}
 	origin, _ := speculativeOriginEngine(e)
 	return recordSpeculativeBaselineOwned(e, id, m, origin)
 }
@@ -242,10 +248,6 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	return ce, base, nil
 }
 
-// releaseSpeculativeStoreLease ends the physical file-descriptor pin but keeps
-// the transaction context alive for owner lookup and commit validation. It is
-// idempotent and must be called once speculative execution no longer performs
-// page-ins, before any commit path can wait on Engine.dataMu.
 func releaseSpeculativeStoreLease(e *Engine) {
 	ctx, ok := speculativeLazyContext(e)
 	if !ok {
