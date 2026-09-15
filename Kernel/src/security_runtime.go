@@ -12,7 +12,7 @@ import (
 )
 
 var privilegedOpCapability = map[string]string{
-	"state_set": "memory.write", "state_list_append": "memory.write", "state_list_unique_append": "memory.write", "state_num_add": "memory.write", "metric_add": "memory.write",
+	"state_set": "memory.write", "state_list_append": "memory.write", "state_list_unique_append": "memory.write", "state_num_add": "memory.write",
 	"memory_new": "memory.write", "memory_copy": "memory.write", "memory_tag_add": "memory.write", "memory_tag_remove": "memory.write",
 	"memory_delete":      "memory.delete",
 	"memory_import_json": "memory.import",
