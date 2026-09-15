@@ -60,8 +60,9 @@ func automaticShardPaths(e *Engine) ([]string, error) {
 	return out, nil
 }
 
-// mountAutomaticStorageShards recovers the physical shard set after restart.
-// It never invents semantic links and ignores non-storage bodies.
+// mountAutomaticStorageShards is a boot/recovery operation, not a per-Memory
+// hot-path operation. New shards created by this process are mounted immediately
+// by createAndMountSpace, so runtime placement never needs to rescan the folder.
 func (e *Engine) mountAutomaticStorageShards() {
 	if e == nil || e.manifest.Role != "core" {
 		return
@@ -87,27 +88,38 @@ func (e *Engine) mountedWritableShard() *Engine {
 	if e == nil {
 		return nil
 	}
-	e.spaceMu.RLock()
-	preferredPath := e.writeSpace
-	preferred := e.spaces[preferredPath]
-	paths := make([]string, 0, len(e.spaces))
-	for p := range e.spaces {
-		paths = append(paths, p)
-	}
-	e.spaceMu.RUnlock()
 
+	// O(1) hot path: the active write shard normally accepts thousands of Memory
+	// insertions before rollover. Do not materialize/sort the entire shard set
+	// unless the preferred shard is actually full.
+	e.spaceMu.RLock()
+	preferred := e.spaces[e.writeSpace]
+	e.spaceMu.RUnlock()
 	if preferred != nil && preferred.manifest.Role == "storage" && shardHasCapacity(preferred, 1) {
 		return preferred
 	}
 	if shardHasCapacity(e, 1) {
 		return e
 	}
+
+	// Rollover/recovery fallback: scan already-mounted physical shards only when
+	// the active target has filled. Cost grows with shard count, but occurs once
+	// per shard transition rather than once per Memory insertion.
+	e.spaceMu.RLock()
+	paths := make([]string, 0, len(e.spaces))
+	for p := range e.spaces {
+		paths = append(paths, p)
+	}
+	e.spaceMu.RUnlock()
 	sort.Strings(paths)
 	for _, p := range paths {
 		e.spaceMu.RLock()
 		sp := e.spaces[p]
 		e.spaceMu.RUnlock()
 		if sp != nil && sp.manifest.Role == "storage" && shardHasCapacity(sp, 1) {
+			e.spaceMu.Lock()
+			e.writeSpace = p
+			e.spaceMu.Unlock()
 			return sp
 		}
 	}
@@ -142,8 +154,9 @@ func (e *Engine) createAutomaticWritableShard() (*Engine, error) {
 }
 
 // placeRuntimeMemory atomically chooses/creates one bounded physical shard and
-// inserts a newly-created Memory. A failed expansion never falls back to an
-// already-full body, preserving the bounded-write invariant.
+// inserts a newly-created Memory. Boot already recovered Memory.N.mem files, and
+// shards created during this process are mounted immediately; therefore this
+// hot path performs no filesystem glob or all-shard discovery scan.
 func (e *Engine) placeRuntimeMemory(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("runtime Memory placement requires engine and id")
@@ -151,9 +164,6 @@ func (e *Engine) placeRuntimeMemory(m *Memory) error {
 	automaticShardMu.Lock()
 	defer automaticShardMu.Unlock()
 
-	// Pick up shards created by an earlier process/restart before allocating a
-	// new file. Number of shards grows with physical containers, not Memories.
-	e.mountAutomaticStorageShards()
 	if target := e.mountedWritableShard(); target != nil {
 		target.addRuntimeMemory(m)
 		return nil
