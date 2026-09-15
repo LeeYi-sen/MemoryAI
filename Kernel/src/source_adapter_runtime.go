@@ -80,19 +80,24 @@ func (e *Engine) upsertSourceAdapter(a sourceAdapter) (*Memory, error) {
 		return nil, errors.New("source adapter id required")
 	}
 	revision := uint64(1)
-	if old, err := e.resolveIDLocal(a.ID); err == nil && old != nil {
+	_, old, err := e.resolveLocalFabricMemory(a.ID)
+	if err == nil && old != nil {
 		if !memoryHasTag(old, sourceAdapterTag) {
 			return nil, fmt.Errorf("Memory id %s is not a source adapter", a.ID)
 		}
 		revision = old.Revision + 1
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
 	m := sourceAdapterMemory(a, revision)
-	e.upsertExplicitMemory(m)
+	if err := e.upsertExplicitMemoryBounded(m); err != nil {
+		return nil, err
+	}
 	return copyMemory(m), nil
 }
 
 func (e *Engine) deleteSourceAdapter(id string) error {
-	m, err := e.resolveIDLocal(strings.TrimSpace(id))
+	_, m, err := e.resolveLocalFabricMemory(strings.TrimSpace(id))
 	if err != nil {
 		return err
 	}
@@ -103,14 +108,14 @@ func (e *Engine) deleteSourceAdapter(id string) error {
 }
 
 func (e *Engine) listSourceAdapters() []map[string]any {
-	ids, err := e.listTagLocal(sourceAdapterTag)
+	ids, err := e.listTagFabric(sourceAdapterTag)
 	if err != nil {
 		return []map[string]any{{"error": err.Error()}}
 	}
 	sort.Strings(ids)
 	out := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		m, err := e.resolveIDLocal(id)
+		_, m, err := e.resolveLocalFabricMemory(id)
 		if err != nil || m == nil {
 			continue
 		}
@@ -138,7 +143,7 @@ func adapterStateString(m *Memory, key string) string {
 }
 
 func (e *Engine) testSourceAdapter(id string, timeout time.Duration) (map[string]any, error) {
-	m, err := e.resolveIDLocal(strings.TrimSpace(id))
+	_, m, err := e.resolveLocalFabricMemory(strings.TrimSpace(id))
 	if err != nil {
 		return nil, err
 	}
