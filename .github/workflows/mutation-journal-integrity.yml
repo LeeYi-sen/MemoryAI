@@ -29,12 +29,37 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           kernel = Path('Kernel/src/kernel.go').read_text(encoding='utf-8')
           runtime = Path('Kernel/src/mutation_journal_runtime.go').read_text(encoding='utf-8')
           tests = Path('Kernel/src/mutation_journal_runtime_test.go').read_text(encoding='utf-8')
-          required_kernel = [
+
+          start = kernel.find('func (e *Engine) persistAll() error {')
+          end = kernel.find('\nfunc ', start + 1)
+          if start < 0 or end < 0:
+              raise SystemExit('generated persistAll boundary missing')
+          persist_all = kernel[start:end]
+
+          required_persist_all = [
               'persistEngineIncremental(e)',
               'persistEngineIncremental(sp)',
+          ]
+          missing = [x for x in required_persist_all if x not in persist_all]
+          if missing:
+              raise SystemExit(f'persistAll incremental boundary missing: {missing}')
+          if 'persistEngineIfDirty(e)' in persist_all or 'persistEngineIfDirty(sp)' in persist_all:
+              raise SystemExit('generated persistAll still performs full-body persistence')
+
+          # Remote mem-node mutation ACK paths intentionally remain on full
+          # persistence until their physical post-error verification becomes
+          # journal-aware. Entry 008 protects this separation explicitly.
+          remote_full_barriers = kernel.count('persistEngineIfDirty(sp)')
+          if remote_full_barriers != 2:
+              raise SystemExit(
+                  f'expected two remote full-durability barriers outside persistAll, got {remote_full_barriers}'
+              )
+
+          required_kernel = [
               'loadEngineWithMutationJournal(',
               'writeDetZipWithMutationJournal(out, entries)',
           ]
@@ -64,9 +89,34 @@ jobs:
           bad = [x for x in forbidden if x in runtime]
           if bad:
               raise SystemExit(f'forbidden persistent sidecar path introduced: {bad}')
-          if 'persistEngineIfDirty(e)' in kernel or 'persistEngineIfDirty(sp)' in kernel:
-              raise SystemExit('generated persistAll still performs full-body persistence')
           print('In-body bounded mutation journal boundary: PASS')
+          PY
+
+      - name: Assert overlay preserves remote durability barriers
+        run: |
+          python3 - <<'PY'
+          from tools.kernel_mutation_journal_overlay import apply_kernel_mutation_journal_overlay
+
+          fixture = b'''package main
+          func loadEngineCanonical(x string){}
+          func (e *Engine) persistAll() error {
+              if err := persistEngineIfDirty(e); err != nil { return err }
+              for _, sp := range spaces { if err := persistEngineIfDirty(sp); err != nil { return err } }
+              return nil
+          }
+          func remoteA(){ _ = persistEngineIfDirty(sp) }
+          func remoteB(){ _ = persistEngineIfDirty(sp) }
+          func (e *Engine) saveBody(out string) error {
+              if err := writeDetZip(out, entries); err != nil { return err }
+              return nil
+          }
+          '''
+          out = apply_kernel_mutation_journal_overlay(fixture).decode('utf-8')
+          assert out.count('persistEngineIncremental(e)') == 1
+          assert out.count('persistEngineIncremental(sp)') == 1
+          assert out.count('persistEngineIfDirty(sp)') == 2
+          assert 'loadEngineCanonical(' not in out
+          print('Mutation journal overlay multi-barrier isolation: PASS')
           PY
 
       - name: Check formatting
