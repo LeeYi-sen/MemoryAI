@@ -1,0 +1,106 @@
+name: remote-body-integrity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  remote_body_integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout without external actions
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Restore generated Kernel source
+        run: python3 tools/restore_source.py
+
+      - name: Assert physical body transaction boundaries
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          kernel = Path('Kernel/src/kernel.go').read_text(encoding='utf-8')
+          runtime = Path('Kernel/src/remote_body_txn_runtime.go').read_text(encoding='utf-8')
+          overlay = Path('tools/kernel_remote_body_txn_overlay.py').read_text(encoding='utf-8')
+          tests = (
+              Path('Kernel/src/remote_body_txn_test.go').read_text(encoding='utf-8')
+              + Path('Kernel/src/remote_body_symlink_test.go').read_text(encoding='utf-8')
+              + Path('Kernel/src/remote_body_mount_alias_test.go').read_text(encoding='utf-8')
+          )
+
+          required_kernel = [
+              'loadEngineCanonical(',
+              'loadPassiveStorageSerialized(',
+              'releaseMountBodyTxn := acquireRemoteBodyTransaction(cp)',
+              'activePhysicalBody(cp)',
+              'releaseUnmountBodyTxn := acquireRemoteBodyTransaction(cp)',
+              'releaseBodyCloseTxn := acquireRemoteBodyTransaction(sp.bodyPath)',
+              'releasePassiveBodyTransaction(e)',
+          ]
+          missing = [x for x in required_kernel if x not in kernel]
+          if missing:
+              raise SystemExit(f'generated Kernel remote-body boundary missing: {missing}')
+          if re.search(r'(?<!func )\bloadEngine\(', kernel):
+              raise SystemExit('generated Kernel contains non-canonical loadEngine call')
+          if re.search(r'(?<!func )\bloadPassiveStorage\(', kernel):
+              raise SystemExit('generated Kernel contains unserialized passive load')
+
+          required_runtime = [
+              'remoteBodyTxnLockEntry', 'entry.refs++', 'entry.refs--',
+              'delete(remoteBodyTxnLocks, key)', 'filepath.EvalSymlinks',
+              'loadEngineCanonical', 'activePhysicalBodies',
+              'registerActivePhysicalBody', 'unregisterActivePhysicalBody',
+              'loadPassiveStorageSerialized', 'releasePassiveBodyTransaction',
+          ]
+          missing = [x for x in required_runtime if x not in runtime]
+          if missing:
+              raise SystemExit(f'remote-body runtime boundary missing: {missing}')
+
+          required_overlay = [
+              'engine_call_pattern', 'passive_call_pattern',
+              'acquireRemoteBodyTransaction(cp)', 'activePhysicalBody(cp)',
+              'acquireRemoteBodyTransaction(sp.bodyPath)',
+          ]
+          missing = [x for x in required_overlay if x not in overlay]
+          if missing:
+              raise SystemExit(f'remote-body overlay boundary missing: {missing}')
+
+          required_tests = [
+              'TestPassiveBodyTransactionSerializesLoadThroughClose',
+              'TestPassiveBodyTransactionsDoNotSerializeDifferentBodies',
+              'TestPassiveBodyRejectsSecondEngineWhileMounted',
+              'TestMountWaitsForPassiveTransactionAndLoadsDurableResult',
+              'TestRemoteBodyTransactionRegistryReclaimsAfterQueuedWaiter',
+              'TestRemoteBodyTransactionCanonicalizesSymlinkAlias',
+              'TestUnmountWaitsForPhysicalBodyTransaction',
+              'TestRootCloseWaitsForMountedBodyTransaction',
+              'TestPassiveSymlinkPersistenceTargetsRealBody',
+              'TestMountRejectsSymlinkAliasOfLivePhysicalBody',
+          ]
+          missing = [x for x in required_tests if x not in tests]
+          if missing:
+              raise SystemExit(f'remote-body regression coverage missing: {missing}')
+          print('Remote physical body transaction boundaries: PASS')
+          PY
+
+      - name: Run remote body transaction tests
+        env:
+          GO111MODULE: "off"
+        run: go test ./Kernel/src -run 'RemoteBody|PassiveBody|MountWaits|UnmountWaits|RootClose'
+
+      - name: Race-test remote body transaction tests
+        env:
+          GO111MODULE: "off"
+        run: go test -race ./Kernel/src -run 'RemoteBody|PassiveBody|MountWaits|UnmountWaits|RootClose'
