@@ -22,28 +22,30 @@ type MemoryStructureValidation struct {
 }
 
 // MemoryStructure 是经过独立现实证据验证后的第一类可复用记忆结构。
-// 它仍然是 Memory-owned 数据，不是 Kernel 的认知策略或 Skill 模块。
+// 它仍然是 Memory-owned 数据，不是 Kernel 的认知策略或能力模块。
 type MemoryStructure struct {
-	ID                       string            `json:"id"`
-	PatternHash              string            `json:"pattern_hash"`
-	SourceExperienceIDs      []string          `json:"source_experience_ids"`
-	ValidationExperienceIDs  []string          `json:"validation_experience_ids"`
-	Context                  map[string]string `json:"context,omitempty"`
-	Observation              map[string]string `json:"observation,omitempty"`
-	Action                   map[string]string `json:"action,omitempty"`
-	ExpectedOutcome          map[string]string `json:"expected_outcome,omitempty"`
-	PredictionHash           string            `json:"prediction_hash,omitempty"`
-	State                    string            `json:"state"`
-	ValidationCount          uint64            `json:"validation_count"`
-	SuccessCount             uint64            `json:"success_count"`
-	FailureCount             uint64            `json:"failure_count"`
+	ID                      string            `json:"id"`
+	PatternHash             string            `json:"pattern_hash"`
+	SourceExperienceIDs     []string          `json:"source_experience_ids"`
+	ValidationExperienceIDs []string          `json:"validation_experience_ids"`
+	Context                 map[string]string `json:"context,omitempty"`
+	Observation             map[string]string `json:"observation,omitempty"`
+	Action                  map[string]string `json:"action,omitempty"`
+	ExpectedOutcome         map[string]string `json:"expected_outcome,omitempty"`
+	PredictionHash          string            `json:"prediction_hash,omitempty"`
+	State                   string            `json:"state"`
+	ValidationCount         uint64            `json:"validation_count"`
+	SuccessCount            uint64            `json:"success_count"`
+	FailureCount            uint64            `json:"failure_count"`
+	// Program 是 Memory Structure 自己携带的可执行 VM 表达，不由 Kernel 从语义猜测生成。
+	Program                 []Op              `json:"program,omitempty"`
 }
 
 type memoryStructureValidationLedger struct {
-	mu        sync.RWMutex
-	history   map[string][]MemoryStructureValidation
+	mu         sync.RWMutex
+	history    map[string][]MemoryStructureValidation
 	structures map[string]*MemoryStructure
-	validated map[string]*MemoryStructure
+	validated  map[string]*MemoryStructure
 }
 
 // NewMemoryStructureValidationLedger 创建候选结构的现实验证账本。
@@ -66,6 +68,7 @@ func cloneMemoryStructure(src *MemoryStructure) *MemoryStructure {
 	out.Observation = cloneStringMap(src.Observation)
 	out.Action = cloneStringMap(src.Action)
 	out.ExpectedOutcome = cloneStringMap(src.ExpectedOutcome)
+	out.Program = append([]Op(nil), src.Program...)
 	return &out
 }
 
