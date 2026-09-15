@@ -6,9 +6,9 @@ import (
 )
 
 // lazySnapshotContext records the exact read-set baseline of one speculative
-// Engine. It also owns one long primary-store lease. IDs first read from passive
-// local shards record their real physical owner so commit never collapses shard
-// state back into the primary body.
+// Engine. It also owns one long primary-store lease. Before an ID enters the
+// read-set, owners[id] is only a revocable physical routing hint. Once the ID is
+// baselined, the owner is frozen for optimistic conflict validation and commit.
 type lazySnapshotContext struct {
 	mu           sync.Mutex
 	base         *memorySnapshot
@@ -62,7 +62,8 @@ func speculativePhysicalOwner(e *Engine, id string) (*Engine, bool) {
 // recordSpeculativeOwnerHints keeps physical routing information already
 // discovered by tag/activation index traversal. Hints do not add records to the
 // read-set and therefore do not consume the working-set limit until an ID is
-// actually read.
+// actually read. An unread hint may be replaced when topology changes; a
+// baselined ID's owner is immutable for the lifetime of the transaction.
 func recordSpeculativeOwnerHints(e *Engine, hints map[string]*Engine) error {
 	ctx, ok := speculativeLazyContext(e)
 	if !ok || len(hints) == 0 {
@@ -75,11 +76,35 @@ func recordSpeculativeOwnerHints(e *Engine, hints map[string]*Engine) error {
 			continue
 		}
 		if existing := ctx.owners[id]; existing != nil && existing != owner {
-			return duplicateFabricIdentityError(id)
+			if _, baselined := ctx.base.memories[id]; baselined {
+				return duplicateFabricIdentityError(id)
+			}
+			// Before first read this is only a route hint; topology may have
+			// legitimately moved the Memory to another mounted body.
+			ctx.owners[id] = owner
+			continue
 		}
 		ctx.owners[id] = owner
 	}
 	return nil
+}
+
+// clearSpeculativeOwnerHint invalidates a stale unread route hint. Once an ID is
+// in the read-set, ownership is frozen and can only be resolved by conflict
+// replay, never silently retargeted inside the same speculative transaction.
+func clearSpeculativeOwnerHint(e *Engine, id string, expected *Engine) {
+	ctx, ok := speculativeLazyContext(e)
+	if !ok || id == "" {
+		return
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	if _, baselined := ctx.base.memories[id]; baselined {
+		return
+	}
+	if expected == nil || ctx.owners[id] == expected {
+		delete(ctx.owners, id)
+	}
 }
 
 func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engine) error {
@@ -117,9 +142,6 @@ func recordSpeculativeBaselineOwned(e *Engine, id string, m *Memory, owner *Engi
 	return nil
 }
 
-// Generated kernel.go invokes this hook for a clean record first loaded through
-// the primary store. Shard-aware store fallback records an explicit owner before
-// this hook is reached, so the first owner assignment remains authoritative.
 func recordSpeculativeBaseline(e *Engine, id string, m *Memory) error {
 	origin, _ := speculativeOriginEngine(e)
 	return recordSpeculativeBaselineOwned(e, id, m, origin)
@@ -137,14 +159,6 @@ func cloneTagDelta(src map[string]map[string]bool) map[string]map[string]bool {
 	return out
 }
 
-// snapshotForSpeculationLazy creates a private overlay without enumerating the
-// persisted Memory Fabric. Only dirty/new records already in the primary body
-// are copied up front; other primary or shard records are copied and baselined
-// on first access. The same maxWorkingSet bounds both phases.
-//
-// Lock order is deliberately dataMu.RLock -> shared primary IndexedStore RLock.
-// Shard stores are leased only for the duration of an individual first read;
-// optimistic digest validation protects them through commit.
 func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memorySnapshot, error) {
 	if e == nil {
 		return nil, nil, fmt.Errorf("lazy speculative snapshot requires engine")
