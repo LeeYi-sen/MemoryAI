@@ -105,18 +105,27 @@ func parallelCPUFor(count, maxParallel int, fn func(int)) {
 	wg.Wait()
 }
 
-// Score6 is a generic six-lane dot-product primitive. The meaning and weights
-// of every lane are supplied by Memory; Kernel performs arithmetic only.
-func (r *parallelRuntime) Score6(vectors [][6]float32, weights [6]float32) ([]float32, string, error) {
+// Dot is dimension-agnostic physical arithmetic. Kernel knows only that each
+// row has the same number of scalar lanes as weights; lane meaning, weighting,
+// interpretation and any notion of "score" belong entirely to Memory.
+func (r *parallelRuntime) Dot(vectors [][]float32, weights []float32) ([]float32, string, error) {
+	if len(weights) == 0 {
+		return nil, "", fmt.Errorf("parallel dot requires at least one physical lane")
+	}
+	for i := range vectors {
+		if len(vectors[i]) != len(weights) {
+			return nil, "", fmt.Errorf("parallel dot lane mismatch at row %d: %d != %d", i, len(vectors[i]), len(weights))
+		}
+	}
 	out := make([]float32, len(vectors))
 	parallelCPUFor(len(vectors), 0, func(i int) {
-		var v float32
-		for lane := 0; lane < 6; lane++ {
-			v += vectors[i][lane] * weights[lane]
+		var sum float32
+		for lane := range weights {
+			sum += vectors[i][lane] * weights[lane]
 		}
-		out[i] = v
+		out[i] = sum
 	})
-	return out, "cpu-dot6", nil
+	return out, "cpu-dot", nil
 }
 
 func (r *parallelRuntime) Info() map[string]any {
@@ -128,6 +137,7 @@ func (r *parallelRuntime) Info() map[string]any {
 		"inflight":             atomic.LoadInt64(&r.inflight),
 		"peak_parallel":        atomic.LoadInt64(&r.peak),
 		"cognitive_selection":  false,
+		"fixed_semantic_lanes": false,
 	}
 }
 
@@ -145,14 +155,20 @@ func cognitionInfo() map[string]any {
 }
 
 func parallelSelfTest() error {
-	vectors := [][6]float32{{1, 2, 3, 4, 5, 6}, {6, 5, 4, 3, 2, 1}}
-	weights := [6]float32{1, 1, 1, 1, 1, 1}
-	got, backend, err := globalParallelRuntime.Score6(vectors, weights)
+	vectors := [][]float32{{1, 2, 3, 4}, {4, 3, 2, 1}}
+	weights := []float32{1, 1, 1, 1}
+	got, backend, err := globalParallelRuntime.Dot(vectors, weights)
 	if err != nil {
 		return err
 	}
-	if backend != "cpu-dot6" || len(got) != 2 || got[0] != 21 || got[1] != 21 {
+	if backend != "cpu-dot" || len(got) != 2 || got[0] != 10 || got[1] != 10 {
 		return fmt.Errorf("parallel physical arithmetic self-test failed: backend=%s values=%v", backend, got)
+	}
+	wideVectors := [][]float32{{1, 1, 1, 1, 1, 1, 1, 1, 1}}
+	wideWeights := []float32{1, 1, 1, 1, 1, 1, 1, 1, 1}
+	wide, _, err := globalParallelRuntime.Dot(wideVectors, wideWeights)
+	if err != nil || len(wide) != 1 || wide[0] != 9 {
+		return fmt.Errorf("parallel arbitrary-lane self-test failed: values=%v err=%v", wide, err)
 	}
 	return nil
 }
