@@ -31,10 +31,22 @@ var passiveBodyTxnRelease sync.Map // map[*Engine]func()
 var activePhysicalBodies sync.Map // map[canonical body path]*Engine
 
 func canonicalPhysicalBodyPath(path string) string {
-	if abs, err := filepath.Abs(path); err == nil {
-		return filepath.Clean(abs)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
 	}
-	return filepath.Clean(path)
+	clean := filepath.Clean(abs)
+	// Existing bodies must collapse symlink aliases to one physical key.
+	if resolved, er := filepath.EvalSymlinks(clean); er == nil {
+		return filepath.Clean(resolved)
+	}
+	// A body may not exist yet (for example a failed/opening path). Resolve the
+	// parent when possible so aliases through a symlinked directory still share
+	// the same transaction key.
+	if resolvedDir, er := filepath.EvalSymlinks(filepath.Dir(clean)); er == nil {
+		return filepath.Join(filepath.Clean(resolvedDir), filepath.Base(clean))
+	}
+	return clean
 }
 
 func acquireRemoteBodyTransaction(path string) func() {
