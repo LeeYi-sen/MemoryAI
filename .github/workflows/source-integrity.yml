@@ -77,8 +77,11 @@ jobs:
                   'persistence': 'Kernel/src/persistence_runtime.go',
                   'shard': 'Kernel/src/shard_runtime.go',
                   'store': 'Kernel/src/store_access_runtime.go',
+                  'fabric': 'Kernel/src/fabric_write_runtime.go',
                   'structure': 'Kernel/src/structure_runtime.go',
+                  'source_adapter': 'Kernel/src/source_adapter_runtime.go',
                   'lifetime_test': 'Kernel/src/store_lifetime_test.go',
+                  'fabric_test': 'Kernel/src/fabric_write_runtime_test.go',
                   'digest_test': 'Kernel/src/memory_digest_test.go',
               }.items()
           }
@@ -154,7 +157,8 @@ jobs:
 
           require('shard', [
               'MEMORYAI_SHARD_MAX_MEMORIES', 'mountAutomaticStorageShards',
-              'createAutomaticWritableShard', 'placeRuntimeMemory', 'automaticShardMu',
+              'createAutomaticWritableShard', 'placeRuntimeMemoryLocked',
+              'placeRuntimeMemory', 'automaticShardMu',
           ])
 
           require('store', [
@@ -162,17 +166,32 @@ jobs:
               'acquireStoreLifetimeLease', 'validateStore',
           ])
 
+          require('fabric', [
+              'resolveLocalFabricMemory', 'duplicate local Fabric Memory id',
+              'listTagFabric', 'automaticShardMu.Lock()',
+              'placeRuntimeMemoryLocked(q)', 'upsertExplicitMemoryOnOwner',
+              'upsertExplicitMemoryBounded', 'deleteExplicitMemoryBounded',
+          ])
+          forbid('fabric', ['owner.addRuntimeMemory(q)'])
+
           require('structure', [
               'remote Memory import disabled; use Sovereign Mesh direct read',
               'q.RuntimeExecCount = 0',
-              'persistedOld, persistedErr := e.storeGetID(q.ID)',
+              'resolveLocalFabricMemory(', 'upsertExplicitMemoryBounded(',
+              'deleteExplicitMemoryBounded(',
           ])
-          forbid('structure', ['validateMemoryCapabilities(&m, remote)'])
-          upsert = files['structure'].index('func (e *Engine) upsertExplicitMemory')
-          probe = files['structure'].index('persistedOld, persistedErr := e.storeGetID(q.ID)', upsert)
-          lock = files['structure'].index('e.dataMu.Lock()', upsert)
-          if probe > lock:
-              raise SystemExit('structure store probe moved back inside dataMu write lock')
+          forbid('structure', [
+              'validateMemoryCapabilities(&m, remote)',
+              'e.resolveIDLocal(', 'e.upsertExplicitMemory(',
+          ])
+
+          require('source_adapter', [
+              'resolveLocalFabricMemory(', 'listTagFabric(',
+              'upsertExplicitMemoryBounded(', 'explicitDeleteMemory(',
+          ])
+          forbid('source_adapter', [
+              'e.resolveIDLocal(', 'e.listTagLocal(', 'e.upsertExplicitMemory(',
+          ])
 
           require('mesh', [
               'direct-read-no-import', 'sovereign-memory-event+ed25519-grant',
@@ -190,9 +209,16 @@ jobs:
 
           require('lifetime_test', [
               'TestUpsertExplicitMemoryDoesNotReenterDataLock',
+              'upsertExplicitMemoryBounded',
               'TestRemoteJSONImportIsDirectReadOnly',
               'TestSpeculativePinnedStoreAvoidsNestedReadDeadlock',
               'TestPersistWaitsForSpeculativeStoreLease',
+          ])
+          require('fabric_test', [
+              'TestExplicitImportCreatesInBoundedShard',
+              'TestExplicitImportUpdatesExistingShardOwnerWithoutDuplicate',
+              'TestDuplicateFabricIdentityIsRejected',
+              'TestSourceAdapterLivesAcrossStorageShard',
           ])
           require('digest_test', ['TestMemoryStructuralDigestIgnoresRuntimeExecCount'])
 
