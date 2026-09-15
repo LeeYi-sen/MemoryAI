@@ -49,10 +49,9 @@ func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
 	// A lazy speculative Engine has no mounted shard map of its own. First try
-	// its pinned primary Store. On a miss the primary is already proven absent,
-	// so fallback must inspect mounted shards only. Re-probing the origin primary
-	// would recursively acquire the same RWMutex while the snapshot still owns an
-	// RLock and can deadlock behind a queued persistence writer.
+	// its pinned primary Store. On a miss, reuse an owner hint already discovered
+	// by tag/activation index traversal; only an unhinted exact lookup performs a
+	// mounted-shard fallback scan. The primary is never re-probed here.
 	if st, ok := pinnedSpeculativeStore(e); ok {
 		m, err := st.GetID(id)
 		if err == nil {
@@ -64,6 +63,16 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 		origin, exists := speculativeOriginEngine(e)
 		if !exists {
 			return nil, io.EOF
+		}
+		if hinted, exists := speculativePhysicalOwner(e, id); exists && hinted != nil && hinted != origin {
+			snapshot, er := resolveSpecificOwnerMemoryCopy(hinted, id)
+			if er != nil {
+				return nil, er
+			}
+			if er := recordSpeculativeBaselineOwned(e, id, snapshot, hinted); er != nil {
+				return nil, er
+			}
+			return snapshot, nil
 		}
 		owner, snapshot, err := origin.resolveMountedShardMemoryCopy(id)
 		if err != nil {
@@ -84,11 +93,18 @@ func (e *Engine) storeGetID(id string) (*Memory, error) {
 }
 
 func (e *Engine) storeTagIDs(tag string) ([]string, error) {
-	// Tag predicates inside a lazy transaction must see all mounted local shards,
-	// not only the primary Store. listTagLocal on the speculative Engine will
-	// still apply its private tagAdded/tagRemoved deltas after this base result.
+	// Tag predicates inside a lazy transaction must see all mounted local shards.
+	// The traversal already knows each result's owner, so preserve those hints for
+	// later exact reads instead of scanning the shard set again per ID.
 	if origin, ok := speculativeOriginEngine(e); ok {
-		return origin.listTagFabric(tag)
+		ids, owners, err := origin.listTagFabricOwned(tag)
+		if err != nil {
+			return nil, err
+		}
+		if err := recordSpeculativeOwnerHints(e, owners); err != nil {
+			return nil, err
+		}
+		return ids, nil
 	}
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
@@ -109,7 +125,14 @@ func (e *Engine) storeAllIDs() ([]string, error) {
 
 func (e *Engine) storePhysicalFeatureIDs(feature string) ([]string, error) {
 	if origin, ok := speculativeOriginEngine(e); ok {
-		return origin.physicalFeatureIDsFabric(feature)
+		ids, owners, err := origin.physicalFeatureIDsFabricOwned(feature)
+		if err != nil {
+			return nil, err
+		}
+		if err := recordSpeculativeOwnerHints(e, owners); err != nil {
+			return nil, err
+		}
+		return ids, nil
 	}
 	st, release, err := e.acquireStoreLifetimeLease()
 	if err != nil {
