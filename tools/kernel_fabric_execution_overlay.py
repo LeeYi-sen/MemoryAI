@@ -15,6 +15,8 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
         "RuntimeExecCount uint64",
         "func (e *Engine) run(",
         "func (e *Engine) ownerOf(",
+        "func (e *Engine) resolveID(",
+        "func (e *Engine) resolveMutable(",
         "m.RuntimeExecCount++",
         "recordSpeculativeBaseline(e, id, m)",
     )
@@ -22,10 +24,169 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
     if missing:
         raise RuntimeError(f"fabric-execution overlay upstream boundary missing: {missing}")
 
-    # resolveExecutable/resolveMutable already traverse the root mounted Fabric.
-    # A Memory returned from a passive shard therefore belongs to that shard's
-    # dataMu, not the root Engine's dataMu. Lock the actual physical owner while
-    # taking the executable Program snapshot and updating runtime-only telemetry.
+    # Canonical/local exact resolution must use one unique physical owner rule.
+    # The historical resolver iterated the spaces map directly, so duplicate
+    # physical IDs could be read nondeterministically. Speculative resolution is
+    # intentionally kept private: resolveIDLocal/storeGetID already pages from the
+    # origin Fabric into the transaction read-set without consulting live state.
+    old_resolve_id = '''func (e *Engine) resolveID(id string) (*Memory, error) {
+\tif m, err := e.resolveIDLocal(id); err == nil {
+\t\treturn m, nil
+\t}
+\te.spaceMu.RLock()
+\tspaces := make([]*Engine, 0, len(e.spaces))
+\tfor _, sp := range e.spaces {
+\t\tspaces = append(spaces, sp)
+\t}
+\te.spaceMu.RUnlock()
+\tfor _, sp := range spaces {
+\t\tif m, err := sp.resolveIDLocal(id); err == nil {
+\t\t\treturn m, nil
+\t\t}
+\t}
+\tif m, err := e.resolveRemoteID(id); err == nil {
+\t\treturn m, nil
+\t}
+\t// Sovereign Mesh is a virtual remote address space. Shared Memory is read
+\t// directly from a live origin and is never imported into local Memory.mem.
+\tif mr := meshRuntimeCurrent(); mr != nil && mr.role != "standalone" {
+\t\tif res, er := mr.sharedFetch(id); er == nil && res.Memory != nil {
+\t\t\treturn res.Memory, nil
+\t\t}
+\t}
+\treturn nil, io.EOF
+}'''
+    new_resolve_id = '''func (e *Engine) resolveID(id string) (*Memory, error) {
+\tif e == nil {
+\t\treturn nil, io.EOF
+\t}
+\tif e.speculative {
+\t\tif m, err := e.resolveIDLocal(id); err == nil {
+\t\t\treturn m, nil
+\t\t}
+\t} else {
+\t\troot := fabricRootFor(e)
+\t\tif root == nil {
+\t\t\troot = e
+\t\t}
+\t\t_, m, err := root.resolveLocalFabricMemory(id)
+\t\tif err == nil {
+\t\t\treturn m, nil
+\t\t}
+\t\tif err != io.EOF {
+\t\t\treturn nil, err
+\t\t}
+\t\te = root
+\t}
+\tif m, err := e.resolveRemoteID(id); err == nil {
+\t\treturn m, nil
+\t}
+\t// Sovereign Mesh is a virtual remote address space. Shared Memory is read
+\t// directly from a live origin and is never imported into local Memory.mem.
+\tif mr := meshRuntimeCurrent(); mr != nil && mr.role != "standalone" {
+\t\tif res, er := mr.sharedFetch(id); er == nil && res.Memory != nil {
+\t\t\treturn res.Memory, nil
+\t\t}
+\t}
+\treturn nil, io.EOF
+}'''
+    text = _replace_once(text, old_resolve_id, new_resolve_id, "unique local exact resolver")
+
+    old_mutable = '''func (e *Engine) resolveMutable(idOrTag string) (*Memory, error) {
+\tif m, err := e.resolveIDLocal(idOrTag); err == nil {
+\t\treturn m, nil
+\t}
+\te.spaceMu.RLock()
+\tspaces := make([]*Engine, 0, len(e.spaces))
+\tfor _, sp := range e.spaces {
+\t\tspaces = append(spaces, sp)
+\t}
+\te.spaceMu.RUnlock()
+\tfor _, sp := range spaces {
+\t\tif m, err := sp.resolveIDLocal(idOrTag); err == nil {
+\t\t\treturn m, nil
+\t\t}
+\t}
+\tids := []string{}
+\tif xs, err := e.listTagLocal(idOrTag); err == nil {
+\t\tids = append(ids, xs...)
+\t}
+\tfor _, sp := range spaces {
+\t\tif xs, err := sp.listTagLocal(idOrTag); err == nil {
+\t\t\tids = append(ids, xs...)
+\t\t}
+\t}
+\tif len(ids) == 0 {
+\t\treturn nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
+\t}
+\tsort.Strings(ids)
+\tfor _, id := range ids {
+\t\tif m, err := e.resolveIDLocal(id); err == nil {
+\t\t\treturn m, nil
+\t\t}
+\t\tfor _, sp := range spaces {
+\t\t\tif m, err := sp.resolveIDLocal(id); err == nil {
+\t\t\t\treturn m, nil
+\t\t\t}
+\t\t}
+\t}
+\treturn nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
+}'''
+    new_mutable = '''func (e *Engine) resolveMutable(idOrTag string) (*Memory, error) {
+\tif e == nil {
+\t\treturn nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
+\t}
+\tif e.speculative {
+\t\tif m, err := e.resolveIDLocal(idOrTag); err == nil {
+\t\t\treturn m, nil
+\t\t}
+\t\tids, err := e.listTagLocal(idOrTag)
+\t\tif err != nil && err != io.EOF {
+\t\t\treturn nil, err
+\t\t}
+\t\tsort.Strings(ids)
+\t\tfor _, id := range ids {
+\t\t\tif m, er := e.resolveIDLocal(id); er == nil {
+\t\t\t\treturn m, nil
+\t\t\t}
+\t\t}
+\t\treturn nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
+\t}
+
+\troot := fabricRootFor(e)
+\tif root == nil {
+\t\troot = e
+\t}
+\t_, m, err := root.resolveLocalFabricMemory(idOrTag)
+\tif err == nil {
+\t\treturn m, nil
+\t}
+\tif err != io.EOF {
+\t\treturn nil, err
+\t}
+\tids, _, err := root.listTagFabricOwned(idOrTag)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tif len(ids) == 0 {
+\t\treturn nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
+\t}
+\tfor _, id := range ids {
+\t\t_, m, er := root.resolveLocalFabricMemory(id)
+\t\tif er == nil {
+\t\t\treturn m, nil
+\t\t}
+\t\tif er != io.EOF {
+\t\t\treturn nil, er
+\t\t}
+\t}
+\treturn nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
+}'''
+    text = _replace_once(text, old_mutable, new_mutable, "unique mutable Fabric resolver")
+
+    # A Memory returned from a passive shard belongs to that shard's dataMu,
+    # not the root Engine's dataMu. Lock the actual physical owner while taking
+    # the executable Program snapshot and updating runtime-only telemetry.
     old_run = '''\te.dataMu.Lock()
 \tm.RuntimeExecCount++
 \tprogram := append([]Op(nil), m.Program...)
@@ -44,10 +205,9 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
 
     # ownerOf is a physical identity lookup. The historical implementation
     # iterated the spaces map directly, so duplicate IDs could select a random
-    # owner. Route through the single Fabric resolver instead: it sorts physical
-    # bodies and rejects duplicate local identities. Speculative Engines remain
-    # private owners because resolveIDLocal lazily pages shard records into the
-    # speculative cache/read-set.
+    # owner. Route through the single Fabric resolver instead. Speculative
+    # Engines remain private owners because resolveIDLocal lazily pages shard
+    # records into the speculative cache/read-set.
     old_owner = '''func (e *Engine) ownerOf(id string) *Engine {
 \tif _, err := e.resolveIDLocal(id); err == nil {
 \t\treturn e
@@ -86,11 +246,18 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
     required_after = (
         "executionOwner.dataMu.Lock()",
         "root.resolveLocalFabricMemory(id)",
+        "root.listTagFabricOwned(idOrTag)",
         "if e.speculative {",
     )
     missing = [token for token in required_after if token not in text]
     if missing:
         raise RuntimeError(f"fabric-execution overlay output boundary missing: {missing}")
-    if old_run in text or old_owner in text:
-        raise RuntimeError("fabric-execution overlay left historical owner/execution lock")
+    forbidden = (
+        old_run,
+        old_owner,
+        old_resolve_id,
+        old_mutable,
+    )
+    if any(token in text for token in forbidden):
+        raise RuntimeError("fabric-execution overlay left historical resolver/owner/execution boundary")
     return text.encode("utf-8")
