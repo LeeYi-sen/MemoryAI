@@ -24,13 +24,16 @@ func indexedStoreGuard(st *IndexedStore) *sync.RWMutex {
 	return actual.(*sync.RWMutex)
 }
 
-// acquireStoreLifetimeLease pins the Engine's current physical store. The
-// Engine data lock protects the store pointer while the shared guard is
-// acquired; after that the guard alone prevents persistence from closing the
-// descriptor until release is called.
+// acquireStoreLifetimeLease pins the Engine's current physical store. Lazy
+// speculative Engines already own one long lease in lazySnapshotContext, so
+// their nested reads reuse that lease instead of taking another RLock. This is
+// important because Go RWMutex blocks new readers once a writer is waiting.
 func (e *Engine) acquireStoreLifetimeLease() (*IndexedStore, func(), error) {
 	if e == nil {
 		return nil, nil, io.EOF
+	}
+	if st, ok := pinnedSpeculativeStore(e); ok {
+		return st, func() {}, nil
 	}
 	e.dataMu.RLock()
 	st := e.store
@@ -114,7 +117,7 @@ func (e *Engine) closeStore() {
 	g := indexedStoreGuard(st)
 	g.Lock()
 	e.store = nil
-	_ = st.file.Close()
+	st.Close()
 	g.Unlock()
 	indexedStoreLifetime.Delete(st)
 	e.dataMu.Unlock()
