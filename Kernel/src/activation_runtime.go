@@ -182,7 +182,7 @@ func (r *SparseActivationRuntime) replaceNode(m *Memory) {
 		if p == nil {
 			p = map[string]struct{}{}
 			r.postings[f] = p
-		}
+	}
 		p[m.ID] = struct{}{}
 	}
 	if _, existed := r.nodeFeature[m.ID]; !existed && !r.persistentBase {
@@ -356,16 +356,13 @@ func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (A
 	r.mu.RUnlock()
 
 	if persistent {
-		shadowed := activationShadowedIDs(e)
 		for _, f := range qf {
 			ids, err := e.storePhysicalFeatureIDs(f)
 			if err != nil {
 				return ActivationResult{}, err
 			}
 			for _, id := range ids {
-				if !shadowed[id] {
-					hit[id]++
-				}
+				hit[id]++
 			}
 		}
 	}
