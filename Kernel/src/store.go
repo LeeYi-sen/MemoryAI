@@ -13,6 +13,7 @@ import (
 )
 
 const indexEntrySize = 24
+const physicalIndexPrefix = "\x1fmemoryai.phys.v1:"
 
 type StoreManifest struct {
 	Records     string `json:"records"`
@@ -42,7 +43,8 @@ type IndexedStore struct {
 	memoryCount int
 }
 
-func hash64(s string) uint64 { h := fnv.New64a(); _, _ = h.Write([]byte(s)); return h.Sum64() }
+func hash64(s string) uint64                 { h := fnv.New64a(); _, _ = h.Write([]byte(s)); return h.Sum64() }
+func physicalIndexKey(feature string) string { return physicalIndexPrefix + feature }
 
 func openIndexedStore(body string, zr *zip.ReadCloser, sm StoreManifest) (*IndexedStore, error) {
 	f, err := os.Open(body)
@@ -170,6 +172,9 @@ func (s *IndexedStore) TagIDs(tag string) ([]string, error) {
 	h := hash64(tag)
 	i, err := s.findHash(s.tags, h)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	n := s.tags.size / indexEntrySize
@@ -199,6 +204,55 @@ func (s *IndexedStore) TagIDs(tag string) ([]string, error) {
 	}
 	return nil, nil
 }
+
+// PhysicalFeatureIDs resolves an opaque activation feature through the same
+// persisted hash/list machinery as tags. The reserved prefix keeps these
+// physical accelerator keys separate from Memory-authored semantic tags.
+func (s *IndexedStore) PhysicalFeatureIDs(feature string) ([]string, error) {
+	return s.TagIDs(physicalIndexKey(feature))
+}
+
+// FirstID reads one indexed record in O(1). It is used only to probe whether a
+// store already carries the persisted physical feature index; it is not a
+// cognitive selection primitive.
+func (s *IndexedStore) FirstID() (string, error) {
+	if s == nil || s.ids.size < indexEntrySize {
+		return "", io.EOF
+	}
+	e, err := s.readIndex(s.ids, 0)
+	if err != nil {
+		return "", err
+	}
+	m, err := s.readRecord(e)
+	if err != nil {
+		return "", err
+	}
+	return m.ID, nil
+}
+
+// HasPhysicalFeatureIndex distinguishes legacy Memory.mem stores from stores
+// rebuilt by the current source. New stores can activate directly from their
+// persisted exact index and avoid an O(N) startup scan.
+func (s *IndexedStore) HasPhysicalFeatureIndex() (bool, error) {
+	if s == nil || s.memoryCount == 0 {
+		return true, nil
+	}
+	id, err := s.FirstID()
+	if err != nil {
+		return false, err
+	}
+	ids, err := s.PhysicalFeatureIDs("id:" + id)
+	if err != nil {
+		return false, err
+	}
+	for _, candidate := range ids {
+		if candidate == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *IndexedStore) AllIDs() ([]string, error) {
 	n := s.ids.size / indexEntrySize
 	out := make([]string, 0, n)
@@ -229,6 +283,9 @@ func buildIndexedSections(memories []*Memory) (records, ididx, tagidx, taglists 
 	ms := append([]*Memory(nil), memories...)
 	sort.Slice(ms, func(i, j int) bool { return ms[i].ID < ms[j].ID })
 	idrecs := make([]buildRec, 0, len(ms))
+	// The existing tag index is also the physical secondary-index container.
+	// Reserved physical keys are invisible to Memory semantics but let startup
+	// activation avoid rebuilding an in-RAM index by scanning every record.
 	tags := map[string][]string{}
 	var off uint64
 	for _, m := range ms {
@@ -239,8 +296,16 @@ func buildIndexedSections(memories []*Memory) (records, ididx, tagidx, taglists 
 		records = append(records, b...)
 		idrecs = append(idrecs, buildRec{hash64(m.ID), off, uint32(len(b)), 0, m.ID})
 		off += uint64(len(b))
+
+		keys := map[string]struct{}{}
 		for _, t := range m.Tags {
-			tags[t] = append(tags[t], m.ID)
+			keys[t] = struct{}{}
+		}
+		for _, feature := range activationFeaturesForMemory(m, 0) {
+			keys[physicalIndexKey(feature)] = struct{}{}
+		}
+		for key := range keys {
+			tags[key] = append(tags[key], m.ID)
 		}
 	}
 	sort.Slice(idrecs, func(i, j int) bool {
