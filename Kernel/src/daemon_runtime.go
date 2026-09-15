@@ -76,7 +76,7 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		return daemonResponse{OK: true, Data: map[string]any{
 			"version":       imageVersion,
 			"role":          e.manifest.Role,
-			"memory_count":  e.localMemoryCount(),
+			"memory_count":  fabricMemoryCountFast(e),
 			"connections":   atomic.LoadUint64(&daemonConnections),
 			"runtime":       globalParallelRuntime.Info(),
 			"scheduler":     globalTxnScheduler.Info(),
