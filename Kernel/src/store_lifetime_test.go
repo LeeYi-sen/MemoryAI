@@ -16,18 +16,20 @@ func TestUpsertExplicitMemoryDoesNotReenterDataLock(t *testing.T) {
 	}
 	defer e.close()
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		e.upsertExplicitMemory(&Memory{
+		done <- e.upsertExplicitMemoryBounded(&Memory{
 			ID: "upsert-no-reentry", Layer: "emergent", Tags: []string{"memory"},
 			State: map[string]any{"v": "1"}, Revision: 1,
 		})
-		close(done)
 	}()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("upsertExplicitMemory deadlocked by re-entering dataMu through store access")
+		t.Fatal("upsertExplicitMemoryBounded deadlocked by re-entering dataMu through store access")
 	}
 	if _, err := e.resolveIDLocal("upsert-no-reentry"); err != nil {
 		t.Fatalf("upserted Memory not locally visible: %v", err)
