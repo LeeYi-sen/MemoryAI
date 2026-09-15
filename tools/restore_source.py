@@ -10,6 +10,7 @@ from pathlib import Path
 
 from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
+from kernel_speculative_overlay import apply_kernel_speculative_overlay
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFESTS = (
@@ -27,7 +28,10 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
     # source fixes are applied only after that verification as explicit,
     # deterministic overlays with their own input hashes.
     if rel_target.as_posix() == "Kernel/src/kernel.go":
-        return apply_kernel_mesh_overlay(apply_kernel_overlay(raw))
+        current = apply_kernel_overlay(raw)
+        current = apply_kernel_mesh_overlay(current)
+        current = apply_kernel_speculative_overlay(current)
+        return current
     return raw
 
 
