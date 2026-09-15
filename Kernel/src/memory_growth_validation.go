@@ -14,42 +14,44 @@ const memoryStructureValidatedState = "validated"
 // MemoryStructureValidation 记录候选结构接受一次新的现实 Experience 验证的事实。
 // 验证证据必须来自候选形成之后的独立 Experience，避免用形成结构的原始证据自证。
 type MemoryStructureValidation struct {
-	CandidateID string `json:"candidate_id"`
+	CandidateID  string `json:"candidate_id"`
 	ExperienceID string `json:"experience_id"`
-	Success bool `json:"success"`
-	CreatedNano int64 `json:"created_nano"`
-	Note string `json:"note,omitempty"`
+	Success      bool   `json:"success"`
+	CreatedNano  int64  `json:"created_nano"`
+	Note         string `json:"note,omitempty"`
 }
 
 // MemoryStructure 是经过独立现实证据验证后的第一类可复用记忆结构。
 // 它仍然是 Memory-owned 数据，不是 Kernel 的认知策略或 Skill 模块。
 type MemoryStructure struct {
-	ID string `json:"id"`
-	PatternHash string `json:"pattern_hash"`
-	SourceExperienceIDs []string `json:"source_experience_ids"`
-	ValidationExperienceIDs []string `json:"validation_experience_ids"`
-	Context map[string]string `json:"context,omitempty"`
-	Observation map[string]string `json:"observation,omitempty"`
-	Action map[string]string `json:"action,omitempty"`
-	ExpectedOutcome map[string]string `json:"expected_outcome,omitempty"`
-	PredictionHash string `json:"prediction_hash,omitempty"`
-	State string `json:"state"`
-	ValidationCount uint64 `json:"validation_count"`
-	SuccessCount uint64 `json:"success_count"`
-	FailureCount uint64 `json:"failure_count"`
+	ID                       string            `json:"id"`
+	PatternHash              string            `json:"pattern_hash"`
+	SourceExperienceIDs      []string          `json:"source_experience_ids"`
+	ValidationExperienceIDs  []string          `json:"validation_experience_ids"`
+	Context                  map[string]string `json:"context,omitempty"`
+	Observation              map[string]string `json:"observation,omitempty"`
+	Action                   map[string]string `json:"action,omitempty"`
+	ExpectedOutcome          map[string]string `json:"expected_outcome,omitempty"`
+	PredictionHash           string            `json:"prediction_hash,omitempty"`
+	State                    string            `json:"state"`
+	ValidationCount          uint64            `json:"validation_count"`
+	SuccessCount             uint64            `json:"success_count"`
+	FailureCount             uint64            `json:"failure_count"`
 }
 
 type memoryStructureValidationLedger struct {
-	mu sync.RWMutex
-	history map[string][]MemoryStructureValidation
+	mu        sync.RWMutex
+	history   map[string][]MemoryStructureValidation
+	structures map[string]*MemoryStructure
 	validated map[string]*MemoryStructure
 }
 
 // NewMemoryStructureValidationLedger 创建候选结构的现实验证账本。
 func NewMemoryStructureValidationLedger() *memoryStructureValidationLedger {
 	return &memoryStructureValidationLedger{
-		history: map[string][]MemoryStructureValidation{},
-		validated: map[string]*MemoryStructure{},
+		history:    map[string][]MemoryStructureValidation{},
+		structures: map[string]*MemoryStructure{},
+		validated:  map[string]*MemoryStructure{},
 	}
 }
 
@@ -123,10 +125,10 @@ func (l *memoryStructureValidationLedger) ValidateCandidate(candidate *MemoryStr
 
 	success := memoryStructurePatternHash(*witness) == candidate.PatternHash
 	validation := MemoryStructureValidation{
-		CandidateID: candidate.ID,
+		CandidateID:  candidate.ID,
 		ExperienceID: witness.ID,
-		Success: success,
-		CreatedNano: time.Now().UnixNano(),
+		Success:      success,
+		CreatedNano:  time.Now().UnixNano(),
 	}
 	if success {
 		validation.Note = "independent experience matches candidate pattern"
@@ -135,19 +137,20 @@ func (l *memoryStructureValidationLedger) ValidateCandidate(candidate *MemoryStr
 	}
 	l.history[candidate.ID] = append(l.history[candidate.ID], validation)
 
-	structure := l.validated[candidate.ID]
+	structure := l.structures[candidate.ID]
 	if structure == nil {
 		structure = &MemoryStructure{
-			ID: fmt.Sprintf("memory-structure-%s", candidate.PatternHash[:16]),
-			PatternHash: candidate.PatternHash,
+			ID:                  fmt.Sprintf("memory-structure-%s", candidate.PatternHash[:16]),
+			PatternHash:         candidate.PatternHash,
 			SourceExperienceIDs: cloneStrings(candidate.SourceExperienceIDs),
-			Context: cloneStringMap(source.Context),
-			Observation: cloneStringMap(source.Observation),
-			Action: cloneStringMap(source.Action),
-			ExpectedOutcome: cloneStringMap(source.Outcome),
-			PredictionHash: strings.TrimSpace(source.PredictionHash),
-			State: memoryStructureValidatedState,
+			Context:             cloneStringMap(source.Context),
+			Observation:         cloneStringMap(source.Observation),
+			Action:              cloneStringMap(source.Action),
+			ExpectedOutcome:     cloneStringMap(source.Outcome),
+			PredictionHash:      strings.TrimSpace(source.PredictionHash),
+			State:               memoryStructureValidatedState,
 		}
+		l.structures[candidate.ID] = structure
 	}
 	structure.ValidationCount++
 	if success {
