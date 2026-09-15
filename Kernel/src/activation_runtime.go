@@ -28,7 +28,7 @@ import (
 // Memory-owned executable structures.
 type SparseActivationRuntime struct {
 	mu             sync.RWMutex
-	postings       map[string]map[string]struct{} // mutable/new overlay only when persistentBase=true
+	postings       map[string]map[string]struct{}
 	nodeFeature    map[string][]string
 	fingerprint    map[string]uint64
 	persistentBase bool
@@ -225,53 +225,38 @@ func (r *SparseActivationRuntime) reset(persistent bool, baseNodes int) {
 }
 
 func (r *SparseActivationRuntime) Build(e *Engine) error {
-	if e == nil || e.manifest.Role != "core" {
-		return fmt.Errorf("physical activation index requires core Memory.mem")
+	root := fabricRootFor(e)
+	if root == nil || root.manifest.Role != "core" {
+		return fmt.Errorf("physical activation index requires core Memory Fabric")
 	}
 
-	persisted, err := e.storeHasPhysicalFeatureIndex()
-	if err != nil {
+	// Validate every mounted Store. The Fabric adapter performs per-body legacy
+	// fallback only for a body that lacks the persisted physical feature index;
+	// one historical shard never forces a whole-Fabric startup scan.
+	if _, err := root.storeHasPhysicalFeatureIndex(); err != nil {
 		return err
-	}
-	if persisted {
-		// New-format stores resolve exact physical features directly from the
-		// persisted secondary index. Only dirty/new in-memory records need an
-		// overlay; startup no longer walks the entire Memory body.
-		r.reset(true, e.storeMemoryCount())
-		r.RefreshDirty(e)
-		return nil
 	}
 
-	// Legacy compatibility path. It is deliberately isolated and reported in
-	// Info(); the next rebuilt/persisted store will contain the physical index
-	// and subsequent startups take the non-scanning path above.
-	ids, err := e.storeAllIDs()
-	if err != nil {
-		return err
-	}
-	r.reset(false, 0)
-	for _, id := range ids {
-		m, er := e.storeGetID(id)
-		if er == nil {
-			r.replaceNode(m)
-		}
-	}
-	e.dataMu.RLock()
-	cached := make([]*Memory, 0, len(e.cache))
-	for _, m := range e.cache {
-		cached = append(cached, m)
-	}
-	e.dataMu.RUnlock()
-	for _, m := range cached {
-		r.replaceNode(m)
-	}
+	// storePhysicalFeatureIDs already merges persisted postings with each body's
+	// live dirty/new/deleted overlay. Keep one authoritative physical view instead
+	// of copying dirty records into a second global overlay (which would double
+	// FeatureHit accounting). Startup cost is O(shard count), not O(total Memory).
+	r.reset(true, fabricMemoryCountFast(root))
 	return nil
 }
 
-// RefreshDirty incrementally keeps the mutable overlay consistent with
-// new/dirty/deleted Memories. It does not interpret Memory semantics.
+// RefreshDirty is retained for compatibility with historical callers. In the
+// current persistent Fabric backend the Store adapter itself overlays live
+// dirty/new/deleted records, so duplicating them here would double-count exact
+// feature hits. Legacy in-memory mode still uses the historical overlay path.
 func (r *SparseActivationRuntime) RefreshDirty(e *Engine) {
 	if e == nil {
+		return
+	}
+	r.mu.RLock()
+	persistent := r.persistentBase
+	r.mu.RUnlock()
+	if persistent {
 		return
 	}
 	e.dataMu.RLock()
@@ -385,15 +370,16 @@ func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (A
 		}
 	}
 
-	// Overlay always wins for dirty/new records. On legacy stores it contains
-	// the complete in-memory index built by the compatibility scan.
-	r.mu.RLock()
-	for _, f := range qf {
-		for id := range r.postings[f] {
-			hit[id]++
+	// Only historical non-persistent mode uses the in-memory posting overlay.
+	if !persistent {
+		r.mu.RLock()
+		for _, f := range qf {
+			for id := range r.postings[f] {
+				hit[id]++
+			}
 		}
+		r.mu.RUnlock()
 	}
-	r.mu.RUnlock()
 	atomic.AddUint64(&r.candidates, uint64(len(hit)))
 
 	ids := make([]string, 0, len(hit))
@@ -418,7 +404,7 @@ func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (A
 
 	backend := "cpu-exact-index-legacy-overlay"
 	if persistent {
-		backend = "persisted-exact-index+overlay"
+		backend = "fabric-persisted-exact-index+per-body-live-overlay"
 	}
 	return ActivationResult{
 		Query:          query,
@@ -444,7 +430,7 @@ func (r *SparseActivationRuntime) Info() map[string]any {
 	}
 	backend := "cpu-exact-index-legacy-overlay"
 	if persistent {
-		backend = "persisted-exact-index+overlay"
+		backend = "fabric-persisted-exact-index+per-body-live-overlay"
 	}
 	return map[string]any{
 		"mode":                      "physical-exact-index",
@@ -460,7 +446,8 @@ func (r *SparseActivationRuntime) Info() map[string]any {
 		"selection_order":           "stable-memory-id",
 		"state_field_limit":         0,
 		"persisted_secondary_index": persistent,
-		"legacy_full_scan_fallback": !persistent,
+		"legacy_full_scan_fallback": false,
+		"legacy_fallback_scope":     "per-body-on-demand",
 		"cognitive_ranking":         false,
 		"qualification":             activationQualificationInfo(),
 	}
