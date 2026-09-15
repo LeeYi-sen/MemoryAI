@@ -17,6 +17,8 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
         "func (e *Engine) ownerOf(",
         "func (e *Engine) resolveID(",
         "func (e *Engine) resolveMutable(",
+        "func (e *Engine) mountSpace(",
+        "func (e *Engine) unmountSpace(",
         "m.RuntimeExecCount++",
         "recordSpeculativeBaseline(e, id, m)",
     )
@@ -184,6 +186,111 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
 }'''
     text = _replace_once(text, old_mutable, new_mutable, "unique mutable Fabric resolver")
 
+    # Mounted bodies are independent physical concurrency domains. Sharing the
+    # root dataMu across every shard makes the multi-owner two-phase commit lock
+    # the same RWMutex repeatedly and also serializes unrelated shard writes.
+    # Keep each loadEngine-created dataMu and register only the physical topology.
+    old_mount = '''\tsp.dataMu = e.dataMu
+\te.spaceMu.Lock()
+\te.spaces[cp] = sp
+\te.spaceMu.Unlock()
+\treturn cp, nil
+'''
+    new_mount = '''\te.spaceMu.Lock()
+\te.spaces[cp] = sp
+\te.spaceMu.Unlock()
+\trememberFabricOwner(e, sp)
+\treturn cp, nil
+'''
+    text = _replace_once(text, old_mount, new_mount, "independent shard data lock")
+
+    # Remove topology before closing a body so no new Fabric lookup can acquire
+    # an Engine that is being persisted/closed. The Store lifetime guard handles
+    # readers that already obtained the old physical Store.
+    old_unmount = '''func (e *Engine) unmountSpace(path string) bool {
+\tcp, err := e.localLocatorPath(path)
+\tif err != nil {
+\t\treturn false
+\t}
+\te.spaceMu.Lock()
+\tdefer e.spaceMu.Unlock()
+\tsp := e.spaces[cp]
+\tif sp == nil {
+\t\treturn false
+\t}
+\tif sp.dirty {
+\t\t_ = sp.saveBody(sp.bodyPath)
+\t}
+\tsp.close()
+\tdelete(e.spaces, cp)
+\tif e.writeSpace == cp {
+\t\te.writeSpace = ""
+\t}
+\treturn true
+}'''
+    new_unmount = '''func (e *Engine) unmountSpace(path string) bool {
+\tcp, err := e.localLocatorPath(path)
+\tif err != nil {
+\t\treturn false
+\t}
+\te.spaceMu.Lock()
+\tsp := e.spaces[cp]
+\tif sp == nil {
+\t\te.spaceMu.Unlock()
+\t\treturn false
+\t}
+\tdelete(e.spaces, cp)
+\tif e.writeSpace == cp {
+\t\te.writeSpace = ""
+\t}
+\te.spaceMu.Unlock()
+\tforgetFabricOwner(sp)
+\tif sp.dirty {
+\t\t_ = sp.saveBody(sp.bodyPath)
+\t}
+\tsp.close()
+\treturn true
+}'''
+    text = _replace_once(text, old_unmount, new_unmount, "unmount topology before close")
+
+    # store-access overlay has already converted close() to guarded closeStore().
+    # Do not hold root.spaceMu while waiting for independent shard Store guards.
+    old_close = '''func (e *Engine) close() {
+\tif e == nil {
+\t\treturn
+\t}
+\te.spaceMu.Lock()
+\tdefer e.spaceMu.Unlock()
+\tfor _, sp := range e.spaces {
+\t\tif sp != nil {
+\t\t\tsp.closeStore()
+\t\t}
+\t}
+\te.closeStore()
+}'''
+    new_close = '''func (e *Engine) close() {
+\tif e == nil {
+\t\treturn
+\t}
+\te.spaceMu.Lock()
+\tspaces := make([]*Engine, 0, len(e.spaces))
+\tfor path, sp := range e.spaces {
+\t\tif sp != nil {
+\t\t\tspaces = append(spaces, sp)
+\t\t}
+\t\tdelete(e.spaces, path)
+\t}
+\te.writeSpace = ""
+\te.spaceMu.Unlock()
+\tfor _, sp := range spaces {
+\t\tforgetFabricOwner(sp)
+\t\tsp.closeStore()
+\t}
+\tforgetFabricOwner(e)
+\te.closeStore()
+}'''
+    text = _replace_once(text, old_close, new_close, "independent Fabric close")
+
     # A Memory returned from a passive shard belongs to that shard's dataMu,
     # not the root Engine's dataMu. Lock the actual physical owner while taking
     # the executable Program snapshot and updating runtime-only telemetry.
@@ -203,11 +310,9 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
 '''
     text = _replace_once(text, old_run, new_run, "run physical-owner lock")
 
-    # ownerOf is a physical identity lookup. The historical implementation
-    # iterated the spaces map directly, so duplicate IDs could select a random
-    # owner. Route through the single Fabric resolver instead. Speculative
-    # Engines remain private owners because resolveIDLocal lazily pages shard
-    # records into the speculative cache/read-set.
+    # ownerOf is a physical identity lookup. Route through the single Fabric
+    # resolver; speculative Engines remain private owners because resolveIDLocal
+    # lazily pages shard records into the speculative cache/read-set.
     old_owner = '''func (e *Engine) ownerOf(id string) *Engine {
 \tif _, err := e.resolveIDLocal(id); err == nil {
 \t\treturn e
@@ -247,6 +352,9 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
         "executionOwner.dataMu.Lock()",
         "root.resolveLocalFabricMemory(id)",
         "root.listTagFabricOwned(idOrTag)",
+        "rememberFabricOwner(e, sp)",
+        "forgetFabricOwner(sp)",
+        "spaces := make([]*Engine, 0, len(e.spaces))",
         "if e.speculative {",
     )
     missing = [token for token in required_after if token not in text]
@@ -257,7 +365,8 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
         old_owner,
         old_resolve_id,
         old_mutable,
+        "sp.dataMu = e.dataMu",
     )
     if any(token in text for token in forbidden):
-        raise RuntimeError("fabric-execution overlay left historical resolver/owner/execution boundary")
+        raise RuntimeError("fabric-execution overlay left historical resolver/owner/shared-lock boundary")
     return text.encode("utf-8")
