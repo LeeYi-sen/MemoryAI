@@ -1,0 +1,12 @@
+{
+  "path": "Kernel/v27-required-structures.json",
+  "encoding": "gzip+base64-chunks",
+  "parts": [
+    "v27-required-structures.json.gz.b64.part00",
+    "v27-required-structures.json.gz.b64.part01",
+    "v27-required-structures.json.gz.b64.part02",
+    "v27-required-structures.json.gz.b64.part03"
+  ],
+  "original_sha256": "22c6ca302532a2af6cc9a09bacbbc84d364b1e1ce30daf6d4a23eac846e69e92",
+  "baseline": "MemoryAI v27.0.0 repair_73_92"
+}
