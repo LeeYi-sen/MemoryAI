@@ -134,11 +134,13 @@ jobs:
           require('scheduler', [
               'snapshotForSpeculationLazy(snapshotMemoryLimit())',
               'commitFabricSnapshotDiff(base, diff, ce)',
-              'primary-long-lease+shard-first-read-leases',
+              'releaseSpeculativeStoreLease(ce)',
+              'execution-long-lease+release-before-commit',
               'canonical-only-bounded-placement',
           ])
           forbid('scheduler', [
               'snapshotForSpeculation(snapshotMemoryLimit())',
+              'primary-long-lease+shard-first-read-leases',
               'lazy-snapshot-owned-shared-lease',
               'acquireStoreLifetimeLease()',
           ])
@@ -149,18 +151,27 @@ jobs:
           ])
           require('lazy', [
               'releaseStore func()', 'pinnedSpeculativeStore',
-              'recordSpeculativeOwnerHints', 'speculativePhysicalOwner',
+              'recordSpeculativeOwnerHints', 'clearSpeculativeOwnerHint',
+              'speculativePhysicalOwner', 'releaseSpeculativeStoreLease',
               'storeGuard := indexedStoreGuard(store)', 'storeGuard.RLock()',
               'snapshot working-set limit exceeded', 'LoadAndDelete',
           ])
           require('spec_commit', [
               'commitFabricSnapshotDiff', 'speculativePhysicalOwner',
-              'physicalOwnerMemoryCopy', 'len(d.created) != 0',
+              'physicalOwnerMemoryLocked', 'lockSpeculativeCommitOwners',
+              'All owners are locked in deterministic physical-path order',
+              'len(d.created) != 0',
+          ])
+          forbid('spec_commit', [
+              'applySpeculativeStructuralPlan(plan)',
+              'applySpeculativeExecPlan(plan)',
           ])
           require('spec_fabric_test', [
               'TestSpeculativeCommitPreservesShardOwner',
               'TestSpeculativeShardConflictDoesNotOverwriteConcurrentMutation',
+              'TestSpeculativeCrossOwnerConflictIsZeroWrite',
               'TestSpeculativeShardFallbackDoesNotReenterPinnedPrimaryStore',
+              'TestSpeculativeUnreadOwnerHintRetargetsAfterShardMove',
           ])
 
           require('scale', [
@@ -184,8 +195,9 @@ jobs:
 
           require('store', [
               'indexedStoreLifetime', 'indexedStoreGuard', 'pinnedSpeculativeStore',
-              'resolveMountedShardMemoryCopy', 'recordSpeculativeOwnerHints',
-              'listTagMountedShardsOwned', 'physicalFeatureIDsMountedShardsOwned',
+              'clearSpeculativeOwnerHint', 'resolveMountedShardMemoryCopy',
+              'recordSpeculativeOwnerHints', 'listTagMountedShardsOwned',
+              'physicalFeatureIDsMountedShardsOwned',
               'storePhysicalFeatureIDsLocal', 'storeHasPhysicalFeatureIndexLocal',
               'acquireStoreLifetimeLease', 'validateStore',
           ])
@@ -248,6 +260,7 @@ jobs:
               'upsertExplicitMemoryBounded', 'TestRemoteJSONImportIsDirectReadOnly',
               'TestSpeculativePinnedStoreAvoidsNestedReadDeadlock',
               'TestPersistWaitsForSpeculativeStoreLease',
+              'TestReleaseSpeculativeStoreLeaseBreaksPersistCommitLockCycle',
           ])
           require('fabric_test', [
               'TestExplicitImportCreatesInBoundedShard',
