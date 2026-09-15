@@ -47,6 +47,7 @@ type MeshRequest struct {
 	Endpoint       string            `json:"endpoint,omitempty"`
 	Vars           map[string]string `json:"vars,omitempty"`
 	Node           *MeshNode         `json:"node,omitempty"`
+	Grant          *MeshGrant        `json:"grant,omitempty"`
 }
 
 type MeshResponse struct {
@@ -59,6 +60,7 @@ type MeshResponse struct {
 	Nodes    []MeshNode   `json:"nodes,omitempty"`
 	Memory   *Memory      `json:"memory,omitempty"`
 	Frame    *Frame       `json:"frame,omitempty"`
+	Grant    *MeshGrant   `json:"grant,omitempty"`
 }
 
 type meshRuntime struct {
@@ -150,6 +152,9 @@ func bindMeshEngine(e *Engine) {
 	}
 }
 
+// meshTransportKey authenticates the channel only. It is intentionally not a
+// Sovereign authorization key: remote Memory access/execution also requires a
+// short-lived Ed25519 MeshGrant signed by the Sovereign.
 func meshTransportKey() []byte {
 	return []byte(strings.TrimSpace(os.Getenv("MEMORYAI_MESH_CAPABILITY_KEY")))
 }
@@ -300,8 +305,14 @@ func (m *meshRuntime) authorityRPC(req MeshRequest) (MeshResponse, error) {
 func (m *meshRuntime) handleRPC(req MeshRequest) MeshResponse {
 	switch req.Op {
 	case "shared_fetch":
+		if err := consumeMeshGrant(req.Grant, []string{"shared_fetch"}, req.MemoryID, m.nodeID); err != nil {
+			return MeshResponse{OK: false, Error: "sovereign grant denied: " + err.Error()}
+		}
 		return m.serveLocalMemory(req.MemoryID)
 	case "structure_run":
+		if err := consumeMeshGrant(req.Grant, []string{"shared_execute", "route_execute"}, req.MemoryID, m.nodeID); err != nil {
+			return MeshResponse{OK: false, Error: "sovereign grant denied: " + err.Error()}
+		}
 		return m.serveLocalExecution(req.MemoryID, req.Vars)
 	default:
 		if m.role != "sovereign" {
@@ -335,26 +346,9 @@ func (m *meshRuntime) handleAuthority(req MeshRequest) MeshResponse {
 	case "shared_propose":
 		return m.authorizeSharedProposal(req)
 	case "shared_search":
-		m.mu.RLock()
-		records := make([]MeshRecord, 0)
-		for _, rec := range m.shared {
-			if req.Query != "" && req.Query != rec.MemoryID && !containsExact(rec.Tags, req.Query) {
-				continue
-			}
-			matched := true
-			for _, tag := range req.Tags {
-				if !containsExact(rec.Tags, tag) {
-					matched = false
-					break
-				}
-			}
-			if matched {
-				records = append(records, rec)
-			}
-		}
-		m.mu.RUnlock()
-		sort.Slice(records, func(i, j int) bool { return records[i].MemoryID < records[j].MemoryID })
-		return MeshResponse{OK: true, Status: "exact", Records: records}
+		return m.searchShared(req)
+	case "shared_grant":
+		return m.issueSharedGrant(req)
 	case "shared_reconcile":
 		m.mu.RLock()
 		rec, ok := m.shared[req.MemoryID]
@@ -369,6 +363,47 @@ func (m *meshRuntime) handleAuthority(req MeshRequest) MeshResponse {
 	default:
 		return MeshResponse{OK: false, Error: "unsupported mesh authority operation: " + req.Op}
 	}
+}
+
+func (m *meshRuntime) searchShared(req MeshRequest) MeshResponse {
+	m.mu.RLock()
+	records := make([]MeshRecord, 0)
+	for _, rec := range m.shared {
+		if req.Query != "" && req.Query != rec.MemoryID && !containsExact(rec.Tags, req.Query) {
+			continue
+		}
+		matched := true
+		for _, tag := range req.Tags {
+			if !containsExact(rec.Tags, tag) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			records = append(records, rec)
+		}
+	}
+	m.mu.RUnlock()
+	sort.Slice(records, func(i, j int) bool { return records[i].MemoryID < records[j].MemoryID })
+	return MeshResponse{OK: true, Status: "exact", Records: records}
+}
+
+func (m *meshRuntime) issueSharedGrant(req MeshRequest) MeshResponse {
+	operation := strings.TrimSpace(req.Vars["operation"])
+	if operation != "shared_fetch" && operation != "shared_execute" {
+		return MeshResponse{OK: false, Error: "shared grant operation denied"}
+	}
+	m.mu.RLock()
+	rec, ok := m.shared[strings.TrimSpace(req.MemoryID)]
+	m.mu.RUnlock()
+	if !ok {
+		return MeshResponse{OK: false, Error: "shared Memory not authorized", Status: "forgotten"}
+	}
+	grant, err := issueMeshGrant(operation, rec.MemoryID, req.OriginNode, rec.OriginNode, meshGrantTTL)
+	if err != nil {
+		return MeshResponse{OK: false, Error: err.Error()}
+	}
+	return MeshResponse{OK: true, Status: "authorized", Records: []MeshRecord{rec}, Grant: grant}
 }
 
 func containsExact(xs []string, want string) bool {
@@ -488,44 +523,43 @@ func (m *meshRuntime) serveLocalExecution(id string, vars map[string]string) Mes
 	return MeshResponse{OK: true, Status: "executed", Frame: f}
 }
 
+func (m *meshRuntime) requestSharedGrant(id, operation string) (MeshRecord, *MeshGrant, error) {
+	m.mu.RLock()
+	origin := m.nodeID
+	m.mu.RUnlock()
+	res, err := m.authorityRPC(MeshRequest{
+		Op: "shared_grant", MemoryID: strings.TrimSpace(id), OriginNode: origin,
+		Vars: map[string]string{"operation": operation},
+	})
+	if err != nil {
+		return MeshRecord{}, nil, err
+	}
+	if len(res.Records) != 1 || res.Grant == nil {
+		return MeshRecord{}, nil, errors.New("sovereign did not issue shared authorization grant")
+	}
+	return res.Records[0], res.Grant, nil
+}
+
 func (m *meshRuntime) sharedFetch(id string) (MeshResponse, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return MeshResponse{}, errors.New("shared Memory id required")
 	}
-	if m.role == "sovereign" {
-		m.mu.RLock()
-		rec, ok := m.shared[id]
-		m.mu.RUnlock()
-		if !ok {
-			return MeshResponse{}, errors.New("shared Memory forgotten")
-		}
-		return m.fetchRecord(rec)
-	}
-	res, err := m.authorityRPC(MeshRequest{Op: "shared_search", Query: id})
-	if err != nil || len(res.Records) == 0 {
-		if err == nil {
-			err = errors.New("shared Memory forgotten")
-		}
+	rec, grant, err := m.requestSharedGrant(id, "shared_fetch")
+	if err != nil {
 		return MeshResponse{}, err
 	}
-	return m.fetchRecord(res.Records[0])
-}
-
-func (m *meshRuntime) fetchRecord(rec MeshRecord) (MeshResponse, error) {
 	m.mu.RLock()
 	self := m.nodeID
 	m.mu.RUnlock()
-	var res MeshResponse
-	var err error
 	if rec.OriginNode == self {
-		res = m.serveLocalMemory(rec.MemoryID)
+		res := m.serveLocalMemory(rec.MemoryID)
 		if !res.OK {
-			err = errors.New(res.Error)
+			return res, errors.New(res.Error)
 		}
-	} else {
-		res, err = m.rpc(rec.Endpoint, MeshRequest{Op: "shared_fetch", MemoryID: rec.MemoryID})
+		return res, nil
 	}
+	res, err := m.rpc(rec.Endpoint, MeshRequest{Op: "shared_fetch", MemoryID: rec.MemoryID, Grant: grant})
 	if err != nil {
 		return MeshResponse{}, err
 	}
@@ -535,27 +569,21 @@ func (m *meshRuntime) fetchRecord(rec MeshRecord) (MeshResponse, error) {
 	if rec.Digest != "" && memoryJSONDigest(res.Memory) != rec.Digest {
 		return MeshResponse{}, errors.New("remote shared Memory digest mismatch")
 	}
-	if rec.OriginNode != self {
-		if err := validateMemoryCapabilities(res.Memory, true); err != nil {
-			return MeshResponse{}, err
-		}
+	if err := validateMemoryCapabilities(res.Memory, true); err != nil {
+		return MeshResponse{}, err
 	}
 	res.Status = "remembered"
 	return res, nil
 }
 
 func (m *meshRuntime) sharedExecute(id string, vars map[string]string) (MeshResponse, error) {
+	rec, grant, err := m.requestSharedGrant(id, "shared_execute")
+	if err != nil {
+		return MeshResponse{}, err
+	}
 	m.mu.RLock()
 	self := m.nodeID
 	m.mu.RUnlock()
-	res, err := m.authorityRPC(MeshRequest{Op: "shared_search", Query: id})
-	if err != nil || len(res.Records) == 0 {
-		if err == nil {
-			err = errors.New("shared executable Memory forgotten")
-		}
-		return MeshResponse{}, err
-	}
-	rec := res.Records[0]
 	if rec.OriginNode == self {
 		out := m.serveLocalExecution(id, vars)
 		if !out.OK {
@@ -563,7 +591,7 @@ func (m *meshRuntime) sharedExecute(id string, vars map[string]string) (MeshResp
 		}
 		return out, nil
 	}
-	return m.rpc(rec.Endpoint, MeshRequest{Op: "structure_run", MemoryID: id, Vars: vars})
+	return m.rpc(rec.Endpoint, MeshRequest{Op: "structure_run", MemoryID: id, Vars: vars, Grant: grant})
 }
 
 func (m *meshRuntime) routeCognition(id string, vars map[string]string, preferLocal bool) (string, *Frame, error) {
@@ -609,7 +637,11 @@ func (m *meshRuntime) routeCognition(id string, vars map[string]string, preferLo
 		if n.Endpoint == "" {
 			continue
 		}
-		res, err := m.rpc(n.Endpoint, MeshRequest{Op: "structure_run", MemoryID: id, Vars: vars})
+		grant, err := issueMeshGrant("route_execute", id, self, n.ID, meshGrantTTL)
+		if err != nil {
+			return "", nil, err
+		}
+		res, err := m.rpc(n.Endpoint, MeshRequest{Op: "structure_run", MemoryID: id, Vars: vars, Grant: grant})
 		if err == nil && res.OK {
 			return n.ID, res.Frame, nil
 		}
@@ -618,6 +650,9 @@ func (m *meshRuntime) routeCognition(id string, vars map[string]string, preferLo
 }
 
 func (m *meshRuntime) fanout(id string, vars map[string]string, includeSelf bool) ([]string, error) {
+	if m.role != "sovereign" {
+		return nil, errors.New("mesh fanout requires sovereign role")
+	}
 	res, err := m.authorityRPC(MeshRequest{Op: "directory"})
 	if err != nil {
 		return nil, err
@@ -640,7 +675,12 @@ func (m *meshRuntime) fanout(id string, vars map[string]string, includeSelf bool
 				er = errors.New(rr.Error)
 			}
 		} else {
-			rr, er = m.rpc(n.Endpoint, MeshRequest{Op: "structure_run", MemoryID: id, Vars: vars})
+			grant, grantErr := issueMeshGrant("route_execute", id, self, n.ID, meshGrantTTL)
+			if grantErr != nil {
+				er = grantErr
+			} else {
+				rr, er = m.rpc(n.Endpoint, MeshRequest{Op: "structure_run", MemoryID: id, Vars: vars, Grant: grant})
+			}
 		}
 		if er != nil {
 			row["error"] = er.Error()
@@ -682,17 +722,20 @@ func meshInfoMap() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return map[string]any{
-		"role":                    m.role,
-		"node_id":                 m.nodeID,
-		"endpoint":                m.endpoint,
-		"authority_configured":    m.authorityURL != "",
-		"directory_nodes":         len(m.directory),
-		"shared_records":          len(m.shared),
-		"deferred_journal":        len(m.journal),
-		"startup_error":           m.startupErr,
-		"remote_memory_semantics": "direct-read-no-import",
-		"routing":                 "stable-physical-availability-only",
-		"shared_authorization":    "sovereign-memory-event",
+		"role":                         m.role,
+		"node_id":                      m.nodeID,
+		"endpoint":                     m.endpoint,
+		"authority_configured":         m.authorityURL != "",
+		"directory_nodes":              len(m.directory),
+		"shared_records":               len(m.shared),
+		"deferred_journal":             len(m.journal),
+		"startup_error":                m.startupErr,
+		"remote_memory_semantics":      "direct-read-no-import",
+		"routing":                      "stable-physical-availability-only",
+		"shared_authorization":         "sovereign-memory-event+ed25519-grant",
+		"transport_authentication":     "hmac-channel-only",
+		"sovereign_public_key_present": strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64")) != "",
+		"sovereign_private_key_present": strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64")) != "",
 	}
 }
 
@@ -702,14 +745,20 @@ func meshSecuritySelfTest() (map[string]any, error) {
 	sig := meshSignBytes(key, body)
 	valid := meshVerifyBytes(key, body, sig)
 	tamperRejected := !meshVerifyBytes(key, []byte(`{"op":"shared_fetch"}`), sig)
-	ok := valid && tamperRejected
+	grantTest, grantErr := meshGrantCryptoSelfTest()
+	grantOK := grantErr == nil
+	ok := valid && tamperRejected && grantOK
 	out := map[string]any{
-		"ok":              ok,
-		"hmac_valid":      valid,
-		"tamper_rejected": tamperRejected,
-		"remote_exec_caps": "validated-by-memory-capability-signature",
+		"ok":                       ok,
+		"hmac_valid":               valid,
+		"transport_tamper_rejected": tamperRejected,
+		"sovereign_grant":          grantTest,
+		"remote_exec_caps":         "sovereign-grant+memory-capability-signature",
 	}
 	if !ok {
+		if grantErr != nil {
+			out["grant_error"] = grantErr.Error()
+		}
 		return out, errors.New("mesh security self-test failed")
 	}
 	return out, nil
