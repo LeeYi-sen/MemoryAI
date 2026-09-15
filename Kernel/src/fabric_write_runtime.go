@@ -69,18 +69,19 @@ func (e *Engine) resolveLocalFabricMemory(id string) (*Engine, *Memory, error) {
 	return owner, found, nil
 }
 
-// listTagFabric merges local tag indexes without importing or copying Memory.
-// Duplicate IDs across different physical bodies are surfaced as corruption.
-func (e *Engine) listTagFabric(tag string) ([]string, error) {
+// listTagFabricOwned merges local tag indexes and preserves the physical owner
+// discovered by that same indexed lookup. Speculative activation can reuse the
+// owner hint instead of scanning every shard again for every returned ID.
+func (e *Engine) listTagFabricOwned(tag string) ([]string, map[string]*Engine, error) {
 	seen := map[string]*Engine{}
 	for _, candidate := range e.localFabricEngines() {
 		ids, err := candidate.listTagLocal(tag)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, id := range ids {
 			if previous := seen[id]; previous != nil && previous != candidate {
-				return nil, fmt.Errorf("duplicate local Fabric Memory id %q while listing tag %q", id, tag)
+				return nil, nil, fmt.Errorf("duplicate local Fabric Memory id %q while listing tag %q", id, tag)
 			}
 			seen[id] = candidate
 		}
@@ -90,7 +91,13 @@ func (e *Engine) listTagFabric(tag string) ([]string, error) {
 		out = append(out, id)
 	}
 	sort.Strings(out)
-	return out, nil
+	return out, seen, nil
+}
+
+// listTagFabric keeps the historical API for non-speculative callers.
+func (e *Engine) listTagFabric(tag string) ([]string, error) {
+	ids, _, err := e.listTagFabricOwned(tag)
+	return ids, err
 }
 
 func upsertExplicitMemoryOnOwner(owner *Engine, q *Memory) error {
