@@ -37,6 +37,25 @@ def apply_kernel_persistence_overlay(raw: bytes) -> bytes:
 
     text = _replace_once(
         text,
+        '''\tfor _, sp := range spaces {
+\t\tif sp.dirty {
+\t\t\tif err := sp.saveBody(sp.bodyPath); err != nil {
+\t\t\t\treturn err
+\t\t\t}
+\t\t}
+\t}
+''',
+        '''\tfor _, sp := range spaces {
+\t\tif err := persistEngineIfDirty(sp); err != nil {
+\t\t\treturn err
+\t\t}
+\t}
+''',
+        "lock-safe mounted body dirty check",
+    )
+
+    text = _replace_once(
+        text,
         '''func (e *Engine) saveBody(out string) error {
 \tms, err := e.allMemories()
 ''',
@@ -68,6 +87,7 @@ type zipEntry struct {''',
 
     forbidden = (
         'func (e *Engine) persistAll() error {\n\tif err := e.saveBody(e.bodyPath)',
+        '\tfor _, sp := range spaces {\n\t\tif sp.dirty {',
         'func (e *Engine) saveBody(out string) error {\n\tms, err := e.allMemories()',
         'entries = append(entries, zipEntry{"manifest.json", mb, false})\n\treturn writeDetZip(out, entries)',
         'finalizePersistedBody(e, out)',
@@ -76,6 +96,7 @@ type zipEntry struct {''',
     if bad:
         raise RuntimeError(f"unfixed persistence path remained: {bad}")
     required_after = (
+        "persistEngineIfDirty(sp)",
         "lockEnginePersistence(e)",
         "snapshotMemoriesForPersistence(e)",
         "finalizePersistedBody(e, out, persistedSnapshot)",
