@@ -233,6 +233,11 @@ func selectGroundedAction(e *Engine, validation *memoryStructureValidationLedger
 			continue
 		}
 		if receipt.StructureID != structure.ID {
+			// Context branch 会保留父结构的事实 Action，但不能重放父代已经消费的物理 action id。
+			// 只有明确血缘能继承“该 action 已执行”的事实；无血缘的重复 action id 仍视为冲突。
+			if containsString(structure.ParentStructureIDs, receipt.StructureID) {
+				continue
+			}
 			return nil, nil, 0, false, fmt.Errorf("grounded action id %s is already owned by structure %s", actionID, receipt.StructureID)
 		}
 		if receipt.Status == groundedReceiptResultPersisted {

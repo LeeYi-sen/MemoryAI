@@ -381,3 +381,51 @@ func TestConcurrentGroundedCyclesDoNotCrossAtMostOnceFence(t *testing.T) {
 		t.Fatalf("concurrent grounded actions crossed at-most-once fence: hits=%d", got)
 	}
 }
+
+func TestGroundedActionReceiptIsInheritedAsConsumedByContextChild(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	e, _ := newMemoryGrowthRuntimeTestEngine(t)
+	defer e.close()
+	parent := seedValidatedGroundedStructure(t, e, server.URL, "grounded-action-parent-consumed", "200")
+	first, err := RunAutonomousGroundedActionCycle(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Skipped || atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("parent grounded action did not execute exactly once: result=%#v hits=%d", first, atomic.LoadInt32(&hits))
+	}
+
+	experiences, formation, validation, err := LoadMemoryGrowthState(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := cloneMemoryStructure(parent)
+	child.ID = "memory-structure-grounded-context-child"
+	child.CandidateID = "candidate-grounded-context-child"
+	child.ParentStructureIDs = []string{parent.ID}
+	validation.structures[child.CandidateID] = cloneMemoryStructure(child)
+	validation.validated[child.CandidateID] = cloneMemoryStructure(child)
+	if err := PersistMemoryGrowthState(e, experiences, formation, validation); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.persistAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := RunAutonomousGroundedActionCycle(e)
+	if err != nil {
+		t.Fatalf("context child treated inherited consumed action id as a collision: %v", err)
+	}
+	if !second.Skipped {
+		t.Fatalf("context child replayed parent grounded action: %#v", second)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("context child replayed an already consumed external side effect: %d", got)
+	}
+}
