@@ -12,6 +12,7 @@ from kernel_fabric_execution_overlay import apply_kernel_fabric_execution_overla
 from kernel_lazy_overlay import apply_kernel_lazy_overlay
 from kernel_mesh_journal_overlay import apply_kernel_mesh_journal_overlay
 from kernel_mesh_overlay import apply_kernel_mesh_overlay
+from kernel_mutation_journal_overlay import apply_kernel_mutation_journal_overlay
 from kernel_overlay import apply_kernel_overlay
 from kernel_owner_lock_overlay import apply_kernel_owner_lock_overlay
 from kernel_parallel_boundary_overlay import apply_kernel_parallel_boundary_overlay
@@ -55,6 +56,7 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
         current = apply_kernel_owner_lock_overlay(current)
         current = apply_kernel_remote_body_txn_overlay(current)
         current = apply_kernel_remote_durability_overlay(current)
+        current = apply_kernel_mutation_journal_overlay(current)
         return current
     return raw
 
