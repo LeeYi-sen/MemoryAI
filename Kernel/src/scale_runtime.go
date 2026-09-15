@@ -7,8 +7,9 @@ import (
 	"strconv"
 )
 
-// localMemoryCountFast returns the local live-record count without enumerating
-// the persisted Memory body. Cost is O(number of deletion deltas), never O(N).
+// localMemoryCountFast returns one physical body's live-record count without
+// enumerating its persisted Memory records. Cost is O(number of deletion
+// deltas), never O(body Memory count).
 func localMemoryCountFast(e *Engine) int {
 	if e == nil {
 		return 0
@@ -45,6 +46,23 @@ func localMemoryCountFast(e *Engine) int {
 		return 0
 	}
 	return count
+}
+
+// fabricMemoryCountFast reports the complete mounted local Memory Fabric without
+// scanning any body. Runtime grows with physical shard count, not total Memory.
+func fabricMemoryCountFast(e *Engine) int {
+	root := fabricRootFor(e)
+	if root == nil {
+		return 0
+	}
+	if root.manifest.Role != "core" {
+		return localMemoryCountFast(root)
+	}
+	total := 0
+	for _, body := range root.localFabricEngines() {
+		total += localMemoryCountFast(body)
+	}
+	return total
 }
 
 func legacyBodyListMax() int {
