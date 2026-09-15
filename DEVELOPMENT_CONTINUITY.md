@@ -89,4 +89,14 @@ GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-j
 - Added `ExecuteMemoryStructure`: validated Structure -> existing executable Memory Fabric object -> existing canonical VM -> predicted outcome -> actual outcome -> exact prediction-error facts -> new Experience with parent lineage.
 - No new executor, scheduler, scoring system, database or runtime artifact was introduced. Feedback remains inside the existing Memory Growth state and therefore inside `memory.mem`.
 - Targeted tests cover exact matches, mismatches, missing results, outcome-field isolation and prediction-error hashing. Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
-- Next: update validated Memory Structure from accumulated execution Experience and PredictionError, then add repeated-feedback-driven recombination/mutation.
+
+### Entry 015
+- Base HEAD: `6e0a8002fe15eb0af82a120ee3b5c7f576d82ead`.
+- Added `ReconcileValidatedStructureFromExecution`: repeated PredictionError-backed Experience is fed back through the existing Experience -> Candidate -> independent Reality Validation chain.
+- A corrected fact pattern must recur at least twice and pass independent validation before becoming the new validated Memory Structure.
+- The old Structure is retained as historical Memory and marked `superseded`; the new Structure becomes the validated version.
+- The existing executable `Program []Op` is explicitly preserved through `BindExecutableProgram`; Kernel never invents a new Program during self-revision.
+- No new runtime artifact, database, executor, scheduler or sidecar was introduced. The complete state remains covered by the existing `memory.mem` Memory Growth persistence record.
+- Added regression coverage for successful repeated-feedback revision and the no-mutation single-feedback case.
+- Full repository Gate remains unreported because GitHub Actions runners remain unavailable.
+- Next: move from single-Structure correction to repeated validated Structure recombination/mutation, then connect that to autonomous self-growth scheduling.
