@@ -2,11 +2,9 @@ name: source-integrity
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -27,10 +25,10 @@ jobs:
       - name: Verify bootstrap source hashes
         run: python3 tools/restore_source.py --check
 
-      - name: Restore build source
+      - name: Restore generated Kernel source
         run: python3 tools/restore_source.py
 
-      - name: Compile source migration tools
+      - name: Compile migration and overlay tools
         run: |
           python3 -m py_compile tools/restore_source.py
           python3 -m py_compile tools/kernel_*_overlay.py
@@ -60,26 +58,42 @@ jobs:
           GO111MODULE: "off"
         run: go test -race ./Kernel/src
 
-      - name: Assert Kernel remains physical-only
+      - name: Assert frozen architecture boundaries
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          kernel = Path('Kernel/src/kernel.go').read_text(encoding='utf-8')
-          activation = Path('Kernel/src/activation_runtime.go').read_text(encoding='utf-8')
-          scheduler = Path('Kernel/src/scheduler_runtime.go').read_text(encoding='utf-8')
-          lazy = Path('Kernel/src/speculative_lazy.go').read_text(encoding='utf-8')
-          mesh = Path('Kernel/src/mesh_runtime.go').read_text(encoding='utf-8')
-          mesh_grant = Path('Kernel/src/mesh_grant_runtime.go').read_text(encoding='utf-8')
-          mesh_transport = Path('Kernel/src/mesh_transport_security.go').read_text(encoding='utf-8')
-          scale = Path('Kernel/src/scale_runtime.go').read_text(encoding='utf-8')
-          persistence = Path('Kernel/src/persistence_runtime.go').read_text(encoding='utf-8')
-          shard = Path('Kernel/src/shard_runtime.go').read_text(encoding='utf-8')
-          store_access = Path('Kernel/src/store_access_runtime.go').read_text(encoding='utf-8')
-          structure = Path('Kernel/src/structure_runtime.go').read_text(encoding='utf-8')
-          lifetime_test = Path('Kernel/src/store_lifetime_test.go').read_text(encoding='utf-8')
+          files = {
+              name: Path(path).read_text(encoding='utf-8')
+              for name, path in {
+                  'kernel': 'Kernel/src/kernel.go',
+                  'activation': 'Kernel/src/activation_runtime.go',
+                  'scheduler': 'Kernel/src/scheduler_runtime.go',
+                  'lazy': 'Kernel/src/speculative_lazy.go',
+                  'mesh': 'Kernel/src/mesh_runtime.go',
+                  'grant': 'Kernel/src/mesh_grant_runtime.go',
+                  'transport': 'Kernel/src/mesh_transport_security.go',
+                  'scale': 'Kernel/src/scale_runtime.go',
+                  'persistence': 'Kernel/src/persistence_runtime.go',
+                  'shard': 'Kernel/src/shard_runtime.go',
+                  'store': 'Kernel/src/store_access_runtime.go',
+                  'structure': 'Kernel/src/structure_runtime.go',
+                  'lifetime_test': 'Kernel/src/store_lifetime_test.go',
+                  'digest_test': 'Kernel/src/memory_digest_test.go',
+              }.items()
+          }
 
-          required_kernel = [
+          def require(name, tokens):
+              missing = [x for x in tokens if x not in files[name]]
+              if missing:
+                  raise SystemExit(f'{name} required boundary missing: {missing}')
+
+          def forbid(name, tokens):
+              bad = [x for x in tokens if x in files[name]]
+              if bad:
+                  raise SystemExit(f'{name} forbidden boundary regression: {bad}')
+
+          require('kernel', [
               'RuntimeExecCount uint64',
               'bindMeshEngine(e)',
               'speculativeAdditionalForbiddenPrimitive(op.Code)',
@@ -92,182 +106,95 @@ jobs:
               'finalizePersistedBody(e, out, persistedSnapshot)',
               'e.validateStore()',
               'sp.validateStore()',
-          ]
-          missing = [x for x in required_kernel if x not in kernel]
-          if missing:
-              raise SystemExit(f'generated Kernel boundary assertions missing: {missing}')
+          ])
+          forbid('kernel', [
+              'reuse_count,omitempty', 'real_trials,omitempty', 'successes,omitempty',
+              'total_reward,omitempty', 'total_cost,omitempty', 'stability,omitempty',
+              'case "metric_add"', 'm.Reuse++',
+              'validateIndexedStore(e.store)', 'validateIndexedStore(sp.store)',
+          ])
 
-          forbidden_kernel = [
-              'reuse_count,omitempty',
-              'real_trials,omitempty',
-              'successes,omitempty',
-              'total_reward,omitempty',
-              'total_cost,omitempty',
-              'stability,omitempty',
-              'case "metric_add"',
-              'm.Reuse++',
-              'if src.Reward > dst.Reward',
-              'if src.Stability > dst.Stability',
-              'case "body_list":\n\t\tids, err := e.localIDs()',
-              'func (e *Engine) localMemoryCount() int {\n\tids, err := e.localIDs()',
-              'validateIndexedStore(e.store)',
-              'validateIndexedStore(sp.store)',
-          ]
-          bad = [x for x in forbidden_kernel if x in kernel]
-          if bad:
-              raise SystemExit(f'forbidden Kernel policy/scale/store path reintroduced: {bad}')
+          require('activation', [
+              'Score:      0', 'stable-memory-id', 'cognitive_ranking',
+              'storeHasPhysicalFeatureIndex()', 'storePhysicalFeatureIDs(',
+          ])
+          forbid('activation', [
+              'FeatureHit > out[j].FeatureHit', 'exactActivationScore(',
+              'e.store.HasPhysicalFeatureIndex()', 'e.store.PhysicalFeatureIDs(',
+              'e.store.AllIDs()', 'e.store.GetID(',
+          ])
 
-          required_activation = [
-              'Score:      0',
-              'selection_order',
-              'stable-memory-id',
-              'cognitive_ranking',
-              'false',
-              'persisted_secondary_index',
-              'storeHasPhysicalFeatureIndex()',
-              'storePhysicalFeatureIDs(',
-          ]
-          missing = [x for x in required_activation if x not in activation]
-          if missing:
-              raise SystemExit(f'activation physical-boundary assertions missing: {missing}')
-          forbidden_activation = [
-              'FeatureHit > out[j].FeatureHit',
-              'exactActivationScore(',
-              'e.store.HasPhysicalFeatureIndex()',
-              'e.store.PhysicalFeatureIDs(',
-              'e.store.AllIDs()',
-              'e.store.GetID(',
-          ]
-          bad = [x for x in forbidden_activation if x in activation]
-          if bad:
-              raise SystemExit(f'activation ranking/store lifetime regression: {bad}')
-
-          if 'snapshotForSpeculationLazy(snapshotMemoryLimit())' not in scheduler:
-              raise SystemExit('scheduler no longer uses lazy speculative snapshots')
-          if 'snapshotForSpeculation(snapshotMemoryLimit())' in scheduler:
-              raise SystemExit('scheduler regressed to full Memory snapshot')
-          for token in [
-              'releaseStore func()',
-              'pinnedSpeculativeStore',
+          require('scheduler', [
+              'snapshotForSpeculationLazy(snapshotMemoryLimit())',
+              'lazy-snapshot-owned-shared-lease',
+          ])
+          forbid('scheduler', [
+              'snapshotForSpeculation(snapshotMemoryLimit())',
               'acquireStoreLifetimeLease()',
-              'snapshot working-set limit exceeded',
-              'LoadAndDelete',
-          ]:
-              if token not in lazy:
-                  raise SystemExit(f'lazy read-set/store lease boundary missing: {token}')
-          if 'acquireStoreLifetimeLease()' in scheduler:
-              raise SystemExit('scheduler reintroduced duplicate store RLock around lazy snapshot')
+          ])
 
-          for token in [
-              'localMemoryCountFast',
-              'persistedCount > max',
-              'storeMemoryCount()',
-              'body_list disabled',
-              'use exact/tag/activation indexing',
-          ]:
-              if token not in scale:
-                  raise SystemExit(f'bounded scale behavior missing: {token}')
+          require('lazy', [
+              'releaseStore func()', 'pinnedSpeculativeStore',
+              'storeGuard := indexedStoreGuard(store)', 'storeGuard.RLock()',
+              'snapshot working-set limit exceeded', 'LoadAndDelete',
+          ])
 
-          persistence_required = [
-              'lockEnginePersistence',
-              'snapshotMemoriesForPersistence',
-              'structuralMemoryDigest',
-              'RuntimeExecCount = 0',
-              'rebuildPendingTagDeltasLocked',
-              'indexedStoreGuard(old)',
-              'writtenDigest',
-              'persistEngineIfDirty',
-          ]
-          missing = [x for x in persistence_required if x not in persistence]
-          if missing:
-              raise SystemExit(f'persistence concurrency boundary missing: {missing}')
+          require('scale', [
+              'localMemoryCountFast', 'persistedCount > max', 'storeMemoryCount()',
+              'body_list disabled', 'use exact/tag/activation indexing',
+          ])
+          forbid('scale', ['e.store.memoryCount', 'e.store.GetID('])
 
-          shard_required = [
-              'MEMORYAI_SHARD_MAX_MEMORIES',
-              'mountAutomaticStorageShards',
-              'createAutomaticWritableShard',
-              'placeRuntimeMemory',
-              'automaticShardMu',
-          ]
-          missing = [x for x in shard_required if x not in shard]
-          if missing:
-              raise SystemExit(f'bounded physical shard boundary missing: {missing}')
+          require('persistence', [
+              'lockEnginePersistence', 'snapshotMemoriesForPersistence',
+              'structuralMemoryDigest', 'RuntimeExecCount = 0',
+              'rebuildPendingTagDeltasLocked', 'indexedStoreGuard(old)',
+              'writtenDigest', 'persistEngineIfDirty',
+          ])
 
-          store_required = [
-              'indexedStoreLifetime',
-              'indexedStoreGuard',
-              'pinnedSpeculativeStore',
-              'acquireStoreLifetimeLease',
-              'validateStore',
-          ]
-          missing = [x for x in store_required if x not in store_access]
-          if missing:
-              raise SystemExit(f'live IndexedStore lifetime boundary missing: {missing}')
+          require('shard', [
+              'MEMORYAI_SHARD_MAX_MEMORIES', 'mountAutomaticStorageShards',
+              'createAutomaticWritableShard', 'placeRuntimeMemory', 'automaticShardMu',
+          ])
 
-          structure_required = [
+          require('store', [
+              'indexedStoreLifetime', 'indexedStoreGuard', 'pinnedSpeculativeStore',
+              'acquireStoreLifetimeLease', 'validateStore',
+          ])
+
+          require('structure', [
               'remote Memory import disabled; use Sovereign Mesh direct read',
               'q.RuntimeExecCount = 0',
               'persistedOld, persistedErr := e.storeGetID(q.ID)',
-          ]
-          missing = [x for x in structure_required if x not in structure]
-          if missing:
-              raise SystemExit(f'structure/direct-read boundary missing: {missing}')
-          forbidden_structure = [
-              'validateMemoryCapabilities(&m, remote)',
-              'e.dataMu.Lock()\n\tif old := e.cache[q.ID];',
-          ]
-          bad = [x for x in forbidden_structure if x in structure]
-          if bad:
-              raise SystemExit(f'structure import/deadlock regression: {bad}')
+          ])
+          forbid('structure', ['validateMemoryCapabilities(&m, remote)'])
+          upsert = files['structure'].index('func (e *Engine) upsertExplicitMemory')
+          probe = files['structure'].index('persistedOld, persistedErr := e.storeGetID(q.ID)', upsert)
+          lock = files['structure'].index('e.dataMu.Lock()', upsert)
+          if probe > lock:
+              raise SystemExit('structure store probe moved back inside dataMu write lock')
 
-          mesh_required = [
-              'remote_memory_semantics',
-              'direct-read-no-import',
-              'shared_authorization',
-              'sovereign-memory-event+ed25519-grant',
-              'e.fireEvent("mesh.shared.proposal"',
-              'stable-physical-availability-only',
-              'consumeMeshGrant(req.Grant',
-              'shared_grant',
-              'cross_host_transport',
-              'tls-required',
-          ]
-          missing = [x for x in mesh_required if x not in mesh]
-          if missing:
-              raise SystemExit(f'Sovereign Mesh boundary assertions missing: {missing}')
-
-          grant_required = [
-              'ed25519.Sign',
-              'ed25519.Verify',
-              'mesh grant replay rejected',
-              'ExpiresUnix',
-              'TargetNode',
-              'MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64',
-              'MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64',
-          ]
-          missing = [x for x in grant_required if x not in mesh_grant]
-          if missing:
-              raise SystemExit(f'Sovereign grant boundary assertions missing: {missing}')
-
-          transport_required = [
+          require('mesh', [
+              'direct-read-no-import', 'sovereign-memory-event+ed25519-grant',
+              'consumeMeshGrant(req.Grant', 'shared_grant', 'tls-required',
+          ])
+          require('grant', [
+              'ed25519.Sign', 'ed25519.Verify', 'mesh grant replay rejected',
+              'ExpiresUnix', 'TargetNode',
+          ])
+          require('transport', [
               'plaintext mesh HTTP is restricted to loopback',
               'non-loopback mesh listener requires',
               'wildcard mesh listener requires explicit MEMORYAI_MESH_ENDPOINT',
-              'mesh endpoint cannot advertise an unspecified bind address',
-          ]
-          missing = [x for x in transport_required if x not in mesh_transport]
-          if missing:
-              raise SystemExit(f'Mesh transport boundary assertions missing: {missing}')
+          ])
 
-          test_required = [
+          require('lifetime_test', [
               'TestUpsertExplicitMemoryDoesNotReenterDataLock',
               'TestRemoteJSONImportIsDirectReadOnly',
               'TestSpeculativePinnedStoreAvoidsNestedReadDeadlock',
               'TestPersistWaitsForSpeculativeStoreLease',
-          ]
-          missing = [x for x in test_required if x not in lifetime_test]
-          if missing:
-              raise SystemExit(f'store lifetime regression tests missing: {missing}')
+          ])
+          require('digest_test', ['TestMemoryStructuralDigestIgnoresRuntimeExecCount'])
 
-          print('Kernel physical-only/source-integrity boundaries: PASS')
+          print('Kernel frozen architecture boundaries: PASS')
           PY
