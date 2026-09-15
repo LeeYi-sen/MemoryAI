@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	memoryGrowthKindRecombination = "recombination"
-	memoryGrowthProbeOperation    = "recombination_probe"
+	memoryGrowthKindRecombination       = "recombination"
+	memoryGrowthProbeOperation          = "recombination_probe"
+	memoryStructureRealityRejectedState = "reality_rejected"
 )
 
 // MemoryGrowthCycleResult 是一次由真实 live 活动触发的 Memory 自生长事实摘要。
@@ -21,6 +22,7 @@ type MemoryGrowthCycleResult struct {
 	WitnessExperienceID string `json:"witness_experience_id,omitempty"`
 	PromotedStructureID string `json:"promoted_structure_id,omitempty"`
 	ValidationSuccess   bool   `json:"validation_success,omitempty"`
+	RealityRejected     bool   `json:"reality_rejected,omitempty"`
 	RecordedFailure     bool   `json:"recorded_failure,omitempty"`
 	Persisted           bool   `json:"persisted,omitempty"`
 	Skipped             bool   `json:"skipped,omitempty"`
@@ -129,6 +131,67 @@ func selectPendingRecombinationCandidate(formation *memoryStructureFormation, va
 	return selected.candidate
 }
 
+// rejectRecombinationCandidate 将一次独立现实否决固化到候选本身。
+// 失败证据不会删除；候选只是退出自动复验队列，避免相同 live 条件下无限机械重试。
+func rejectRecombinationCandidate(formation *memoryStructureFormation, candidateID string) error {
+	if formation == nil {
+		return errors.New("memory structure formation unavailable")
+	}
+	candidateID = strings.TrimSpace(candidateID)
+	if candidateID == "" {
+		return errors.New("memory structure candidate id unavailable")
+	}
+	formation.mu.Lock()
+	defer formation.mu.Unlock()
+	candidate := formation.candidates[candidateID]
+	if candidate == nil {
+		return fmt.Errorf("memory structure candidate not found: %s", candidateID)
+	}
+	if candidate.State != memoryStructureCandidateState {
+		return fmt.Errorf("memory structure candidate is not pending: %s", candidate.State)
+	}
+	candidate.State = memoryStructureRealityRejectedState
+	return nil
+}
+
+func eligibleRecombinationParent(structure *MemoryStructure, requireOutcome bool) bool {
+	if structure == nil || structure.State != memoryStructureValidatedState || len(structure.Program) < 2 {
+		return false
+	}
+	if requireOutcome && len(structure.ExpectedOutcome) == 0 {
+		return false
+	}
+	return strings.TrimSpace(structure.ID) != ""
+}
+
+// latestSuccessfulRecombinationFrontier 从已经写入 Memory 的 Reality Validation 历史中
+// 找到最近一次真实验证成功的新生 Structure。这里没有权重或语义评分，只有“已验证成功”事实和时间顺序。
+func latestSuccessfulRecombinationFrontier(validation *memoryStructureValidationLedger) *MemoryStructure {
+	if validation == nil {
+		return nil
+	}
+	var selected *MemoryStructure
+	var selectedNano int64
+	for _, structure := range validation.Snapshot() {
+		if structure == nil || len(structure.ParentStructureIDs) != 2 || strings.TrimSpace(structure.CandidateID) == "" {
+			continue
+		}
+		for _, fact := range validation.ValidationHistory(structure.CandidateID) {
+			if !fact.Success {
+				continue
+			}
+			if selected == nil || fact.CreatedNano > selectedNano || (fact.CreatedNano == selectedNano && structure.ID < selected.ID) {
+				selected = structure
+				selectedNano = fact.CreatedNano
+			}
+		}
+	}
+	return cloneMemoryStructure(selected)
+}
+
+// selectUnattemptedRecombinationParents 只使用 Memory 已经持有的血缘、成功验证和尝试历史。
+// 若存在刚被现实验证成功的新生 Structure，优先让该生长前沿参与下一代尚未尝试的组合；
+// 当前沿没有可用组合时，退回稳定 ID 顺序遍历。没有加权分数、奖励函数或语义排名。
 func selectUnattemptedRecombinationParents(validation *memoryStructureValidationLedger, experiences *experienceLedger) (*MemoryStructure, *MemoryStructure, string) {
 	if validation == nil || experiences == nil {
 		return nil, nil, ""
@@ -136,12 +199,26 @@ func selectUnattemptedRecombinationParents(validation *memoryStructureValidation
 	structures := validation.Snapshot()
 	sort.Slice(structures, func(i, j int) bool { return structures[i].ID < structures[j].ID })
 	history := experiences.Snapshot()
+
+	if frontier := latestSuccessfulRecombinationFrontier(validation); eligibleRecombinationParent(frontier, true) {
+		for _, right := range structures {
+			if right == nil || right.ID == frontier.ID || !eligibleRecombinationParent(right, false) {
+				continue
+			}
+			pairKey := recombinationPairKey(frontier.ID, right.ID)
+			if hasRecombinationPairExperience(history, pairKey) {
+				continue
+			}
+			return frontier, right, pairKey
+		}
+	}
+
 	for i, left := range structures {
-		if left == nil || left.State != memoryStructureValidatedState || len(left.Program) < 2 || len(left.ExpectedOutcome) == 0 {
+		if !eligibleRecombinationParent(left, true) {
 			continue
 		}
 		for j, right := range structures {
-			if i == j || right == nil || right.State != memoryStructureValidatedState || len(right.Program) < 2 {
+			if i == j || !eligibleRecombinationParent(right, false) {
 				continue
 			}
 			pairKey := recombinationPairKey(left.ID, right.ID)
@@ -323,8 +400,9 @@ func persistMemoryGrowthCycle(e *Engine, experiences *experienceLedger, formatio
 // RunAutonomousMemoryGrowthCycle 执行一次 Memory-native 自生长闭环。
 // 它由真实 live 活动触发，不创建独立后台调度器：
 // 1) 优先让已经 materialized 的重组候选再次进入真实 VM，形成独立 witness；
-// 2) 没有待复验候选时，选择一个尚未出现过 Experience 记录的确定性父结构组合；
-// 3) 所有成功/失败事实回写 Experience、Validation 和 memory.mem。
+// 2) 独立现实失败会保留证据并暂停该候选，避免无限机械复验；
+// 3) 没有待复验候选时，优先延续最近一次现实验证成功的新生 Structure 血缘；
+// 4) 所有成功/失败事实回写 Experience、Validation 和 memory.mem。
 func RunAutonomousMemoryGrowthCycle(e *Engine) (*MemoryGrowthCycleResult, error) {
 	result := &MemoryGrowthCycleResult{}
 	root := memoryGrowthRoot(e)
@@ -377,6 +455,12 @@ func RunAutonomousMemoryGrowthCycle(e *Engine) (*MemoryGrowthCycleResult, error)
 			return result, err
 		}
 		result.ValidationSuccess = validationFact.Success
+		if !validationFact.Success {
+			if err := rejectRecombinationCandidate(formation, candidate.ID); err != nil {
+				return result, err
+			}
+			result.RealityRejected = true
+		}
 		if promoted != nil {
 			finalized, err := commitFinalizedRecombinedStructure(root, validation, candidate, promoted)
 			if err != nil {

@@ -123,3 +123,14 @@ GitHub Actions has repeatedly returned platform-level `startup_failure` / zero-j
 - Added targeted coverage for materialization -> independent witness -> promotion -> restart recovery, failed-witness preservation, finalized lineage/program identity and the repaired Entry 016 contract.
 - Local targeted compile/behavior harness passed. Full repository Gate and CI PASS remain unreported until a real runner executes the complete recovery/gofmt/vet/test/race chain.
 - Next: derive cross-Structure mutation/recombination choice from accumulated Memory-native success/failure evidence without introducing Kernel semantic ranking, then extend the loop across multiple generations and grounding/action feedback.
+
+### Entry 018
+- Base HEAD: `7a07459e38a30cd274818e2b753e1522eb114f11`.
+- Replaced fixed ID-first next-generation continuation with evidence-driven lineage continuation using only persisted Memory facts: independent Reality Validation success identifies the current recombination frontier, and that validated child is tried first in the next unattempted cross-Structure combination.
+- No scalar fitness score, reward model, semantic rank, relevance metric or Kernel goal policy was introduced; when the successful frontier has no remaining pair, selection falls back to deterministic unattempted-pair traversal.
+- Independent reality failure now changes candidate state to `reality_rejected`. The failed witness and Validation history remain in Memory, while the candidate leaves the automatic retry queue so identical live activity cannot generate an infinite validation loop.
+- Reality rejection is persisted through the existing candidate snapshot in `__memoryai.growth.core` inside `memory.mem`; no new state file, database, WAL or sidecar was added.
+- Successful children can now immediately become parents of a second generation; the same materialize -> independent witness -> validate -> finalize path is reused unchanged for every generation.
+- Added targeted coverage for rejection persistence/no automatic retry and for first-generation promotion -> evidence-frontier selection -> second-generation promotion with preserved parent lineage.
+- Local gofmt and targeted evidence-selection harness passed. Full repository Gate and CI PASS remain unreported until a real runner executes recovery/gofmt/vet/test/race.
+- Next: connect multi-generation Structure growth to grounded external action/result Experience and begin Dynamic Belief State integration without moving belief policy into Kernel.

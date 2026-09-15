@@ -146,8 +146,7 @@ func TestAutonomousMemoryGrowthCycleMaterializesValidatesAndSurvivesRestart(t *t
 }
 
 func TestAutonomousMemoryGrowthCyclePreservesFailedRealityWitness(t *testing.T) {
-	e, _ := newMemoryGrowthRuntimeTestEngine(t)
-	defer e.close()
+	e, path := newMemoryGrowthRuntimeTestEngine(t)
 
 	experiences := NewMemoryExperienceLedger()
 	source, err := experiences.Record(MemoryExperience{
@@ -158,6 +157,7 @@ func TestAutonomousMemoryGrowthCyclePreservesFailedRealityWitness(t *testing.T) 
 		Outcome:     map[string]string{"result": "expected"},
 	})
 	if err != nil {
+		e.close()
 		t.Fatal(err)
 	}
 	candidate := &MemoryStructureCandidate{
@@ -170,30 +170,133 @@ func TestAutonomousMemoryGrowthCyclePreservesFailedRealityWitness(t *testing.T) 
 	}
 	formation := NewMemoryStructureFormation()
 	if err := formation.AdoptCandidate(candidate); err != nil {
+		e.close()
 		t.Fatal(err)
 	}
 	validation := NewMemoryStructureValidationLedger()
 	if err := PersistMemoryGrowthState(e, experiences, formation, validation); err != nil {
+		e.close()
 		t.Fatal(err)
 	}
 
 	result, err := RunAutonomousMemoryGrowthCycle(e)
 	if err != nil {
+		e.close()
 		t.Fatal(err)
 	}
-	if result.ValidationSuccess || result.PromotedStructureID != "" {
-		t.Fatalf("mismatching reality witness was incorrectly promoted: %#v", result)
+	if result.ValidationSuccess || result.PromotedStructureID != "" || !result.RealityRejected {
+		e.close()
+		t.Fatalf("mismatching reality witness was not rejected correctly: %#v", result)
 	}
-	loadedExperiences, _, loadedValidation, err := LoadMemoryGrowthState(e)
+	loadedExperiences, loadedFormation, loadedValidation, err := LoadMemoryGrowthState(e)
 	if err != nil {
+		e.close()
 		t.Fatal(err)
 	}
 	history := loadedValidation.ValidationHistory(candidate.ID)
 	if len(history) != 1 || history[0].Success {
+		e.close()
 		t.Fatalf("failed witness was not retained in validation history: %#v", history)
 	}
 	witness, ok := loadedExperiences.Get(result.WitnessExperienceID)
 	if !ok || witness.Outcome["result"] != "actual" {
+		e.close()
 		t.Fatalf("real failed witness Experience was not retained: %#v", witness)
+	}
+	rejected, ok := loadedFormation.Get(candidate.ID)
+	if !ok || rejected.State != memoryStructureRealityRejectedState {
+		e.close()
+		t.Fatalf("failed candidate did not leave the automatic retry queue: %#v", rejected)
+	}
+	before := len(loadedExperiences.Snapshot())
+	second, err := RunAutonomousMemoryGrowthCycle(e)
+	if err != nil {
+		e.close()
+		t.Fatal(err)
+	}
+	if !second.Skipped {
+		e.close()
+		t.Fatalf("reality-rejected candidate was retried automatically: %#v", second)
+	}
+	afterExperiences, _, _, err := LoadMemoryGrowthState(e)
+	if err != nil {
+		e.close()
+		t.Fatal(err)
+	}
+	if got := len(afterExperiences.Snapshot()); got != before {
+		e.close()
+		t.Fatalf("rejected candidate created repeated evidence: before=%d after=%d", before, got)
+	}
+	e.close()
+
+	reloaded, err := loadEngineCanonical(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.close()
+	_, reloadedFormation, _, err := LoadMemoryGrowthState(reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedCandidate, ok := reloadedFormation.Get(candidate.ID)
+	if !ok || reloadedCandidate.State != memoryStructureRealityRejectedState {
+		t.Fatalf("reality rejection did not survive restart: %#v", reloadedCandidate)
+	}
+}
+
+func TestAutonomousMemoryGrowthCycleContinuesSuccessfulLineageIntoNextGeneration(t *testing.T) {
+	e, _ := newMemoryGrowthRuntimeTestEngine(t)
+	defer e.close()
+	seedValidatedRecombinationParents(t, e)
+
+	first, err := RunAutonomousMemoryGrowthCycle(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CandidateID == "" {
+		t.Fatalf("first generation candidate missing: %#v", first)
+	}
+	second, err := RunAutonomousMemoryGrowthCycle(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ValidationSuccess || second.PromotedStructureID == "" {
+		t.Fatalf("first generation did not promote: %#v", second)
+	}
+	firstGenerationID := second.PromotedStructureID
+
+	third, err := RunAutonomousMemoryGrowthCycle(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.CandidateID == "" || third.PromotedStructureID != "" {
+		t.Fatalf("second generation was not materialized as a fresh candidate: %#v", third)
+	}
+	_, formation, _, err := LoadMemoryGrowthState(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondGenerationCandidate, ok := formation.Get(third.CandidateID)
+	if !ok {
+		t.Fatalf("second generation candidate missing: %s", third.CandidateID)
+	}
+	if !containsString(secondGenerationCandidate.ParentStructureIDs, firstGenerationID) {
+		t.Fatalf("successful child was not used as the next growth frontier: parents=%v frontier=%s", secondGenerationCandidate.ParentStructureIDs, firstGenerationID)
+	}
+
+	fourth, err := RunAutonomousMemoryGrowthCycle(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourth.CandidateID != third.CandidateID || !fourth.ValidationSuccess || fourth.PromotedStructureID == "" {
+		t.Fatalf("second generation did not receive independent validation: %#v", fourth)
+	}
+	_, _, validation, err := LoadMemoryGrowthState(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondGeneration, ok := validation.GetValidated(third.CandidateID)
+	if !ok || !containsString(secondGeneration.ParentStructureIDs, firstGenerationID) {
+		t.Fatalf("multi-generation lineage was not retained: %#v", secondGeneration)
 	}
 }
