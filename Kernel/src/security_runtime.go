@@ -18,13 +18,13 @@ var privilegedOpCapability = map[string]string{
 	"memory_import_json": "memory.import",
 	"program_import":     "program.mutate", "program_set_field": "program.mutate", "program_set_var_ref": "program.mutate",
 	"program_delete": "program.mutate", "program_insert_from": "program.mutate", "program_replace_from": "program.mutate",
-	"process_restart": "process.restart", "persist": "persist", "cognition_concurrency_set": "scheduler.control",
+	"process_restart": "process.restart", "persist": "persist", "physical_execution_concurrency_set": "scheduler.control",
 	"space_next_path": "storage.manage", "space_create": "storage.manage", "space_mount": "storage.manage", "space_unmount": "storage.manage",
 	"space_select_write": "storage.manage", "space_copy": "storage.manage", "space_move": "storage.manage", "space_merge": "storage.manage", "space_fsck": "storage.manage",
 	"remote_space_create": "storage.remote.write", "remote_space_put": "storage.remote.write", "remote_space_import": "storage.remote.write", "remote_space_upsert": "storage.remote.write", "remote_space_delete": "storage.remote.write",
 	"remote_space_info": "storage.remote.read", "remote_space_get": "storage.remote.read", "remote_space_digest": "storage.remote.read", "remote_space_list": "storage.remote.read", "remote_space_tag_list": "storage.remote.read",
 	"artifact_write": "artifact.write", "artifact_read": "artifact.read", "artifact_digest": "artifact.read", "artifact_exists": "artifact.read",
-	"mesh_shared_propose": "mesh.write", "mesh_shared_reconcile": "mesh.write", "mesh_shared_search": "mesh.read", "mesh_shared_fetch": "mesh.read", "mesh_structure_run": "mesh.run", "mesh_fanout": "mesh.run", "mesh_route_cognition": "mesh.run", "mesh_journal_flush": "mesh.write", "mesh_directory": "mesh.read",
+	"mesh_shared_propose": "mesh.write", "mesh_shared_reconcile": "mesh.write", "mesh_shared_search": "mesh.read", "mesh_shared_fetch": "mesh.read", "mesh_structure_run": "mesh.run", "mesh_fanout": "mesh.run", "mesh_route_execution": "mesh.run", "mesh_journal_flush": "mesh.write", "mesh_directory": "mesh.read",
 	"physical_exchange": "network.raw", "emit_event": "event.emit", "credential_get": "credential.read",
 }
 

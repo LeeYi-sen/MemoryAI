@@ -61,23 +61,27 @@ func daemonFrameFromArgs(args []string) *Frame {
 	return f
 }
 
-// runMemoryGrowthAfterLiveActivity 把真实 live 活动与 Grounding + Context Split + Memory Growth 闭环连接起来。
-// 每个完成的 run/input/event 最多机会式推进一个 Memory 明确授权的外部动作、一个上下文裂分步骤
-// 和一个既有内部生长步骤；这里仍然没有独立后台 cognitive scheduler。
+// runMemoryGrowthAfterLiveActivity 把真实 live 活动与 Remote Evidence Intake + Grounding + Context Split + Memory Growth 闭环连接起来。
+// 每个完成的 run/input/event 最多机会式推进一次 Memory 明确声明的远端证据吸收决策、一个外部动作、
+// 一个上下文裂分步骤和一个既有内部生长步骤；这里仍然没有独立后台 cognitive scheduler。
 func (e *Engine) runMemoryGrowthAfterLiveActivity(f *Frame) {
 	if e == nil {
 		return
 	}
+	_, remoteEvidenceErr := RunAutonomousRemoteEvidenceIntakeCycle(e)
 	_, groundedErr := RunAutonomousGroundedActionCycle(e)
 	_, branchErr := RunAutonomousContextBranchingCycle(e)
 	_, growthErr := RunAutonomousMemoryGrowthCycle(e)
-	if f == nil || (groundedErr == nil && branchErr == nil && growthErr == nil) {
+	if f == nil || (remoteEvidenceErr == nil && groundedErr == nil && branchErr == nil && growthErr == nil) {
 		return
 	}
 	if f.Vars == nil {
 		f.Vars = map[string]string{}
 	}
-	// 外部动作/裂分/生长失败不回滚已经完成的用户事件；把物理故障暴露给 Memory/调用方观察。
+	// 远端证据读取/外部动作/裂分/生长失败不回滚已经完成的用户事件；把物理故障暴露给 Memory/调用方观察。
+	if remoteEvidenceErr != nil {
+		f.Vars["__memory_remote_evidence_error"] = remoteEvidenceErr.Error()
+	}
 	if groundedErr != nil {
 		f.Vars["__memory_grounded_error"] = groundedErr.Error()
 	}
