@@ -103,7 +103,7 @@ func (e *Engine) deleteSourceAdapter(id string) error {
 }
 
 func (e *Engine) listSourceAdapters() []map[string]any {
-	ids, err := e.tagIDs(sourceAdapterTag)
+	ids, err := e.listTagLocal(sourceAdapterTag)
 	if err != nil {
 		return []map[string]any{{"error": err.Error()}}
 	}
