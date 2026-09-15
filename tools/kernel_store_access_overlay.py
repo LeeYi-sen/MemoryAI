@@ -12,7 +12,7 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
 def apply_kernel_store_access_overlay(raw: bytes) -> bytes:
     text = raw.decode("utf-8")
     required = (
-        "finalizePersistedBody(e, out)",
+        "finalizePersistedBody(e, out, persistedSnapshot)",
         "e.placeRuntimeMemory(child)",
         "remote_space_import disabled:",
     )
@@ -27,6 +27,8 @@ def apply_kernel_store_access_overlay(raw: bytes) -> bytes:
     text = text.replace("e.store.AllIDs()", "e.storeAllIDs()")
     text = text.replace("e.store.GetID(id)", "e.storeGetID(id)")
     text = text.replace("e.store.TagIDs(tag)", "e.storeTagIDs(tag)")
+    text = text.replace("validateIndexedStore(e.store)", "e.validateStore()")
+    text = text.replace("validateIndexedStore(sp.store)", "sp.validateStore()")
 
     text = _replace_once(
         text,
@@ -53,6 +55,8 @@ def apply_kernel_store_access_overlay(raw: bytes) -> bytes:
         "e.store.AllIDs()",
         "e.store.GetID(id)",
         "e.store.TagIDs(tag)",
+        "validateIndexedStore(e.store)",
+        "validateIndexedStore(sp.store)",
         "sp.store.Close()",
         "e.store.Close()",
         "storeMu            sync.RWMutex",
@@ -60,4 +64,8 @@ def apply_kernel_store_access_overlay(raw: bytes) -> bytes:
     bad = [token for token in forbidden if token in text]
     if bad:
         raise RuntimeError(f"unlocked generated store access remained: {bad}")
+    required_after = ("e.validateStore()", "sp.validateStore()")
+    missing = [token for token in required_after if token not in text]
+    if missing:
+        raise RuntimeError(f"generated fsck store guard missing: {missing}")
     return text.encode("utf-8")
