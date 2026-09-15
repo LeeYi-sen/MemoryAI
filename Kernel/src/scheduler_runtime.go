@@ -50,9 +50,9 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 	}
 	defer atomic.AddInt64(&speculativeInflight, -1)
 
-	ce, base, err := e.snapshotForSpeculation(snapshotMemoryLimit())
+	ce, base, err := e.snapshotForSpeculationLazy(snapshotMemoryLimit())
 	if err != nil {
-		if strings.Contains(err.Error(), "snapshot memory limit exceeded") {
+		if strings.Contains(err.Error(), "snapshot working-set limit exceeded") {
 			atomic.AddUint64(&speculativeLimitFallback, 1)
 			s.commitMu.Lock()
 			defer s.commitMu.Unlock()
@@ -60,6 +60,7 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 		}
 		return err
 	}
+	defer releaseLazySpeculation(ce)
 
 	cf := cloneFrame(f)
 	err = ce.run(id, cf)
@@ -99,16 +100,16 @@ func (s *txnScheduler) classifyTargets(e *Engine, ids []string) []map[string]any
 		}
 		sideEffect := false
 		for _, op := range m.Program {
-			if speculativeForbiddenPrimitive(op.Code) {
+			if speculativeForbiddenPrimitive(op.Code) || speculativeAdditionalForbiddenPrimitive(op.Code) {
 				sideEffect = true
 				break
 			}
 		}
 		rows = append(rows, map[string]any{
-			"id":                    id,
+			"id":                      id,
 			"speculative_safe_direct": !sideEffect,
-			"external_side_effect":  sideEffect,
-			"classification":        "physical-boundary-only",
+			"external_side_effect":    sideEffect,
+			"classification":          "physical-boundary-only",
 		})
 	}
 	return rows
@@ -116,10 +117,11 @@ func (s *txnScheduler) classifyTargets(e *Engine, ids []string) []map[string]any
 
 func (s *txnScheduler) Info() map[string]any {
 	return map[string]any{
-		"mode":                "snapshot-diff-conflict-replay",
+		"mode":                "lazy-readset-snapshot-diff-conflict-replay",
 		"runs":                atomic.LoadUint64(&s.runs),
 		"canonical_runs":      atomic.LoadUint64(&s.canonicalRuns),
 		"speculative":         speculativeInfo(),
+		"snapshot_scope":      "dirty-new-plus-first-read",
 		"cognitive_priority":  false,
 		"semantic_scheduling": false,
 	}
