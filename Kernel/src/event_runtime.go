@@ -225,6 +225,17 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 			}
 			continue
 		}
+		if f.Vars["__txn_canonical"] == "1" {
+			owner, _, er := root.resolveLocalFabricMemory(id)
+			if er != nil {
+				return er
+			}
+			rememberFabricOwner(root, owner)
+			if err := owner.run(id, f); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := globalTxnScheduler.run(root, id, f); err != nil {
 			return err
 		}
