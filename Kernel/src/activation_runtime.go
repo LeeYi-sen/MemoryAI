@@ -12,11 +12,18 @@ import (
 	"time"
 )
 
-// SparseActivationRuntime is a physical diagnostic/indexing accelerator.
-// It does not interpret cognitive meaning and does not rank by Memory-owned
-// metrics. It indexes exact opaque identifiers, tags, triggers and scalar
-// state key/value pairs so lookup cost is proportional to the stimulated
-// physical neighborhood rather than the total body size.
+// SparseActivationRuntime is a physical exact-index accelerator.
+//
+// Architecture boundary:
+//   - Kernel may index opaque physical fields and return exact candidate sets.
+//   - Kernel must not decide semantic relevance, utility, confidence, priority,
+//     or cognitive rank.
+//   - Any result cap is therefore a deterministic physical page (stable ID
+//     order), never a "best candidate" Top-K.
+//
+// Score is retained in ActivationCandidate only for wire compatibility with
+// older clients. Kernel always emits Score=0; cognitive scoring belongs to
+// Memory-owned executable structures.
 type SparseActivationRuntime struct {
 	mu          sync.RWMutex
 	postings    map[string]map[string]struct{}
@@ -25,7 +32,7 @@ type SparseActivationRuntime struct {
 	nodes       int64
 	queries     uint64
 	candidates  uint64
-	topK        int
+	topK        int // legacy name: physical response cap, not cognitive Top-K
 	maxState    int
 }
 
@@ -293,13 +300,12 @@ func queryActivationFeatures(q string, _ int) []string {
 	return []string{"id:" + raw, "tag:" + raw, "trigger:" + raw}
 }
 
-func exactActivationScore(hits, qn int) float32 {
-	if qn < 1 {
-		return 0
-	}
-	return float32(hits) / float32(qn)
-}
-
+// Activate returns an exact physical candidate set.
+//
+// The legacy topK parameter is treated only as a transport/resource cap.
+// Candidates are sorted by stable physical identity, not FeatureHit or Score.
+// Memory-owned executable structures are responsible for relevance ranking and
+// choosing which candidate to activate cognitively.
 func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (ActivationResult, error) {
 	start := time.Now()
 	atomic.AddUint64(&r.queries, 1)
@@ -308,8 +314,14 @@ func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (A
 	}
 	qf := queryActivationFeatures(query, r.maxState)
 	if len(qf) == 0 {
-		return ActivationResult{Query: query, IndexedNodes: int(atomic.LoadInt64(&r.nodes)), Backend: "none", ElapsedUS: time.Since(start).Microseconds()}, nil
+		return ActivationResult{
+			Query:        query,
+			IndexedNodes: int(atomic.LoadInt64(&r.nodes)),
+			Backend:      "none",
+			ElapsedUS:    time.Since(start).Microseconds(),
+		}, nil
 	}
+
 	hit := map[string]int{}
 	r.mu.RLock()
 	for _, f := range qf {
@@ -320,21 +332,34 @@ func (r *SparseActivationRuntime) Activate(_ *Engine, query string, topK int) (A
 	r.mu.RUnlock()
 	atomic.AddUint64(&r.candidates, uint64(len(hit)))
 
-	out := make([]ActivationCandidate, 0, len(hit))
-	for id, hits := range hit {
-		out = append(out, ActivationCandidate{ID: id, Score: exactActivationScore(hits, len(qf)), FeatureHit: hits})
+	ids := make([]string, 0, len(hit))
+	for id := range hit {
+		ids = append(ids, id)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].FeatureHit != out[j].FeatureHit {
-			return out[i].FeatureHit > out[j].FeatureHit
-		}
-		return out[i].ID < out[j].ID
-	})
-	count := len(out)
-	if topK < len(out) {
-		out = out[:topK]
+	sort.Strings(ids)
+
+	count := len(ids)
+	if topK > 0 && topK < len(ids) {
+		ids = ids[:topK]
 	}
-	return ActivationResult{Query: query, Candidates: out, CandidateCount: count, IndexedNodes: int(atomic.LoadInt64(&r.nodes)), Backend: "cpu-exact-index", ElapsedUS: time.Since(start).Microseconds()}, nil
+
+	out := make([]ActivationCandidate, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, ActivationCandidate{
+			ID:         id,
+			Score:      0,
+			FeatureHit: hit[id],
+		})
+	}
+
+	return ActivationResult{
+		Query:          query,
+		Candidates:     out,
+		CandidateCount: count,
+		IndexedNodes:   int(atomic.LoadInt64(&r.nodes)),
+		Backend:        "cpu-exact-index-stable-page",
+		ElapsedUS:      time.Since(start).Microseconds(),
+	}, nil
 }
 
 func (r *SparseActivationRuntime) Info() map[string]any {
@@ -354,8 +379,10 @@ func (r *SparseActivationRuntime) Info() map[string]any {
 		"queries":           q,
 		"candidate_total":   c,
 		"avg_candidates":    avg,
-		"last_backend":      "cpu-exact-index",
+		"last_backend":      "cpu-exact-index-stable-page",
 		"default_top_k":     r.topK,
+		"physical_cap_only": true,
+		"selection_order":   "stable-memory-id",
 		"cognitive_ranking": false,
 		"qualification":     activationQualificationInfo(),
 	}
