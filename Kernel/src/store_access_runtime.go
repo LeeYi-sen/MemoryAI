@@ -60,16 +60,27 @@ func mergeOwnedIDs(dst map[string]*Engine, src map[string]*Engine) error {
 
 func (e *Engine) storeGetID(id string) (*Memory, error) {
 	if st, ok := pinnedSpeculativeStore(e); ok {
+		origin, exists := speculativeOriginEngine(e)
+		if !exists {
+			return nil, io.EOF
+		}
 		m, err := st.GetID(id)
 		if err == nil {
+			// A pinned primary hit is not sufficient proof of unique Fabric
+			// ownership. If the same physical ID also exists in any mounted shard,
+			// speculative execution must fail closed rather than baseline a random
+			// owner and diverge from canonical duplicate-identity semantics.
+			_, _, shardErr := origin.resolveMountedShardMemoryCopy(id)
+			if shardErr == nil {
+				return nil, duplicateFabricIdentityError(id)
+			}
+			if !errors.Is(shardErr, io.EOF) {
+				return nil, shardErr
+			}
 			return m, nil
 		}
 		if !errors.Is(err, io.EOF) {
 			return nil, err
-		}
-		origin, exists := speculativeOriginEngine(e)
-		if !exists {
-			return nil, io.EOF
 		}
 		if hinted, exists := speculativePhysicalOwner(e, id); exists && hinted != nil && hinted != origin {
 			snapshot, er := resolveSpecificOwnerMemoryCopy(hinted, id)
