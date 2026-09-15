@@ -11,6 +11,7 @@ from pathlib import Path
 from kernel_lazy_overlay import apply_kernel_lazy_overlay
 from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
+from kernel_scale_overlay import apply_kernel_scale_overlay
 from kernel_speculative_overlay import apply_kernel_speculative_overlay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,12 +28,13 @@ def sha256(data: bytes) -> str:
 def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
     # Historical bootstrap bytes remain immutable and hash-verifiable. Forward
     # source fixes are applied only after that verification as explicit,
-    # deterministic overlays with their own input hashes.
+    # deterministic overlays with semantic boundary assertions.
     if rel_target.as_posix() == "Kernel/src/kernel.go":
         current = apply_kernel_overlay(raw)
         current = apply_kernel_mesh_overlay(current)
         current = apply_kernel_speculative_overlay(current)
         current = apply_kernel_lazy_overlay(current)
+        current = apply_kernel_scale_overlay(current)
         return current
     return raw
 
