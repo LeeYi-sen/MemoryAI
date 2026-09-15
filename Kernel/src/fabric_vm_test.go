@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,92 @@ func TestCanonicalVMKeepsRootFabricAcrossSiblingShards(t *testing.T) {
 	if ranChild.RuntimeExecCount == 0 {
 		t.Fatal("nested call execution telemetry did not update sibling shard Memory")
 	}
+}
+
+func loadDuplicateTargetVMTestEngine(t *testing.T, program []Op) (*Engine, []*Engine) {
+	t.Helper()
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "Memory.mem")
+	exec := &Memory{
+		ID: "vm.duplicate.exec", Layer: "emergent", Tags: []string{"memory", "vm-test"},
+		State: map[string]any{}, Revision: 1, Program: program,
+	}
+	root := &Memory{ID: "root", Layer: "inherited", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1}
+	left := &Memory{ID: "vm.duplicate.target", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{"value": "left"}, Revision: 1}
+	right := &Memory{ID: "vm.duplicate.target", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{"value": "right"}, Revision: 1}
+	writeBodyForPersistenceTest(t, primary, "core", []*Memory{root, exec})
+	writeBodyForPersistenceTest(t, filepath.Join(dir, "Memory.1.mem"), "storage", []*Memory{left})
+	writeBodyForPersistenceTest(t, filepath.Join(dir, "Memory.2.mem"), "storage", []*Memory{right})
+
+	e, err := loadEngine(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.mountAutomaticStorageShards()
+	t.Cleanup(e.close)
+	paths := e.mountedSpacePaths()
+	if len(paths) != 2 {
+		t.Fatalf("expected duplicate target in two shards, got paths=%v", paths)
+	}
+	owners := make([]*Engine, 0, 2)
+	for _, path := range paths {
+		e.spaceMu.RLock()
+		owner := e.spaces[path]
+		e.spaceMu.RUnlock()
+		if owner == nil {
+			t.Fatalf("mounted shard missing engine: %s", path)
+		}
+		owners = append(owners, owner)
+	}
+	return e, owners
+}
+
+func assertDuplicateTargetsUnchanged(t *testing.T, owners []*Engine) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, owner := range owners {
+		m, err := owner.resolveIDLocal("vm.duplicate.target")
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := m.State["value"].(string)
+		seen[value] = true
+		if m.Revision != 1 {
+			t.Fatalf("duplicate target was mutated despite identity conflict: value=%q revision=%d", value, m.Revision)
+		}
+	}
+	if !seen["left"] || !seen["right"] {
+		t.Fatalf("duplicate target fixtures changed unexpectedly: %v", seen)
+	}
+}
+
+func TestCanonicalVMRejectsDuplicateFabricStateGet(t *testing.T) {
+	e, owners := loadDuplicateTargetVMTestEngine(t, []Op{
+		{Code: "state_get", A: "vm.duplicate.target", B: "value", C: "got"},
+		{Code: "halt"},
+	})
+	f := newFrame()
+	err := globalTxnScheduler.canonical(e, "vm.duplicate.exec", f)
+	if err == nil || !strings.Contains(err.Error(), "duplicate local Fabric Memory id") {
+		t.Fatalf("duplicate state_get did not fail closed: err=%v frame=%v", err, f.Vars)
+	}
+	if f.Vars["got"] != "" {
+		t.Fatalf("duplicate state_get leaked a randomly selected value: %q", f.Vars["got"])
+	}
+	assertDuplicateTargetsUnchanged(t, owners)
+}
+
+func TestCanonicalVMRejectsDuplicateFabricStateSetWithoutWrite(t *testing.T) {
+	e, owners := loadDuplicateTargetVMTestEngine(t, []Op{
+		{Code: "state_set", A: "vm.duplicate.target", B: "value", C: "corrupt"},
+		{Code: "halt"},
+	})
+	f := newFrame()
+	err := globalTxnScheduler.canonical(e, "vm.duplicate.exec", f)
+	if err == nil || !strings.Contains(err.Error(), "duplicate local Fabric Memory id") {
+		t.Fatalf("duplicate state_set did not fail closed: err=%v", err)
+	}
+	assertDuplicateTargetsUnchanged(t, owners)
 }
 
 func errorsIsVMEOF(err error) bool {
