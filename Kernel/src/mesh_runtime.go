@@ -104,8 +104,24 @@ func newMeshRuntimeFromEnv() *meshRuntime {
 	}
 	listen := strings.TrimSpace(os.Getenv("MEMORYAI_MESH_LISTEN"))
 	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORYAI_MESH_ENDPOINT")), "/")
+	startupErr := ""
 	if endpoint == "" && listen != "" {
-		endpoint = "http://" + listen
+		if generated, err := defaultMeshEndpoint(listen); err != nil {
+			startupErr = err.Error()
+		} else {
+			endpoint = generated
+		}
+	}
+	if endpoint != "" {
+		if err := validateMeshEndpoint(endpoint); err != nil {
+			startupErr = err.Error()
+		}
+	}
+	if listen != "" && strings.HasPrefix(strings.ToLower(endpoint), "https://") {
+		certFile, keyFile := meshTLSFiles()
+		if certFile == "" || keyFile == "" {
+			startupErr = "HTTPS mesh listener requires MEMORYAI_MESH_TLS_CERT and MEMORYAI_MESH_TLS_KEY"
+		}
 	}
 	return &meshRuntime{
 		role:         role,
@@ -116,6 +132,7 @@ func newMeshRuntimeFromEnv() *meshRuntime {
 		shared:       map[string]MeshRecord{},
 		client:       &http.Client{Timeout: 8 * time.Second},
 		listenAddr:   listen,
+		startupErr:   startupErr,
 	}
 }
 
@@ -138,16 +155,17 @@ func bindMeshEngine(e *Engine) {
 	m.directory[m.nodeID] = MeshNode{ID: m.nodeID, Role: m.role, Endpoint: m.endpoint, LastSeen: time.Now().Unix()}
 	listen := m.listenAddr
 	alreadyServing := m.server != nil
+	startupErr := m.startupErr
 	m.mu.Unlock()
 
-	if listen != "" && !alreadyServing {
+	if startupErr == "" && listen != "" && !alreadyServing {
 		if err := m.startHTTPServer(listen); err != nil {
 			m.mu.Lock()
 			m.startupErr = err.Error()
 			m.mu.Unlock()
 		}
 	}
-	if m.role == "node" && m.authorityURL != "" {
+	if startupErr == "" && m.role == "node" && m.authorityURL != "" {
 		go m.registerWithAuthority()
 	}
 }
@@ -178,6 +196,9 @@ func (m *meshRuntime) rpc(endpoint string, req MeshRequest) (MeshResponse, error
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint == "" {
 		return out, errors.New("mesh endpoint unavailable")
+	}
+	if err := validateMeshEndpoint(endpoint); err != nil {
+		return out, err
 	}
 	key := meshTransportKey()
 	if len(key) == 0 {
@@ -215,6 +236,10 @@ func (m *meshRuntime) rpc(endpoint string, req MeshRequest) (MeshResponse, error
 }
 
 func (m *meshRuntime) startHTTPServer(addr string) error {
+	useTLS, err := meshListenUsesTLS(addr)
+	if err != nil {
+		return err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -229,9 +254,16 @@ func (m *meshRuntime) startHTTPServer(addr string) error {
 	m.server = server
 	m.mu.Unlock()
 	go func() {
-		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var serveErr error
+		if useTLS {
+			certFile, keyFile := meshTLSFiles()
+			serveErr = server.ServeTLS(ln, certFile, keyFile)
+		} else {
+			serveErr = server.Serve(ln)
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			m.mu.Lock()
-			m.startupErr = err.Error()
+			m.startupErr = serveErr.Error()
 			m.mu.Unlock()
 		}
 	}()
@@ -722,19 +754,20 @@ func meshInfoMap() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return map[string]any{
-		"role":                         m.role,
-		"node_id":                      m.nodeID,
-		"endpoint":                     m.endpoint,
-		"authority_configured":         m.authorityURL != "",
-		"directory_nodes":              len(m.directory),
-		"shared_records":               len(m.shared),
-		"deferred_journal":             len(m.journal),
-		"startup_error":                m.startupErr,
-		"remote_memory_semantics":      "direct-read-no-import",
-		"routing":                      "stable-physical-availability-only",
-		"shared_authorization":         "sovereign-memory-event+ed25519-grant",
-		"transport_authentication":     "hmac-channel-only",
-		"sovereign_public_key_present": strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64")) != "",
+		"role":                          m.role,
+		"node_id":                       m.nodeID,
+		"endpoint":                      m.endpoint,
+		"authority_configured":          m.authorityURL != "",
+		"directory_nodes":               len(m.directory),
+		"shared_records":                len(m.shared),
+		"deferred_journal":              len(m.journal),
+		"startup_error":                 m.startupErr,
+		"remote_memory_semantics":       "direct-read-no-import",
+		"routing":                       "stable-physical-availability-only",
+		"shared_authorization":          "sovereign-memory-event+ed25519-grant",
+		"transport_authentication":      "hmac-channel-only",
+		"cross_host_transport":          "tls-required",
+		"sovereign_public_key_present":  strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64")) != "",
 		"sovereign_private_key_present": strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64")) != "",
 	}
 }
@@ -747,13 +780,19 @@ func meshSecuritySelfTest() (map[string]any, error) {
 	tamperRejected := !meshVerifyBytes(key, []byte(`{"op":"shared_fetch"}`), sig)
 	grantTest, grantErr := meshGrantCryptoSelfTest()
 	grantOK := grantErr == nil
-	ok := valid && tamperRejected && grantOK
+	loopbackHTTP := validateMeshEndpoint("http://127.0.0.1:8787") == nil
+	remoteHTTPRejected := validateMeshEndpoint("http://192.0.2.10:8787") != nil
+	httpsAccepted := validateMeshEndpoint("https://mesh.example.invalid:8787") == nil
+	ok := valid && tamperRejected && grantOK && loopbackHTTP && remoteHTTPRejected && httpsAccepted
 	out := map[string]any{
-		"ok":                       ok,
-		"hmac_valid":               valid,
+		"ok":                        ok,
+		"hmac_valid":                valid,
 		"transport_tamper_rejected": tamperRejected,
-		"sovereign_grant":          grantTest,
-		"remote_exec_caps":         "sovereign-grant+memory-capability-signature",
+		"sovereign_grant":           grantTest,
+		"loopback_http_allowed":     loopbackHTTP,
+		"remote_http_rejected":      remoteHTTPRejected,
+		"https_accepted":             httpsAccepted,
+		"remote_exec_caps":          "sovereign-grant+memory-capability-signature",
 	}
 	if !ok {
 		if grantErr != nil {
