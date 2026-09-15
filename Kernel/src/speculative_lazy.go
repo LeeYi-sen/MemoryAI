@@ -6,9 +6,10 @@ import (
 )
 
 // lazySnapshotContext records the exact read-set baseline of one speculative
-// Engine. It also owns one long primary-store lease. Before an ID enters the
-// read-set, owners[id] is only a revocable physical routing hint. Once the ID is
-// baselined, the owner is frozen for optimistic conflict validation and commit.
+// Engine. The primary Store is pinned only while speculative code can still page
+// in records. After execution/diff formation the lease is released before the
+// commit phase, while this context remains alive to carry frozen owner/read-set
+// metadata into optimistic validation.
 type lazySnapshotContext struct {
 	mu           sync.Mutex
 	base         *memorySnapshot
@@ -34,7 +35,12 @@ func speculativeLazyContext(e *Engine) (*lazySnapshotContext, bool) {
 
 func pinnedSpeculativeStore(e *Engine) (*IndexedStore, bool) {
 	ctx, ok := speculativeLazyContext(e)
-	if !ok || ctx.store == nil {
+	if !ok {
+		return nil, false
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	if ctx.store == nil {
 		return nil, false
 	}
 	return ctx.store, true
@@ -59,11 +65,6 @@ func speculativePhysicalOwner(e *Engine, id string) (*Engine, bool) {
 	return owner, owner != nil
 }
 
-// recordSpeculativeOwnerHints keeps physical routing information already
-// discovered by tag/activation index traversal. Hints do not add records to the
-// read-set and therefore do not consume the working-set limit until an ID is
-// actually read. An unread hint may be replaced when topology changes; a
-// baselined ID's owner is immutable for the lifetime of the transaction.
 func recordSpeculativeOwnerHints(e *Engine, hints map[string]*Engine) error {
 	ctx, ok := speculativeLazyContext(e)
 	if !ok || len(hints) == 0 {
@@ -79,8 +80,6 @@ func recordSpeculativeOwnerHints(e *Engine, hints map[string]*Engine) error {
 			if _, baselined := ctx.base.memories[id]; baselined {
 				return duplicateFabricIdentityError(id)
 			}
-			// Before first read this is only a route hint; topology may have
-			// legitimately moved the Memory to another mounted body.
 			ctx.owners[id] = owner
 			continue
 		}
@@ -89,9 +88,6 @@ func recordSpeculativeOwnerHints(e *Engine, hints map[string]*Engine) error {
 	return nil
 }
 
-// clearSpeculativeOwnerHint invalidates a stale unread route hint. Once an ID is
-// in the read-set, ownership is frozen and can only be resolved by conflict
-// replay, never silently retargeted inside the same speculative transaction.
 func clearSpeculativeOwnerHint(e *Engine, id string, expected *Engine) {
 	ctx, ok := speculativeLazyContext(e)
 	if !ok || id == "" {
@@ -246,6 +242,25 @@ func (e *Engine) snapshotForSpeculationLazy(maxWorkingSet int) (*Engine, *memory
 	return ce, base, nil
 }
 
+// releaseSpeculativeStoreLease ends the physical file-descriptor pin but keeps
+// the transaction context alive for owner lookup and commit validation. It is
+// idempotent and must be called once speculative execution no longer performs
+// page-ins, before any commit path can wait on Engine.dataMu.
+func releaseSpeculativeStoreLease(e *Engine) {
+	ctx, ok := speculativeLazyContext(e)
+	if !ok {
+		return
+	}
+	ctx.mu.Lock()
+	release := ctx.releaseStore
+	ctx.releaseStore = nil
+	ctx.store = nil
+	ctx.mu.Unlock()
+	if release != nil {
+		release()
+	}
+}
+
 func releaseLazySpeculation(e *Engine) {
 	if e == nil {
 		return
@@ -255,7 +270,12 @@ func releaseLazySpeculation(e *Engine) {
 		return
 	}
 	ctx := v.(*lazySnapshotContext)
-	if ctx.releaseStore != nil {
-		ctx.releaseStore()
+	ctx.mu.Lock()
+	release := ctx.releaseStore
+	ctx.releaseStore = nil
+	ctx.store = nil
+	ctx.mu.Unlock()
+	if release != nil {
+		release()
 	}
 }
