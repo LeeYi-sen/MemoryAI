@@ -14,6 +14,7 @@ from kernel_mesh_overlay import apply_kernel_mesh_overlay
 from kernel_overlay import apply_kernel_overlay
 from kernel_owner_lock_overlay import apply_kernel_owner_lock_overlay
 from kernel_persistence_overlay import apply_kernel_persistence_overlay
+from kernel_remote_body_txn_overlay import apply_kernel_remote_body_txn_overlay
 from kernel_remote_memory_overlay import apply_kernel_remote_memory_overlay
 from kernel_scale_overlay import apply_kernel_scale_overlay
 from kernel_shard_overlay import apply_kernel_shard_overlay
@@ -47,6 +48,7 @@ def current_source_bytes(rel_target: Path, raw: bytes) -> bytes:
         current = apply_kernel_store_access_overlay(current)
         current = apply_kernel_fabric_execution_overlay(current)
         current = apply_kernel_owner_lock_overlay(current)
+        current = apply_kernel_remote_body_txn_overlay(current)
         return current
     return raw
 
