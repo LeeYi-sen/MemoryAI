@@ -35,18 +35,18 @@ type memorySnapshot struct {
 }
 
 type transactionDiff struct {
-	changed    map[string]*Memory
-	deleted    map[string]bool
-	created    map[string]*Memory
-	reuseDelta map[string]uint64
+	changed   map[string]*Memory
+	deleted   map[string]bool
+	created   map[string]*Memory
+	execDelta map[string]uint64
 }
 
-func memoryDigestNoReuse(m *Memory) string {
+func memoryDigestNoRuntimeExec(m *Memory) string {
 	if m == nil {
 		return "<nil>"
 	}
 	q := copyMemory(m)
-	q.Reuse = 0
+	q.RuntimeExecCount = 0
 	b, _ := json.Marshal(q)
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:])
@@ -134,7 +134,7 @@ func (e *Engine) snapshotForSpeculation(maxMem int) (*Engine, *memorySnapshot, e
 }
 
 func diffSnapshot(base *memorySnapshot, ce *Engine) transactionDiff {
-	d := transactionDiff{changed: map[string]*Memory{}, deleted: map[string]bool{}, created: map[string]*Memory{}, reuseDelta: map[string]uint64{}}
+	d := transactionDiff{changed: map[string]*Memory{}, deleted: map[string]bool{}, created: map[string]*Memory{}, execDelta: map[string]uint64{}}
 	ce.dataMu.RLock()
 	defer ce.dataMu.RUnlock()
 	for id, bm := range base.memories {
@@ -143,10 +143,10 @@ func diffSnapshot(base *memorySnapshot, ce *Engine) transactionDiff {
 			d.deleted[id] = true
 			continue
 		}
-		if cm.Reuse > bm.Reuse {
-			d.reuseDelta[id] = cm.Reuse - bm.Reuse
+		if cm.RuntimeExecCount > bm.RuntimeExecCount {
+			d.execDelta[id] = cm.RuntimeExecCount - bm.RuntimeExecCount
 		}
-		if memoryDigestNoReuse(cm) != memoryDigestNoReuse(bm) {
+		if memoryDigestNoRuntimeExec(cm) != memoryDigestNoRuntimeExec(bm) {
 			d.changed[id] = copyMemory(cm)
 		}
 	}
@@ -158,25 +158,25 @@ func diffSnapshot(base *memorySnapshot, ce *Engine) transactionDiff {
 	return d
 }
 
-func currentMemoryNoReuseDigest(e *Engine, id string) string {
+func currentMemoryNoRuntimeExecDigest(e *Engine, id string) string {
 	m, err := e.resolveIDLocal(id)
 	if err != nil {
 		return "<missing>"
 	}
-	return memoryDigestNoReuse(m)
+	return memoryDigestNoRuntimeExec(m)
 }
 
 func (e *Engine) commitSnapshotDiff(base *memorySnapshot, d transactionDiff) bool {
 	// Caller holds daemonBarrier write lock + daemonCognitionLane.
 	for id := range d.changed {
 		bm := base.memories[id]
-		if bm == nil || currentMemoryNoReuseDigest(e, id) != memoryDigestNoReuse(bm) {
+		if bm == nil || currentMemoryNoRuntimeExecDigest(e, id) != memoryDigestNoRuntimeExec(bm) {
 			return false
 		}
 	}
 	for id := range d.deleted {
 		bm := base.memories[id]
-		if bm == nil || currentMemoryNoReuseDigest(e, id) != memoryDigestNoReuse(bm) {
+		if bm == nil || currentMemoryNoRuntimeExecDigest(e, id) != memoryDigestNoRuntimeExec(bm) {
 			return false
 		}
 	}
@@ -189,12 +189,12 @@ func (e *Engine) commitSnapshotDiff(base *memorySnapshot, d transactionDiff) boo
 	e.dataMu.Lock()
 	defer e.dataMu.Unlock()
 	for id, cm := range d.changed {
-		curReuse := uint64(0)
+		curExec := uint64(0)
 		if cur := e.cache[id]; cur != nil {
-			curReuse = cur.Reuse
+			curExec = cur.RuntimeExecCount
 		}
 		q := copyMemory(cm)
-		q.Reuse = curReuse + d.reuseDelta[id]
+		q.RuntimeExecCount = curExec + d.execDelta[id]
 		e.cache[id] = q
 		e.dirtyIDs[id] = true
 		e.dirty = true
@@ -212,12 +212,12 @@ func (e *Engine) commitSnapshotDiff(base *memorySnapshot, d transactionDiff) boo
 		e.dirtyIDs[id] = true
 		e.dirty = true
 	}
-	for id, delta := range d.reuseDelta {
+	for id, delta := range d.execDelta {
 		if _, structural := d.changed[id]; structural {
 			continue
 		}
 		if m := e.cache[id]; m != nil {
-			m.Reuse += delta
+			m.RuntimeExecCount += delta
 		}
 	}
 	return true
