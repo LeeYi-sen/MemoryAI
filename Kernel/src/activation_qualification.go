@@ -34,7 +34,7 @@ type referenceActivationNode struct {
 }
 
 func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error) {
-	ids, err := e.store.AllIDs()
+	ids, err := e.storeAllIDs()
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error
 			continue
 		}
 		seen[id] = true
-		m, er := e.store.GetID(id)
+		m, er := e.storeGetID(id)
 		if er != nil || m == nil {
 			continue
 		}
