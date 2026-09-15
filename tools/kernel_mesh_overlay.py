@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 
-ABI_OVERLAY_SHA256 = "3bdfa38a3c7e9c03624e7e3e6a5c77abbc913372e82267b6e2744d3ca775145f"
+ABI_OVERLAY_SHA256 = "8fb0b2714984ca59b39ab5fef1dd6ad0066995ac3cc3c4e68213a60f60656e18"
 
 
 def apply_kernel_mesh_overlay(raw: bytes) -> bytes:
