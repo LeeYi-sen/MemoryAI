@@ -19,7 +19,10 @@ def apply_kernel_parallel_boundary_overlay(raw: bytes) -> bytes:
     # the Kernel ABI. Remove the entire VM case. Memory remains free to implement
     # arbitrary scoring structures using generic scalar/vector arithmetic outside
     # the immutable cognitive boundary.
-    pattern = re.compile(r'\n\tcase "parallel_score6":.*?(?=\n\tcase ")', re.S)
+    pattern = re.compile(
+        r'\n\tcase "parallel_score6":.*?(?=\n\tcase "|\n\tdefault:|\n\t})',
+        re.S,
+    )
     out, count = pattern.subn("", text, count=1)
     if count != 1:
         raise RuntimeError(f"parallel-boundary overlay expected one score6 case, got {count}")
