@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -236,5 +237,140 @@ func TestMountWaitsForPassiveTransactionAndLoadsDurableResult(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("mount did not proceed after passive transaction closed")
+	}
+}
+
+func TestRemoteBodyTransactionRegistryReclaimsAfterQueuedWaiter(t *testing.T) {
+	baseline := remoteBodyTransactionRegistrySize()
+	path := filepath.Join(t.TempDir(), "registry.mem")
+	firstRelease := acquireRemoteBodyTransaction(path)
+	if got := remoteBodyTransactionRegistrySize(); got != baseline+1 {
+		firstRelease()
+		t.Fatalf("transaction registry did not create one path entry: got=%d baseline=%d", got, baseline)
+	}
+
+	acquired := make(chan func(), 1)
+	go func() { acquired <- acquireRemoteBodyTransaction(path) }()
+	select {
+	case release := <-acquired:
+		release()
+		firstRelease()
+		t.Fatal("queued transaction acquired while first holder still owned path")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := remoteBodyTransactionRegistrySize(); got != baseline+1 {
+		firstRelease()
+		t.Fatalf("queued waiter created/replaced a second registry entry: got=%d baseline=%d", got, baseline)
+	}
+
+	firstRelease()
+	var secondRelease func()
+	select {
+	case secondRelease = <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued transaction did not acquire after first release")
+	}
+	if got := remoteBodyTransactionRegistrySize(); got != baseline+1 {
+		secondRelease()
+		t.Fatalf("registry entry disappeared while second holder was active: got=%d baseline=%d", got, baseline)
+	}
+	secondRelease()
+	if got := remoteBodyTransactionRegistrySize(); got != baseline {
+		t.Fatalf("unused transaction registry entry leaked: got=%d baseline=%d", got, baseline)
+	}
+}
+
+func TestRemoteBodyTransactionCanonicalizesSymlinkAlias(t *testing.T) {
+	baseline := remoteBodyTransactionRegistrySize()
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "Memory.real.mem")
+	aliasPath := filepath.Join(dir, "Memory.alias.mem")
+	writeRemoteTxnBody(t, realPath, "remote.alias.target", "value")
+	if err := os.Symlink(realPath, aliasPath); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseReal := acquireRemoteBodyTransaction(realPath)
+	acquired := make(chan func(), 1)
+	go func() { acquired <- acquireRemoteBodyTransaction(aliasPath) }()
+	select {
+	case release := <-acquired:
+		release()
+		releaseReal()
+		t.Fatal("symlink alias bypassed physical body transaction lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := remoteBodyTransactionRegistrySize(); got != baseline+1 {
+		releaseReal()
+		t.Fatalf("symlink alias used a different physical lock key: got=%d baseline=%d", got, baseline)
+	}
+	releaseReal()
+	select {
+	case releaseAlias := <-acquired:
+		releaseAlias()
+	case <-time.After(2 * time.Second):
+		t.Fatal("symlink alias did not acquire after real-path release")
+	}
+	if got := remoteBodyTransactionRegistrySize(); got != baseline {
+		t.Fatalf("symlink transaction lock leaked after release: got=%d baseline=%d", got, baseline)
+	}
+}
+
+func TestUnmountWaitsForPhysicalBodyTransaction(t *testing.T) {
+	dir := t.TempDir()
+	e := loadRemoteTxnRoot(t, dir)
+	path := filepath.Join(dir, "UnmountStore.mem")
+	writeRemoteTxnBody(t, path, "remote.unmount.target", "value")
+	mounted, err := e.mountSpace(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release := acquireRemoteBodyTransaction(path)
+	done := make(chan bool, 1)
+	go func() { done <- e.unmountSpace(mounted) }()
+	select {
+	case ok := <-done:
+		release()
+		t.Fatalf("unmount bypassed physical body transaction lease: ok=%v", ok)
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("unmount failed after physical body lease released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unmount did not proceed after physical body lease released")
+	}
+}
+
+func TestRootCloseWaitsForMountedBodyTransaction(t *testing.T) {
+	dir := t.TempDir()
+	e := loadRemoteTxnRoot(t, dir)
+	path := filepath.Join(dir, "CloseStore.mem")
+	writeRemoteTxnBody(t, path, "remote.close.target", "value")
+	if _, err := e.mountSpace(path); err != nil {
+		t.Fatal(err)
+	}
+
+	release := acquireRemoteBodyTransaction(path)
+	done := make(chan struct{}, 1)
+	go func() {
+		e.close()
+		done <- struct{}{}
+	}()
+	select {
+	case <-done:
+		release()
+		t.Fatal("root close bypassed mounted-body physical transaction lease")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("root close did not proceed after mounted-body lease released")
 	}
 }
