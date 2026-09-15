@@ -70,6 +70,7 @@ jobs:
                   'activation': 'Kernel/src/activation_runtime.go',
                   'activation_fabric_test': 'Kernel/src/activation_fabric_test.go',
                   'scheduler': 'Kernel/src/scheduler_runtime.go',
+                  'event': 'Kernel/src/event_runtime.go',
                   'lazy': 'Kernel/src/speculative_lazy.go',
                   'spec_boundary': 'Kernel/src/speculative_boundary_extra.go',
                   'spec_commit': 'Kernel/src/speculative_fabric_commit.go',
@@ -83,6 +84,8 @@ jobs:
                   'store': 'Kernel/src/store_access_runtime.go',
                   'fabric': 'Kernel/src/fabric_write_runtime.go',
                   'fabric_read': 'Kernel/src/fabric_read_runtime.go',
+                  'fabric_context': 'Kernel/src/fabric_context_runtime.go',
+                  'fabric_execution_test': 'Kernel/src/fabric_execution_test.go',
                   'structure': 'Kernel/src/structure_runtime.go',
                   'source_adapter': 'Kernel/src/source_adapter_runtime.go',
                   'lifetime_test': 'Kernel/src/store_lifetime_test.go',
@@ -135,7 +138,10 @@ jobs:
               'snapshotForSpeculationLazy(snapshotMemoryLimit())',
               'commitFabricSnapshotDiff(base, diff, ce)',
               'releaseSpeculativeStoreLease(ce)',
+              'fabricRootFor(e)', 'rememberFabricOwner(root, owner)',
+              'f.Vars["__txn_canonical"] = "1"',
               'execution-long-lease+release-before-commit',
+              'fabric-owner-aware-single-lane',
               'canonical-only-bounded-placement',
           ])
           forbid('scheduler', [
@@ -143,6 +149,18 @@ jobs:
               'primary-long-lease+shard-first-read-leases',
               'lazy-snapshot-owned-shared-lease',
               'acquireStoreLifetimeLease()',
+          ])
+
+          require('event', [
+              'eventFabricRoot', 'root.ensureEventPhysicalIndex()',
+              'globalActivationRuntime.ExactFeatureIDs',
+              'root.resolveLocalFabricMemory(id)',
+              'globalTxnScheduler.run(root, id, f)',
+              'f.Vars["__txn_canonical"] == "1"',
+              'owner.run(id, f)',
+          ])
+          forbid('event', [
+              'Speculative engines already contain a bounded private snapshot',
           ])
 
           require('spec_boundary', [
@@ -206,9 +224,14 @@ jobs:
               'origin.physicalFeatureIDsFabricOwned(feature)',
           ])
 
+          require('fabric_context', [
+              'fabricRootRegistry', 'rememberFabricOwner', 'fabricRootFor',
+              'No semantic or cognitive state is stored here',
+          ])
           require('fabric', [
               'resolveLocalFabricMemory', 'duplicate local Fabric Memory id',
               'listTagFabricOwned', 'listTagMountedShardsOwned',
+              'rememberFabricOwner(e, item.eng)', 'fabricRootFor(e)',
               'automaticShardMu.Lock()', 'placeRuntimeMemoryLocked(q)',
               'upsertExplicitMemoryOnOwner', 'upsertExplicitMemoryBounded',
               'deleteExplicitMemoryBounded',
@@ -244,6 +267,13 @@ jobs:
           require('mesh', [
               'direct-read-no-import', 'sovereign-memory-event+ed25519-grant',
               'consumeMeshGrant(req.Grant', 'shared_grant', 'tls-required',
+              'resolveLocalFabricMemoryCopy(strings.TrimSpace(id))',
+              'resolveLocalFabricMemory(strings.TrimSpace(id))',
+              'globalTxnScheduler.run(owner, id, f)',
+          ])
+          forbid('mesh', [
+              'mem, err := e.resolveIDLocal(strings.TrimSpace(id))',
+              'if _, err := e.resolveExecutable(id); err == nil',
           ])
           require('grant', [
               'ed25519.Sign', 'ed25519.Verify', 'mesh grant replay rejected',
@@ -255,6 +285,13 @@ jobs:
               'wildcard mesh listener requires explicit MEMORYAI_MESH_ENDPOINT',
           ])
 
+          require('fabric_execution_test', [
+              'TestMeshServeLocalMemoryReadsPassiveShard',
+              'TestMeshServeLocalExecutionRunsPassiveShardProgram',
+              'TestEventDispatchRunsHandlerFromPassiveShard',
+              'TestEventSubjectTagResolvesSubjectFromPassiveShard',
+              'TestCanonicalEventDispatchDoesNotReenterSchedulerLane',
+          ])
           require('lifetime_test', [
               'TestUpsertExplicitMemoryDoesNotReenterDataLock',
               'upsertExplicitMemoryBounded', 'TestRemoteJSONImportIsDirectReadOnly',
