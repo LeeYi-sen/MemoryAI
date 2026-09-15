@@ -15,8 +15,16 @@ type structureBundle struct {
 	Memories []*Memory `json:"memories"`
 }
 
+// memoryJSONDigest is a structural identity digest, not an execution telemetry
+// digest. RuntimeExecCount is physical runtime accounting and must never make a
+// shared/imported Memory appear semantically changed merely because it ran.
 func memoryJSONDigest(m *Memory) string {
-	b, _ := json.Marshal(m)
+	if m == nil {
+		return ""
+	}
+	q := copyMemory(m)
+	q.RuntimeExecCount = 0
+	b, _ := json.Marshal(q)
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:])
 }
