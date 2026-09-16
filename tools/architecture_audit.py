@@ -61,6 +61,32 @@ def audit() -> dict[str, object]:
     shard = read("Kernel/src/shard_runtime.go")
     require(shard, ["minimumAutomaticShardFreeBytes int64 = 5 << 30", "ensureAutomaticShardDiskBudget", "syscall.Statfs"], "automatic Memory expansion")
 
+    activation = read("Kernel/src/activation_runtime.go")
+    activation_qualification = read("Kernel/src/activation_qualification.go")
+    require(
+        activation,
+        [
+            "pageCap        int",
+            "MEMORYAI_ACTIVATION_PAGE_CAP",
+            '"default_page_cap"',
+            '"physical_page_cap_only"',
+        ],
+        "physical activation",
+    )
+    require(activation_qualification, ["ExactPageOrder", 'json:"exact_page_order"'], "physical activation qualification")
+    forbid(
+        activation + activation_qualification,
+        [
+            'json:"score"',
+            "MEMORYAI_ACTIVATION_TOPK",
+            '"default_top_k"',
+            '"cognitive_ranking"',
+            "ExactTopK",
+            "MaxScoreDiff",
+        ],
+        "physical activation",
+    )
+
     remote = read("Kernel/src/remote_durability_runtime.go")
     require(remote, ["physicalMemoryWithJournal", "readMutationJournal", "persistEngineIncremental(dst)", "persistEngineIncremental(owner)"], "remote durability")
     forbid(remote, ["persistEngineIfDirty(dst)", "persistEngineIfDirty(owner)"], "remote durability")
@@ -168,6 +194,7 @@ def audit() -> dict[str, object]:
         "mesh_durability": "memory.mem",
         "automatic_expansion_floor_bytes": 5 << 30,
         "remote_verification": "base+journal",
+        "physical_activation": "exact-candidate-page/no-score",
         "physical_gpu": "OpenCL dynamic + CPU fallback",
         "cognitive_dispatch_owner": "Memory",
     }
