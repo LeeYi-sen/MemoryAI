@@ -17,8 +17,7 @@ type ActivationQualificationReport struct {
 	OK             bool    `json:"ok"`
 	Queries        int     `json:"queries"`
 	ExactCandidate int     `json:"exact_candidate_sets"`
-	ExactTopK      int     `json:"exact_topk_order"` // legacy field name: exact stable physical page order
-	MaxScoreDiff   float32 `json:"max_score_diff"`   // compatibility metric; must remain zero
+	ExactPageOrder int     `json:"exact_page_order"`
 	IndexedNodes   int     `json:"indexed_nodes"`
 	ReferenceNodes int     `json:"reference_nodes"`
 	ElapsedMS      float64 `json:"elapsed_ms"`
@@ -114,7 +113,7 @@ func buildReferenceActivationCorpus(e *Engine) ([]referenceActivationNode, error
 	return out, nil
 }
 
-func referenceActivationFullScanCorpus(corpus []referenceActivationNode, query string, limit int) (ActivationResult, error) {
+func referenceActivationFullScanCorpus(corpus []referenceActivationNode, query string, pageCap int) (ActivationResult, error) {
 	qf := queryActivationFeatures(query, globalActivationRuntime.maxState)
 	if len(qf) == 0 {
 		return ActivationResult{
@@ -148,15 +147,14 @@ func referenceActivationFullScanCorpus(corpus []referenceActivationNode, query s
 	sort.Strings(ids)
 
 	count := len(ids)
-	if limit > 0 && limit < len(ids) {
-		ids = ids[:limit]
+	if pageCap > 0 && pageCap < len(ids) {
+		ids = ids[:pageCap]
 	}
 
 	out := make([]ActivationCandidate, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, ActivationCandidate{
 			ID:         id,
-			Score:      0,
 			FeatureHit: hit[id],
 		})
 	}
@@ -206,7 +204,7 @@ func activationQualificationQueriesFromCorpus(corpus []referenceActivationNode, 
 func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	start := time.Now()
 	report := ActivationQualificationReport{
-		Mode: "full-fabric-scan-reference-vs-physical-exact-index-no-cognitive-ranking",
+		Mode: "full-fabric-scan-reference-vs-physical-exact-index",
 	}
 	root := fabricRootFor(e)
 	if root == nil {
@@ -230,14 +228,14 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 	report.Queries = len(queries)
 	report.IndexedNodes = int(atomic.LoadInt64(&globalActivationRuntime.nodes))
 	report.ReferenceNodes = len(corpus)
-	limit := globalActivationRuntime.topK
+	pageCap := globalActivationRuntime.pageCap
 
 	for _, q := range queries {
-		sparse, er := globalActivationRuntime.Activate(root, q, limit)
+		sparse, er := globalActivationRuntime.Activate(root, q, pageCap)
 		if er != nil {
 			return report, er
 		}
-		ref, er := referenceActivationFullScanCorpus(corpus, q, limit)
+		ref, er := referenceActivationFullScanCorpus(corpus, q, pageCap)
 		if er != nil {
 			return report, er
 		}
@@ -261,7 +259,7 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 			if sparse.Candidates[i].ID != ref.Candidates[i].ID {
 				exact = false
 				report.Failure = fmt.Sprintf(
-					"stable physical order mismatch query=%q rank=%d sparse=%s reference=%s",
+					"stable physical order mismatch query=%q position=%d sparse=%s reference=%s",
 					q, i, sparse.Candidates[i].ID, ref.Candidates[i].ID,
 				)
 				break
@@ -277,25 +275,16 @@ func qualifySparseActivation(e *Engine) (ActivationQualificationReport, error) {
 				)
 				break
 			}
-			if sparse.Candidates[i].Score != 0 || ref.Candidates[i].Score != 0 {
-				exact = false
-				report.Failure = fmt.Sprintf(
-					"kernel cognitive score must remain zero query=%q id=%s",
-					q, sparse.Candidates[i].ID,
-				)
-				break
-			}
 		}
 		if !exact {
 			break
 		}
-		report.ExactTopK++
+		report.ExactPageOrder++
 	}
 
 	report.OK = report.Failure == "" &&
 		report.ExactCandidate == report.Queries &&
-		report.ExactTopK == report.Queries &&
-		report.MaxScoreDiff == 0 &&
+		report.ExactPageOrder == report.Queries &&
 		report.IndexedNodes == report.ReferenceNodes
 	report.ElapsedMS = float64(time.Since(start).Microseconds()) / 1000
 	activationQualification.Store(report)
