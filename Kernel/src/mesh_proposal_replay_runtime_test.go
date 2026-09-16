@@ -16,6 +16,16 @@ func proposalReplayFrame(revision string) *Frame {
 	return f
 }
 
+func proposalReplayRequest(revision uint64, digest string) MeshRequest {
+	return MeshRequest{
+		Op:             "shared_propose",
+		MemoryID:       "shared.memory",
+		OriginNode:     "node-a",
+		ProposalDigest: digest,
+		Revision:       revision,
+	}
+}
+
 func TestMeshProposalReplayReceiptLivesInsideMemoryAndSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	m, e := testMeshMemoryRuntime(t, dir, "sovereign-a", "sovereign")
@@ -79,11 +89,75 @@ func TestMeshProposalReplayExecutingFenceRefusesRestartReplay(t *testing.T) {
 	}
 }
 
-func TestMeshProposalReplaySupersededDoneReceiptCanBeCollectedWithoutReexecution(t *testing.T) {
+func TestMeshProposalReplayAckCollectsDoneReceiptAndKeepsRestartFence(t *testing.T) {
+	dir := t.TempDir()
+	m, e := testMeshMemoryRuntime(t, dir, "sovereign-ack", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	f.Vars["mesh_decision"] = "approved-v1"
+	if err := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	ack := proposalReplayRequest(1, "digest-a")
+	ack.Op = "shared_proposal_ack"
+	if res := m.handleAuthority(ack); !res.OK || res.Status != "acknowledged" {
+		t.Fatalf("completed proposal ack failed: %+v", res)
+	}
+	if _, _, found, err := loadMeshProposalReplayEntry(e, entry.RequestID); err != nil {
+		t.Fatal(err)
+	} else if found {
+		t.Fatalf("acknowledged done receipt was not collected")
+	}
+
+	_, _, _, replay, err = prepareMeshProposalReplay(e, proposalReplayFrame("1"), ev)
+	if replay || err == nil || !strings.Contains(err.Error(), "conflicting mesh proposal identity at revision 1") {
+		t.Fatalf("acknowledged request must remain fenced before restart: replay=%v err=%v", replay, err)
+	}
+
+	e.close()
+	forgetMeshProposalReplayState(e)
+	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.close()
+	_, _, _, replay, err = prepareMeshProposalReplay(restored, proposalReplayFrame("1"), ev)
+	if replay || err == nil || !strings.Contains(err.Error(), "conflicting mesh proposal identity at revision 1") {
+		t.Fatalf("acknowledged request lost restart fence: replay=%v err=%v", replay, err)
+	}
+}
+
+func TestMeshProposalReplayAckRefusesExecutingReceipt(t *testing.T) {
+	dir := t.TempDir()
+	m, e := testMeshMemoryRuntime(t, dir, "sovereign-ack-executing", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	_, entry, _, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+
+	ack := proposalReplayRequest(1, "digest-a")
+	ack.Op = "shared_proposal_ack"
+	if res := m.handleAuthority(ack); res.OK || !strings.Contains(res.Error, "not completed") {
+		t.Fatalf("executing receipt must reject ack: %+v", res)
+	}
+	if recovered, _, found, err := loadMeshProposalReplayEntry(e, entry.RequestID); err != nil {
+		t.Fatal(err)
+	} else if !found || recovered.State != meshProposalReplayExecuting {
+		t.Fatalf("executing fence was removed by ack: found=%v entry=%+v", found, recovered)
+	}
+}
+
+func TestMeshProposalReplayLedgerBackpressurePreservesUnacknowledgedDoneResult(t *testing.T) {
 	t.Setenv("MEMORYAI_MESH_REPLAY_MAX_ENTRIES", "1")
 	dir := t.TempDir()
-	_, e := testMeshMemoryRuntime(t, dir, "sovereign-gc", "sovereign")
-
+	_, e := testMeshMemoryRuntime(t, dir, "sovereign-unacked", "sovereign")
 	f1 := proposalReplayFrame("1")
 	ev1 := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f1.Vars)
 	st1, entry1, receiptRevision1, replay, err := prepareMeshProposalReplay(e, f1, ev1)
@@ -98,63 +172,21 @@ func TestMeshProposalReplaySupersededDoneReceiptCanBeCollectedWithoutReexecution
 	f2 := proposalReplayFrame("2")
 	f2.Vars["proposal_digest"] = "digest-b"
 	ev2 := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f2.Vars)
-	st2, entry2, receiptRevision2, replay, err := prepareMeshProposalReplay(e, f2, ev2)
-	if err != nil || replay {
-		t.Fatalf("revision 2 should reclaim superseded done receipt instead of hitting ledger backpressure: replay=%v err=%v", replay, err)
-	}
-	if _, _, found, err := loadMeshProposalReplayEntry(e, entry1.RequestID); err != nil {
-		t.Fatal(err)
-	} else if found {
-		t.Fatalf("superseded revision 1 receipt still occupies replay ledger")
-	}
-	f2.Vars["mesh_decision"] = "approved-v2"
-	if err := finalizeMeshProposalReplay(e, st2, entry2, receiptRevision2, f2, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	e.close()
-	forgetMeshProposalReplayState(e)
-	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restored.close()
-	_, recovered, _, replay, err := prepareMeshProposalReplay(restored, proposalReplayFrame("1"), ev1)
-	if replay || err == nil || !strings.Contains(err.Error(), "stale unseen mesh proposal revision") {
-		t.Fatalf("collected old request must remain restart-fenced by slot high-watermark: replay=%v entry=%+v err=%v", replay, recovered, err)
-	}
-}
-
-func TestMeshProposalReplayGCNeverCollectsExecutingFence(t *testing.T) {
-	t.Setenv("MEMORYAI_MESH_REPLAY_MAX_ENTRIES", "1")
-	dir := t.TempDir()
-	_, e := testMeshMemoryRuntime(t, dir, "sovereign-gc-executing", "sovereign")
-
-	f1 := proposalReplayFrame("1")
-	ev1 := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f1.Vars)
-	_, entry1, _, replay, err := prepareMeshProposalReplay(e, f1, ev1)
-	if err != nil || replay || entry1.State != meshProposalReplayExecuting {
-		t.Fatalf("revision 1 prepare failed replay=%v entry=%+v err=%v", replay, entry1, err)
-	}
-
-	e.close()
-	forgetMeshProposalReplayState(e)
-	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restored.close()
-	f2 := proposalReplayFrame("2")
-	f2.Vars["proposal_digest"] = "digest-b"
-	ev2 := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f2.Vars)
-	_, _, _, replay, err = prepareMeshProposalReplay(restored, f2, ev2)
+	_, _, _, replay, err = prepareMeshProposalReplay(e, f2, ev2)
 	if replay || err == nil || !strings.Contains(err.Error(), "ledger full") {
-		t.Fatalf("executing receipt must remain durable and force backpressure: replay=%v err=%v", replay, err)
+		t.Fatalf("unacknowledged result must force bounded backpressure: replay=%v err=%v", replay, err)
 	}
-	if recovered, _, found, err := loadMeshProposalReplayEntry(restored, entry1.RequestID); err != nil {
+
+	replayed := proposalReplayFrame("1")
+	_, recovered, _, replay, err := prepareMeshProposalReplay(e, replayed, ev1)
+	if err != nil || !replay || recovered.State != meshProposalReplayDone {
+		t.Fatalf("unacknowledged completed result stopped replaying: replay=%v entry=%+v err=%v", replay, recovered, err)
+	}
+	if err := applyMeshProposalReplayResult(replayed, recovered); err != nil {
 		t.Fatal(err)
-	} else if !found || recovered.State != meshProposalReplayExecuting {
-		t.Fatalf("executing receipt was collected: found=%v entry=%+v", found, recovered)
+	}
+	if replayed.Vars["mesh_decision"] != "approved-v1" {
+		t.Fatalf("unacknowledged replay result changed: %#v", replayed.Vars)
 	}
 }
 
