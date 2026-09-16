@@ -43,7 +43,7 @@ func loadTwoShardVMTestEngine(t *testing.T, shardA, shardB []*Memory) (*Engine, 
 
 func TestCanonicalVMKeepsRootFabricAcrossSiblingShards(t *testing.T) {
 	exec := &Memory{
-		ID: "vm.shard.a", Layer: "emergent", Tags: []string{"memory", "vm-test"},
+		ID: "vm.shard.a", Layer: "emergent", Tags: []string{"memory", "vm-test"}, Capabilities: []string{"memory.write"},
 		State: map[string]any{}, Revision: 1,
 		Program: []Op{
 			{Code: "state_get", A: "vm.shard.b", B: "value", C: "before"},
@@ -123,7 +123,7 @@ func loadDuplicateTargetVMTestEngine(t *testing.T, program []Op) (*Engine, []*En
 	dir := t.TempDir()
 	primary := filepath.Join(dir, "Memory.mem")
 	exec := &Memory{
-		ID: "vm.duplicate.exec", Layer: "emergent", Tags: []string{"memory", "vm-test"},
+		ID: "vm.duplicate.exec", Layer: "emergent", Tags: []string{"memory", "vm-test"}, Capabilities: []string{"memory.write"},
 		State: map[string]any{}, Revision: 1, Program: program,
 	}
 	root := &Memory{ID: "root", Layer: "inherited", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1}

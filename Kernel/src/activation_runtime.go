@@ -182,7 +182,7 @@ func (r *SparseActivationRuntime) replaceNode(m *Memory) {
 		if p == nil {
 			p = map[string]struct{}{}
 			r.postings[f] = p
-	}
+		}
 		p[m.ID] = struct{}{}
 	}
 	if _, existed := r.nodeFeature[m.ID]; !existed && !r.persistentBase {

@@ -163,11 +163,18 @@ func sameStrings''',
     forbidden = (
         historical_save,
         'src.deletedIDs[id] = true',
-        'persistEngineIfDirty(sp)',
     )
     bad = [token for token in forbidden if token in text]
     if bad:
         raise RuntimeError(f"remote-durability historical unsafe path remained: {bad}")
+
+    handler_start = text.find("func handleMemNodeConn(")
+    handler_end = text.find("\nfunc ", handler_start + 1)
+    if handler_start < 0 or handler_end < 0:
+        raise RuntimeError("remote-durability could not isolate remote node handler")
+    handler_block = text[handler_start:handler_end]
+    if 'persistEngineIfDirty(sp)' in handler_block:
+        raise RuntimeError("remote-durability unsafe full-body helper remained in remote node handler")
 
     required_after = (
         'requireRemoteMutationACK("space_create", resp)',

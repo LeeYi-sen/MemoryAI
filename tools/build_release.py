@@ -122,6 +122,10 @@ def detect_cli(kernel: Path, memory: Path) -> str:
 
 
 def kernel_cmd(mode: str, kernel: Path, memory: Path, args: list[str]) -> tuple[list[str], dict[str, str]]:
+    # `client` is a native Kernel control path and intentionally does not load
+    # Memory.mem. Never route it through a Memory body binding.
+    if args and args[0] == "client":
+        return [str(kernel), *args], {}
     if mode == "body-first":
         return [str(kernel), str(memory), *args], {}
     if mode == "env-body":
@@ -166,10 +170,7 @@ def script_for(mode: str, start: bool) -> str:
             '"$KERNEL" "$MEMORY" daemon "$SOCKET" >>"$LOG" 2>&1 &' if mode == "body-first"
             else 'MEMORYAI_BODY="$MEMORY" "$KERNEL" daemon "$SOCKET" >>"$LOG" 2>&1 &'
         )
-        health = (
-            '"$KERNEL" "$MEMORY" client "$SOCKET" health >/dev/null 2>&1' if mode == "body-first"
-            else 'MEMORYAI_BODY="$MEMORY" "$KERNEL" client "$SOCKET" health >/dev/null 2>&1'
-        )
+        health = '"$KERNEL" client "$SOCKET" health >/dev/null 2>&1'
         return f'''#!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
@@ -192,10 +193,7 @@ done
 kill "$PID" 2>/dev/null || true; rm -f "$PIDFILE" "$SOCKET"
 echo "MemoryAI daemon readiness timeout" >&2; exit 1
 '''
-    persist = (
-        '"$KERNEL" "$MEMORY" client "$SOCKET" persist >/dev/null 2>&1 || true' if mode == "body-first"
-        else 'MEMORYAI_BODY="$MEMORY" "$KERNEL" client "$SOCKET" persist >/dev/null 2>&1 || true'
-    )
+    persist = '"$KERNEL" client "$SOCKET" persist >/dev/null 2>&1 || true'
     return f'''#!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"

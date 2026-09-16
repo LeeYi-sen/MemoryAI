@@ -150,6 +150,9 @@ func TestSpeculativeCrossOwnerConflictIsZeroWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if root.State == nil {
+		root.State = map[string]any{}
+	}
 	root.State["txn"] = "must-not-partially-commit"
 	target.State["value"] = "speculative"
 	ce.dataMu.Lock()

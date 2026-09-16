@@ -16,6 +16,7 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
         "func (e *Engine) run(",
         "func (e *Engine) ownerOf(",
         "func (e *Engine) resolveID(",
+        "func (e *Engine) resolve(",
         "func (e *Engine) resolveMutable(",
         "func (e *Engine) mountSpace(",
         "func (e *Engine) unmountSpace(",
@@ -93,6 +94,57 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
 \treturn nil, io.EOF
 }'''
     text = _replace_once(text, old_resolve_id, new_resolve_id, "unique local exact resolver")
+
+    # Exact-ID Fabric errors must remain fail-closed. Only a true io.EOF means
+    # the operand may instead be interpreted as a tag. In particular, duplicate
+    # physical IDs must not degrade into an unrelated "not found" tag result.
+    old_resolve = '''func (e *Engine) resolve(idOrTag string) (*Memory, error) {
+\tif m, err := e.resolveID(idOrTag); err == nil {
+\t\treturn m, nil
+\t}
+\tids, err := e.listTag(idOrTag)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tif len(ids) == 0 {
+\t\treturn nil, fmt.Errorf("memory %q not found", idOrTag)
+\t}
+\t// Deterministic physical tie-break only. Cognitive arbitration belongs to Memory.
+\tsort.Strings(ids)
+\tfor _, id := range ids {
+\t\tif m, er := e.resolveID(id); er == nil {
+\t\t\treturn m, nil
+\t\t}
+\t}
+\treturn nil, fmt.Errorf("memory %q not found", idOrTag)
+}'''
+    new_resolve = '''func (e *Engine) resolve(idOrTag string) (*Memory, error) {
+\tm, err := e.resolveID(idOrTag)
+\tif err == nil {
+\t\treturn m, nil
+\t}
+\tif err != io.EOF {
+\t\treturn nil, err
+\t}
+\tids, err := e.listTag(idOrTag)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tif len(ids) == 0 {
+\t\treturn nil, fmt.Errorf("memory %q not found", idOrTag)
+\t}
+\t// Deterministic physical tie-break only. Cognitive arbitration belongs to Memory.
+\tsort.Strings(ids)
+\tfor _, id := range ids {
+\t\tif m, er := e.resolveID(id); er == nil {
+\t\t\treturn m, nil
+\t\t} else if er != io.EOF {
+\t\t\treturn nil, er
+\t\t}
+\t}
+\treturn nil, fmt.Errorf("memory %q not found", idOrTag)
+}'''
+    text = _replace_once(text, old_resolve, new_resolve, "exact resolver error propagation")
 
     old_mutable = '''func (e *Engine) resolveMutable(idOrTag string) (*Memory, error) {
 \tif m, err := e.resolveIDLocal(idOrTag); err == nil {
@@ -351,6 +403,7 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
     required_after = (
         "executionOwner.dataMu.Lock()",
         "root.resolveLocalFabricMemory(id)",
+        "if err != io.EOF {",
         "root.listTagFabricOwned(idOrTag)",
         "rememberFabricOwner(e, sp)",
         "forgetFabricOwner(sp)",
@@ -364,6 +417,7 @@ def apply_kernel_fabric_execution_overlay(raw: bytes) -> bytes:
         old_run,
         old_owner,
         old_resolve_id,
+        old_resolve,
         old_mutable,
         "sp.dataMu = e.dataMu",
     )

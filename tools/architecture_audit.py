@@ -68,8 +68,16 @@ def audit() -> dict[str, object]:
     mutation_overlay = read("tools/kernel_mutation_journal_overlay.py")
     remote_overlay = read("tools/kernel_remote_durability_overlay.py")
     forbid(mutation_overlay + remote_overlay, ["expected two remote full-durability barriers"], "generated remote durability")
-    require(remote_overlay, ["persistEngineIncremental(sp)", "historical unsafe path remained"], "generated remote durability")
-    require(mutation_overlay, ["no ACK-critical full-body barrier remains", "remote full-body persistence barrier remained", "persistEngineIncremental(sp)"], "mutation journal generation")
+    require(remote_overlay, ["persistEngineIncremental(sp)", "historical unsafe path remained", "remote node handler"], "generated remote durability")
+    require(
+        mutation_overlay,
+        [
+            "the only remaining mounted full-body helper is the local unmount",
+            "unexpected mounted full-body persistence remained",
+            "persistEngineIncremental(sp)",
+        ],
+        "mutation journal generation",
+    )
 
     parallel = read("Kernel/src/parallel_runtime.go")
     gpu_linux = read("Kernel/src/physical_gpu_opencl_linux.go")
@@ -81,7 +89,7 @@ def audit() -> dict[str, object]:
     builder = read("tools/build_current_memory_seed.py")
     v29 = read("tools/migrations/v29_runtime_ownership.py")
     require(restore, ["build_current_seed", "current-required-structures.json"], "source restore")
-    require(builder, ["v28_language_semantics.py", "v29_runtime_ownership.py", "eb82f503266a12c617e46e78eae882502daed54a8e90859760caf6be7a58ae73"], "current Memory seed builder")
+    require(builder, ["v28_language_semantics.py", "v29_runtime_ownership.py", "9223866b6921c4eefa486e3b34597fabe0b8c823eb79a04a465e441b50128b80"], "current Memory seed builder")
     require(v29, ["memory.lifecycle.dispatch.parent", '"event:memory.activity"', "DRIVE_FACTORS"], "v29 Memory ownership")
     if '"prediction_error", "w_prediction_error"' in v29:
         raise RuntimeError("v29 Drive still declares prediction_error as a factor")

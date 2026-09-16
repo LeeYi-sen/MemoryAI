@@ -23,7 +23,13 @@ def apply_kernel_mesh_journal_overlay(raw: bytes) -> bytes:
         )
     text = text.replace(
         "bindMeshEngine(e)",
-        "bindMeshEngine(e)\n\tif err := migrateLegacyRuntimeState(e); err != nil { die(err) }\n\tif err := recoverMeshJournalAfterBind(e); err != nil { die(err) }",
+        "bindMeshEngine(e)\n"
+        "\tif err := migrateLegacyRuntimeState(e); err != nil {\n"
+        "\t\tdie(err)\n"
+        "\t}\n"
+        "\tif err := recoverMeshJournalAfterBind(e); err != nil {\n"
+        "\t\tdie(err)\n"
+        "\t}",
         1,
     )
 

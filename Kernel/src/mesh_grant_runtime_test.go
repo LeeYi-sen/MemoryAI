@@ -5,10 +5,28 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 )
+
+func snapshotConsumedMeshGrantNoncesForTest() map[any]any {
+	snapshot := map[any]any{}
+	consumedMeshGrantNonces.Range(func(key, value any) bool {
+		snapshot[key] = value
+		return true
+	})
+	return snapshot
+}
+
+func restoreConsumedMeshGrantNoncesForTest(snapshot map[any]any) {
+	consumedMeshGrantNonces.Range(func(key, value any) bool {
+		consumedMeshGrantNonces.Delete(key)
+		return true
+	})
+	for key, value := range snapshot {
+		consumedMeshGrantNonces.Store(key, value)
+	}
+}
 
 func TestMeshGrantSideEffectReplayFenceSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
@@ -24,13 +42,13 @@ func TestMeshGrantSideEffectReplayFenceSurvivesRestart(t *testing.T) {
 	oldGlobal := meshGlobal
 	meshGlobal = m
 	meshGlobalMu.Unlock()
-	oldConsumed := consumedMeshGrantNonces
-	consumedMeshGrantNonces = sync.Map{}
+	oldConsumed := snapshotConsumedMeshGrantNoncesForTest()
+	restoreConsumedMeshGrantNoncesForTest(nil)
 	defer func() {
 		meshGlobalMu.Lock()
 		meshGlobal = oldGlobal
 		meshGlobalMu.Unlock()
-		consumedMeshGrantNonces = oldConsumed
+		restoreConsumedMeshGrantNoncesForTest(oldConsumed)
 	}()
 
 	grant, err := issueMeshGrant("shared_execute", "memory.x", "requester", "target-node", 30*time.Second)
@@ -48,7 +66,7 @@ func TestMeshGrantSideEffectReplayFenceSurvivesRestart(t *testing.T) {
 	}
 	defer restored.close()
 	m.engine = restored
-	consumedMeshGrantNonces = sync.Map{}
+	restoreConsumedMeshGrantNoncesForTest(nil)
 	if err := consumeMeshGrant(grant, []string{"shared_execute"}, "memory.x", "target-node"); err == nil {
 		t.Fatal("restart accepted a previously consumed side-effect grant")
 	}

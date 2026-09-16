@@ -91,7 +91,7 @@ func physicalMemoryWithJournal(path, id string) (*Memory, logicalDiskMemoryState
 		return nil, logicalDiskUnknown, err
 	}
 	baseMemory, baseErr := st.GetID(id)
-	_ = st.Close()
+	st.Close()
 	if baseErr != nil && !errors.Is(baseErr, io.EOF) {
 		return nil, logicalDiskUnknown, baseErr
 	}

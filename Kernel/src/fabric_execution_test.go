@@ -125,7 +125,7 @@ func TestCanonicalEventDispatchDoesNotReenterSchedulerLane(t *testing.T) {
 
 func TestCanonicalEventHandlerKeepsSiblingShardVisibility(t *testing.T) {
 	handler := &Memory{
-		ID: "vm.shard.a", Layer: "emergent", Tags: []string{"memory", "event-handler"},
+		ID: "vm.shard.a", Layer: "emergent", Tags: []string{"memory", "event-handler"}, Capabilities: []string{"memory.write"},
 		Trigger: []string{"event:canonical-cross-shard"}, State: map[string]any{}, Revision: 1,
 		Program: []Op{
 			{Code: "state_get", A: "vm.shard.b", B: "value", C: "event_before"},

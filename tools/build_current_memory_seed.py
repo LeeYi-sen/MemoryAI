@@ -24,7 +24,7 @@ STAGES = (
     ("v28_frontier_drive.py", "c79cfe749fa4f274a61a9cea8dc9e8fe7f3bde10f44a4137df579ff1e66b2f5f"),
     ("v28_belief_reliability_deadline.py", "7d4e512d624c4b13ad619fc051e62342c1feb5e291c98f21f1ad35037b13087c"),
     ("v28_context_research_sources.py", "4de691df29abafd625e193e259caea1583b0cdcf60bab5c3d328beca779212d9"),
-    ("v28_language_semantics.py", "eb82f503266a12c617e46e78eae882502daed54a8e90859760caf6be7a58ae73"),
+    ("v28_language_semantics.py", "9223866b6921c4eefa486e3b34597fabe0b8c823eb79a04a465e441b50128b80"),
     ("v29_runtime_ownership.py", None),
 )
 

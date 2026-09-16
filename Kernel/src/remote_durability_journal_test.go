@@ -1,8 +1,6 @@
 package main
 
 import (
-	"errors"
-	"io"
 	"path/filepath"
 	"testing"
 )

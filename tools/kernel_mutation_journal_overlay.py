@@ -69,9 +69,14 @@ def apply_kernel_mutation_journal_overlay(raw: bytes) -> bytes:
         raise RuntimeError("incremental persistAll routing missing or duplicated")
 
     # Entry 026: remote mutation and move verification now reads base+journal,
-    # so no ACK-critical full-body barrier remains in the generated Kernel.
-    if "persistEngineIfDirty(sp)" in text:
-        raise RuntimeError("remote full-body persistence barrier remained after journal-aware verification")
+    # so the only remaining mounted full-body helper is the local unmount
+    # durability barrier. Any occurrence outside unmountSpace fails closed.
+    full_helper = "persistEngineIfDirty(sp)"
+    _, _, unmount_block = _top_level_function_block(
+        text, "func (e *Engine) unmountSpace("
+    )
+    if text.count(full_helper) != 1 or unmount_block.count(full_helper) != 1:
+        raise RuntimeError("unexpected mounted full-body persistence remained after journal-aware verification")
     if text.count("persistEngineIncremental(sp)") < 3:
         raise RuntimeError("expected mounted persistAll plus remote incremental durability barriers")
     if text.count("writeDetZipWithMutationJournal(out, entries)") != 1:

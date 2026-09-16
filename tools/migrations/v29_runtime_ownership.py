@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-EXPECTED_INPUT_SHA256 = "eb82f503266a12c617e46e78eae882502daed54a8e90859760caf6be7a58ae73"
+EXPECTED_INPUT_SHA256 = "9223866b6921c4eefa486e3b34597fabe0b8c823eb79a04a465e441b50128b80"
 
 FRONTIERS = (
     "goal.frontier.experience.parent",

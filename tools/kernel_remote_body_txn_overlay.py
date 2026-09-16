@@ -68,10 +68,12 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
     # Hold the same path lease through that entire transition so a remote passive
     # opener cannot enter after unregister but before durable close completes.
     unmount_start = text.find("func (e *Engine) unmountSpace(")
-    close_start = text.find("\nfunc (e *Engine) close()", unmount_start)
-    if unmount_start < 0 or close_start < 0:
+    if unmount_start < 0:
+        raise RuntimeError("remote-body-txn overlay could not find unmountSpace body")
+    unmount_end = text.find("\nfunc ", unmount_start + 1)
+    if unmount_end < 0:
         raise RuntimeError("remote-body-txn overlay could not isolate unmountSpace body")
-    unmount_block = text[unmount_start:close_start]
+    unmount_block = text[unmount_start:unmount_end]
     topology_lock = "\te.spaceMu.Lock()\n"
     if topology_lock not in unmount_block:
         raise RuntimeError("remote-body-txn overlay unmount topology lock missing")
@@ -82,7 +84,7 @@ def apply_kernel_remote_body_txn_overlay(raw: bytes) -> bytes:
         "\te.spaceMu.Lock()\n",
         1,
     )
-    text = text[:unmount_start] + unmount_block + text[close_start:]
+    text = text[:unmount_start] + unmount_block + text[unmount_end:]
 
     # Root close detaches every mounted body. Each physical shard gets its own
     # path lease so different shards can still close independently, while a
