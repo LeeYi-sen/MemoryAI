@@ -21,11 +21,7 @@ import (
 //   - Persisted physical secondary indexes are used when available so startup
 //     cost does not grow as O(total Memory records).
 //   - Any result cap is a deterministic physical page (stable ID order), never
-//     a "best candidate" Top-K.
-//
-// Score is retained in ActivationCandidate only for wire compatibility with
-// older clients. Kernel always emits Score=0; cognitive scoring belongs to
-// Memory-owned executable structures.
+//     a "best candidate" selection.
 type SparseActivationRuntime struct {
 	mu             sync.RWMutex
 	postings       map[string]map[string]struct{}
@@ -35,14 +31,13 @@ type SparseActivationRuntime struct {
 	nodes          int64
 	queries        uint64
 	candidates     uint64
-	topK           int // legacy name: physical response cap, not cognitive Top-K
+	pageCap        int // physical transport/resource page cap only
 	maxState       int // compatibility field; zero means all scalar State fields are indexed
 }
 
 type ActivationCandidate struct {
-	ID         string  `json:"id"`
-	Score      float32 `json:"score"`
-	FeatureHit int     `json:"feature_hits"`
+	ID         string `json:"id"`
+	FeatureHit int    `json:"feature_hits"`
 }
 
 type ActivationResult struct {
@@ -57,17 +52,17 @@ type ActivationResult struct {
 var globalActivationRuntime = newSparseActivationRuntime()
 
 func newSparseActivationRuntime() *SparseActivationRuntime {
-	topK := 64
-	if s := os.Getenv("MEMORYAI_ACTIVATION_TOPK"); s != "" {
+	pageCap := 64
+	if s := os.Getenv("MEMORYAI_ACTIVATION_PAGE_CAP"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			topK = n
+			pageCap = n
 		}
 	}
 	return &SparseActivationRuntime{
 		postings:    map[string]map[string]struct{}{},
 		nodeFeature: map[string][]string{},
 		fingerprint: map[string]uint64{},
-		topK:        topK,
+		pageCap:     pageCap,
 		maxState:    0,
 	}
 }
@@ -330,15 +325,14 @@ func activationShadowedIDs(e *Engine) map[string]bool {
 
 // Activate returns an exact physical candidate set.
 //
-// The legacy topK parameter is treated only as a transport/resource cap.
-// Candidates are sorted by stable physical identity, not FeatureHit or Score.
-// Memory-owned executable structures are responsible for relevance ranking and
-// choosing which candidate to activate cognitively.
-func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (ActivationResult, error) {
+// pageCap is only a transport/resource cap. Candidates are sorted by stable
+// physical identity, not by FeatureHit or any cognitive score. Memory-owned
+// executable structures decide what to do with the returned physical page.
+func (r *SparseActivationRuntime) Activate(e *Engine, query string, pageCap int) (ActivationResult, error) {
 	start := time.Now()
 	atomic.AddUint64(&r.queries, 1)
-	if topK <= 0 {
-		topK = r.topK
+	if pageCap <= 0 {
+		pageCap = r.pageCap
 	}
 	qf := queryActivationFeatures(query, r.maxState)
 	if len(qf) == 0 {
@@ -386,15 +380,14 @@ func (r *SparseActivationRuntime) Activate(e *Engine, query string, topK int) (A
 	sort.Strings(ids)
 
 	count := len(ids)
-	if topK > 0 && topK < len(ids) {
-		ids = ids[:topK]
+	if pageCap > 0 && pageCap < len(ids) {
+		ids = ids[:pageCap]
 	}
 
 	out := make([]ActivationCandidate, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, ActivationCandidate{
 			ID:         id,
-			Score:      0,
 			FeatureHit: hit[id],
 		})
 	}
@@ -438,14 +431,13 @@ func (r *SparseActivationRuntime) Info() map[string]any {
 		"candidate_total":           c,
 		"avg_candidates":            avg,
 		"last_backend":              backend,
-		"default_top_k":             r.topK,
-		"physical_cap_only":         true,
+		"default_page_cap":          r.pageCap,
+		"physical_page_cap_only":    true,
 		"selection_order":           "stable-memory-id",
 		"state_field_limit":         0,
 		"persisted_secondary_index": persistent,
 		"legacy_full_scan_fallback": false,
 		"legacy_fallback_scope":     "per-body-on-demand",
-		"cognitive_ranking":         false,
 		"qualification":             activationQualificationInfo(),
 	}
 }
