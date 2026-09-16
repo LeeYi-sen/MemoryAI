@@ -370,6 +370,18 @@ func prepareMeshProposalReplay(e *Engine, f *Frame, ev PhysicalEvent) (*meshProp
 		return st, meshProposalReplayEntry{}, 0, false, err
 	}
 	if len(ids) >= st.maxEntries {
+		reclaimed, reclaimErr := reclaimOneSupersededMeshProposalReplayReceipt(root, ids)
+		if reclaimErr != nil {
+			return st, meshProposalReplayEntry{}, 0, false, reclaimErr
+		}
+		if reclaimed {
+			ids, err = root.listTagFabric(meshProposalReplayTag)
+			if err != nil {
+				return st, meshProposalReplayEntry{}, 0, false, err
+			}
+		}
+	}
+	if len(ids) >= st.maxEntries {
 		return st, meshProposalReplayEntry{}, 0, false, fmt.Errorf("mesh proposal replay ledger full: %d entries (limit %d)", len(ids), st.maxEntries)
 	}
 	entry := meshProposalReplayEntry{
