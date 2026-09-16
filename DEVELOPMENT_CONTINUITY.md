@@ -19,14 +19,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Runtime AI persistence remains executable + `memory.mem`: no persistent WAL/delta/journal/database/JSON sidecars. PID/socket/log files are ephemeral operational state, never AI Memory.
 - All Experience, Structure, Validation, Belief, Prediction, History, Growth, Lineage, Mutation, Recombination and contextual state ultimately persist inside `memory.mem`.
 
-## Validation limitation
-Never report CI PASS unless jobs actually execute. Full recovery -> gofmt -> vet -> test -> race remains required on a working complete checkout/runner. Entry 026 adds a release builder that enforces this Gate before it can package a release. During the connector-only repair session, private GitHub bootstrap bytes could be read only through the GitHub connector and not cloned/materialized as a complete checkout, so focused production compile/behavior/race harnesses plus deterministic migration/hash-chain verification are the available evidence until the repaired tree reaches a working runner.
+## Validation status
+- Entry 027 completed the enforced native Linux AMD64 `restore_source -> gofmt -> vet -> test -> race -> body build -> FSCK -> daemon health/persist -> package smoke` Gate.
+- Do not report a later full release Gate unless that complete chain is executed again after the later change.
+- Focused local harnesses may validate a narrow physical boundary, but their scope must be stated explicitly and never be reported as a full repository/release Gate.
 
-## Open physical-kernel work after Entry 026
-1. Run the newly enforced complete `restore_source -> gofmt -> vet -> test -> race -> body build -> FSCK -> daemon health/persist smoke` release Gate on a runner that can materialize the private repository; do not call CI PASS before this executes.
-2. Replay-receipt ACK/GC remains intentionally bounded/backpressured. Add GC only if a proof/test shows restart replay fencing cannot be weakened.
-3. Add a separate transfer-outcome reconciliation Memory only if a real ambiguous post-rename case remains after journal-aware verification; do not invent a second journal pre-emptively.
-4. Real OpenCL device execution must be acceptance-tested on a Linux AMD64 host with an OpenCL device. CPU/GPU dispatch logic and CPU fallback are race-tested without claiming unavailable hardware execution.
+## Open physical-kernel work after Entry 028
+1. Replay-receipt ACK/GC remains intentionally bounded/backpressured. Add GC only if a proof/test shows restart replay fencing cannot be weakened.
+2. Add a separate transfer-outcome reconciliation Memory only if a real ambiguous post-rename case remains after journal-aware verification; do not invent a second journal pre-emptively.
+3. Real OpenCL device execution must be acceptance-tested on a Linux AMD64 host with an OpenCL device. CPU/GPU dispatch logic and CPU fallback are race-tested without claiming unavailable hardware execution.
 
 ## Development history
 - Entries 001-008: recovery/frozen architecture; durable Mesh spool, negative ACK + target-first transfer, Sovereign replay fencing, quotas/rollback, removal of cognition-shaped execution APIs, in-body dual-slot mutation journal, incremental `persistAll()` with ACK-critical barriers retained.
@@ -69,3 +70,12 @@ Never report CI PASS unless jobs actually execute. Full recovery -> gofmt -> vet
 - **Final package smoke:** the emitted release directory was copied onto the x86_64 VM native ext4 filesystem and independently ran `FSCK -> start.sh -> Kernel client health -> stop.sh`; output ended `RELEASE_PACKAGE_SMOKE_PASS`. Health reported `role=core`, `memory_count=99`, `kernel_policy=physical-only`, physical concurrency 4, OpenCL dynamic backend unavailable with CPU fallback. Unix sockets cannot be created inside the Mac→VM SSHFS mount, so package daemon smoke was correctly performed on native Linux filesystem rather than treating that mount limitation as a product failure.
 - **Generated release artifact:** preserved outside the Git worktree at `/Users/kama/MyCode/MemoryAI-release/Entry-027-linux-amd64`. It is intentionally not committed because it is a generated package containing binaries, restored generated `kernel.go`, and `Memory.mem`; the source builder/tests/checksums are the reproducible committed contract.
 - **Remaining physical acceptance item:** real OpenCL-device execution is still not claimed. The available x86_64 VM has no OpenCL device; CPU fallback, GPU dispatch boundaries, ordinary/race tests and dynamic-loader behavior are validated, but an actual Linux AMD64 OpenCL host is still required for hardware execution acceptance.
+
+### Entry 028 — remove cognitive-shaped Activation ABI
+- Base HEAD: `55bde5513a2fac2fc88f6701a20ac645c832fcbe` (`Entry 027: complete Linux AMD64 release gate`).
+- **Physical Activation ABI:** `ActivationCandidate` no longer exposes `Score`; Kernel returns only physical Memory identity plus exact physical feature-hit metadata. `Activate` now uses a `pageCap` transport/resource boundary and stable Memory-ID order, with no score, relevance or cognitive rank contract.
+- **Configuration vocabulary:** `MEMORYAI_ACTIVATION_TOPK` is intentionally ignored by the new runtime. Physical paging uses `MEMORYAI_ACTIVATION_PAGE_CAP`; runtime info exposes `default_page_cap` and `physical_page_cap_only` instead of Top-K/cognitive-ranking shaped keys.
+- **Qualification contract:** full-Fabric qualification now compares exact candidate counts, exact stable physical page order and exact feature-hit counts. Historical `ExactTopK` and `MaxScoreDiff` fields are removed.
+- **Regression Gate:** new `activation_boundary_test.go` locks the score-free JSON wire shape, physical page-cap metadata and non-effect of the legacy Top-K environment variable. `tools/architecture_audit.py` scans every production `activation*.go` and rejects `Score`, `topK`, old env/key names and old qualification symbols.
+- **Local sandbox validation:** exact touched production sources were compiled with Go 1.23.2 Linux AMD64 in an isolated physical-Fabric harness; `go vet` PASS; `go test -race -count=30` PASS; architecture-audit Python syntax PASS; positive activation-boundary audit PASS; an injected `Score` negative probe was rejected as expected.
+- **Validation scope:** this turn does not claim a new full repository/release Gate because the ChatGPT sandbox could not directly clone GitHub. The last complete release Gate remains Entry 027. Entry 028 changes only the Activation physical ABI/qualification/audit boundary; real OpenCL hardware acceptance remains outstanding.

@@ -170,7 +170,7 @@ func TestActivationQualificationUsesFullFabricReference(t *testing.T) {
 	if !report.OK || report.IndexedNodes != 2 || report.ReferenceNodes != 2 {
 		t.Fatalf("qualification used incomplete Fabric corpus: %+v", report)
 	}
-	if report.ExactCandidate != report.Queries || report.ExactTopK != report.Queries {
+	if report.ExactCandidate != report.Queries || report.ExactPageOrder != report.Queries {
 		t.Fatalf("qualification exactness incomplete: %+v", report)
 	}
 }

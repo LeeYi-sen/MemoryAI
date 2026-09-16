@@ -61,6 +61,39 @@ def audit() -> dict[str, object]:
     shard = read("Kernel/src/shard_runtime.go")
     require(shard, ["minimumAutomaticShardFreeBytes int64 = 5 << 30", "ensureAutomaticShardDiskBudget", "syscall.Statfs"], "automatic Memory expansion")
 
+    activation = read("Kernel/src/activation_runtime.go")
+    activation_qualification = read("Kernel/src/activation_qualification.go")
+    activation_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(SRC.glob("activation*.go"))
+        if not path.name.endswith("_test.go")
+    )
+    require(
+        activation,
+        [
+            "pageCap        int",
+            "MEMORYAI_ACTIVATION_PAGE_CAP",
+            '"default_page_cap"',
+            '"physical_page_cap_only"',
+        ],
+        "physical activation",
+    )
+    require(activation_qualification, ["ExactPageOrder", 'json:"exact_page_order"'], "physical activation qualification")
+    forbid(
+        activation_sources,
+        [
+            'json:"score"',
+            "MEMORYAI_ACTIVATION_TOPK",
+            '"default_top_k"',
+            '"cognitive_ranking"',
+            "ExactTopK",
+            "MaxScoreDiff",
+        ],
+        "physical activation",
+    )
+    if re.search(r"\b(?:Score|topK)\b", activation_sources):
+        raise RuntimeError("physical activation retains cognitive-shaped Score/topK identifier")
+
     remote = read("Kernel/src/remote_durability_runtime.go")
     require(remote, ["physicalMemoryWithJournal", "readMutationJournal", "persistEngineIncremental(dst)", "persistEngineIncremental(owner)"], "remote durability")
     forbid(remote, ["persistEngineIfDirty(dst)", "persistEngineIfDirty(owner)"], "remote durability")
@@ -94,8 +127,6 @@ def audit() -> dict[str, object]:
     if '"prediction_error", "w_prediction_error"' in v29:
         raise RuntimeError("v29 Drive still declares prediction_error as a factor")
 
-    # Production Kernel must not retain the old Go cognitive-growth ABI even under
-    # a different filename. Historical implementations belong under legacy/ only.
     cognitive_symbols = (
         "RunAutonomousRemoteEvidenceIntakeCycle",
         "RunAutonomousGroundedActionCycle",
@@ -148,7 +179,6 @@ def audit() -> dict[str, object]:
     )
     forbid(release_builder, ["--skip-race"], "release builder")
 
-    # Production source must not grow a second persistent runtime state system.
     allowed_sidecar_file = "legacy_runtime_migration.go"
     forbidden_suffixes = (".wal", ".delta.json", "Memory.mesh-journal.", "Memory.mesh-proposal-replay.")
     sidecar_hits: list[str] = []
@@ -168,6 +198,7 @@ def audit() -> dict[str, object]:
         "mesh_durability": "memory.mem",
         "automatic_expansion_floor_bytes": 5 << 30,
         "remote_verification": "base+journal",
+        "physical_activation": "exact-candidate-page/no-score",
         "physical_gpu": "OpenCL dynamic + CPU fallback",
         "cognitive_dispatch_owner": "Memory",
     }
