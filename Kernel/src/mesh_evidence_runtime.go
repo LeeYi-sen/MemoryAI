@@ -10,17 +10,9 @@ import (
 	"time"
 )
 
-const (
-	remoteEvidenceExperience     = "experience"
-	remoteEvidenceBelief         = "belief"
-	remoteEvidenceContextSplit   = "context_split"
-	remoteEvidenceActionInstance = "grounded_action_instance"
-)
-
-// RemoteMemoryEvidence is a transient, read-only view of evidence that still
-// physically belongs to another Memory node. It is never persisted by the
-// requester. Provenance identifies the exact remote body/revision and the
-// short-lived Sovereign authorization that permitted this read.
+// RemoteMemoryEvidence is a transient, read-only physical view of one Memory
+// that still belongs to another node. Kind is an opaque Memory-authored label;
+// Kernel deliberately does not maintain a table of cognitive evidence types.
 type RemoteMemoryEvidence struct {
 	Kind             string          `json:"kind"`
 	EvidenceID       string          `json:"evidence_id"`
@@ -36,115 +28,47 @@ type RemoteMemoryEvidence struct {
 	Payload          json.RawMessage `json:"payload"`
 }
 
+// normalizeRemoteEvidenceKind enforces only a physical envelope constraint.
+// Meaning belongs to executable Memory, so new evidence classes never require
+// a Kernel release.
 func normalizeRemoteEvidenceKind(kind string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case remoteEvidenceExperience:
-		return remoteEvidenceExperience, nil
-	case remoteEvidenceBelief:
-		return remoteEvidenceBelief, nil
-	case remoteEvidenceContextSplit, "context-split", "contextsplit":
-		return remoteEvidenceContextSplit, nil
-	case remoteEvidenceActionInstance, "action_instance", "action-instance":
-		return remoteEvidenceActionInstance, nil
-	default:
-		return "", fmt.Errorf("unsupported remote evidence kind %q", kind)
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return "", errors.New("remote evidence kind required")
 	}
+	if len(kind) > 128 {
+		return "", errors.New("remote evidence kind exceeds physical limit")
+	}
+	return kind, nil
 }
 
+// remoteEvidenceBackingMemoryID is intentionally identity-only. Evidence must
+// already be a discrete Memory; Kernel no longer knows about historical
+// monolithic Growth ledgers or Belief/Context/Action Go structs.
 func remoteEvidenceBackingMemoryID(kind, evidenceID string) (string, error) {
-	kind, err := normalizeRemoteEvidenceKind(kind)
-	if err != nil {
+	if _, err := normalizeRemoteEvidenceKind(kind); err != nil {
 		return "", err
 	}
 	evidenceID = strings.TrimSpace(evidenceID)
 	if evidenceID == "" {
 		return "", errors.New("remote evidence id required")
 	}
-	if kind == remoteEvidenceExperience {
-		return memoryGrowthStateRecordID, nil
-	}
 	return evidenceID, nil
 }
 
 func remoteEvidencePayload(kind, evidenceID string, memory *Memory) ([]byte, error) {
+	if _, err := normalizeRemoteEvidenceKind(kind); err != nil {
+		return nil, err
+	}
 	if memory == nil {
 		return nil, errors.New("remote evidence backing Memory unavailable")
 	}
-	kind, err := normalizeRemoteEvidenceKind(kind)
-	if err != nil {
-		return nil, err
+	if strings.TrimSpace(memory.ID) != strings.TrimSpace(evidenceID) {
+		return nil, fmt.Errorf("remote evidence backing Memory identity mismatch: %s != %s", memory.ID, evidenceID)
 	}
-	evidenceID = strings.TrimSpace(evidenceID)
-	switch kind {
-	case remoteEvidenceExperience:
-		if memory.ID != memoryGrowthStateRecordID {
-			return nil, fmt.Errorf("remote Experience backing Memory mismatch: %s", memory.ID)
-		}
-		value, ok := memory.State["memory_growth_state"]
-		if !ok {
-			return nil, errors.New("remote Memory Growth state unavailable")
-		}
-		var raw []byte
-		switch v := value.(type) {
-		case string:
-			raw = []byte(v)
-		case []byte:
-			raw = append([]byte(nil), v...)
-		default:
-			raw, err = json.Marshal(v)
-			if err != nil {
-				return nil, err
-			}
-		}
-		state, err := decodeMemoryGrowthState(raw)
-		if err != nil {
-			return nil, err
-		}
-		for _, experience := range state.Experiences {
-			if experience != nil && experience.ID == evidenceID {
-				return json.Marshal(experience)
-			}
-		}
-		return nil, fmt.Errorf("remote Experience forgotten: %s", evidenceID)
-	case remoteEvidenceBelief:
-		if memory.ID != evidenceID || !memoryHasTag(memory, memoryBeliefTag) {
-			return nil, fmt.Errorf("remote Belief unavailable: %s", evidenceID)
-		}
-		state, err := decodeMemoryBeliefState(memory.State["belief_state"])
-		if err != nil {
-			return nil, err
-		}
-		if state == nil || state.ID != evidenceID {
-			return nil, fmt.Errorf("remote Belief identity drift: %s", evidenceID)
-		}
-		return json.Marshal(state)
-	case remoteEvidenceContextSplit:
-		if memory.ID != evidenceID || !memoryHasTag(memory, memoryContextSplitTag) {
-			return nil, fmt.Errorf("remote Context Split unavailable: %s", evidenceID)
-		}
-		state, err := decodeMemoryContextSplitState(memory.State["split_state"])
-		if err != nil {
-			return nil, err
-		}
-		if state == nil || state.ID != evidenceID {
-			return nil, fmt.Errorf("remote Context Split identity drift: %s", evidenceID)
-		}
-		return json.Marshal(state)
-	case remoteEvidenceActionInstance:
-		if memory.ID != evidenceID || !memoryHasTag(memory, groundedActionInstanceTag) {
-			return nil, fmt.Errorf("remote Grounded Action Instance unavailable: %s", evidenceID)
-		}
-		state, err := decodeGroundedActionInstance(memory.State["instance_state"])
-		if err != nil {
-			return nil, err
-		}
-		if state == nil || state.ID != evidenceID {
-			return nil, fmt.Errorf("remote Grounded Action Instance identity drift: %s", evidenceID)
-		}
-		return json.Marshal(state)
-	default:
-		return nil, fmt.Errorf("unsupported remote evidence kind %q", kind)
-	}
+	// Preserve the source Memory as factual evidence. No kind-specific parsing,
+	// ranking or semantic projection occurs in Kernel.
+	return json.Marshal(memory)
 }
 
 func transientRemoteEvidence(
@@ -156,13 +80,17 @@ func transientRemoteEvidence(
 	if grant == nil {
 		return nil, errors.New("remote evidence Sovereign grant unavailable")
 	}
+	kind, err := normalizeRemoteEvidenceKind(kind)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := remoteEvidencePayload(kind, evidenceID, memory)
 	if err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(payload)
 	return &RemoteMemoryEvidence{
-		Kind:             strings.TrimSpace(kind),
+		Kind:             kind,
 		EvidenceID:       strings.TrimSpace(evidenceID),
 		OriginNode:       record.OriginNode,
 		OriginEndpoint:   record.Endpoint,
@@ -177,10 +105,9 @@ func transientRemoteEvidence(
 	}, nil
 }
 
-// remoteEvidenceRead performs a fresh Sovereign-authorized read every time.
-// It deliberately does not use or create a requester-side Memory cache. When
-// the origin is unreachable, the evidence is unavailable ("forgotten") until
-// a later call can reach the origin again.
+// remoteEvidenceRead performs a fresh Sovereign-authorized direct read every
+// time. It never creates a requester-side persistent cache. Origin loss means
+// the evidence is unavailable until that origin becomes reachable again.
 func (m *meshRuntime) remoteEvidenceRead(kind, evidenceID string) (*RemoteMemoryEvidence, error) {
 	if m == nil {
 		return nil, errors.New("mesh runtime unavailable")
@@ -223,7 +150,7 @@ func (m *meshRuntime) remoteEvidenceRead(kind, evidenceID string) (*RemoteMemory
 		}
 		memory = res.Memory
 	}
-	if memory.ID != record.MemoryID {
+	if memory.ID != record.MemoryID || memory.ID != backingID {
 		return nil, errors.New("remote evidence backing Memory identity mismatch")
 	}
 	if err := validateMemoryCapabilities(memory, true); err != nil {
@@ -232,9 +159,6 @@ func (m *meshRuntime) remoteEvidenceRead(kind, evidenceID string) (*RemoteMemory
 	return transientRemoteEvidence(kind, evidenceID, requester, record, grant, memory)
 }
 
-// ReadRemoteMemoryEvidence is the MemoryAI-facing direct-read entrypoint. It
-// returns a transient value only; callers that want durable knowledge must let
-// Memory form new local Experience through an explicit later process.
 func ReadRemoteMemoryEvidence(kind, evidenceID string) (*RemoteMemoryEvidence, error) {
 	m := meshRuntimeCurrent()
 	if m == nil {

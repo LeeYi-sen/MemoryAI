@@ -3,20 +3,26 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	meshGrantVersion = 1
-	meshGrantTTL     = 30 * time.Second
+	meshGrantVersion           = 1
+	meshGrantTTL               = 30 * time.Second
+	meshGrantReceiptTag        = "memory-mesh-grant-consumed"
+	defaultMeshGrantReceiptMax = 65536
+	hardMeshGrantReceiptMax    = 1 << 20
 )
 
 // MeshGrant is a Sovereign-issued authorization ticket. Transport HMAC proves
@@ -43,7 +49,7 @@ type meshGrantPayload struct {
 	Nonce       string `json:"nonce"`
 }
 
-var consumedMeshGrantNonces sync.Map // nonce -> expiresUnix
+var consumedMeshGrantNonces sync.Map // nonce -> expiresUnix; fast in-process fence
 
 func meshGrantPayloadBytes(g *MeshGrant) ([]byte, error) {
 	if g == nil {
@@ -94,7 +100,6 @@ func meshSovereignPublicKey() (ed25519.PublicKey, error) {
 	if raw := strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64")); raw != "" {
 		return decodeEd25519Public(raw)
 	}
-	// Sovereign may verify its own grants without duplicating public-key config.
 	priv, err := meshSovereignPrivateKey()
 	if err != nil {
 		return nil, errors.New("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64 required on mesh nodes")
@@ -157,6 +162,132 @@ func issueMeshGrant(operation, memoryID, originNode, targetNode string, ttl time
 	return g, nil
 }
 
+func meshGrantHasSideEffect(operation string) bool {
+	switch strings.TrimSpace(operation) {
+	case "shared_execute", "route_execute":
+		return true
+	default:
+		return false
+	}
+}
+
+func meshGrantReceiptID(g *MeshGrant) string {
+	if g == nil {
+		return ""
+	}
+	raw := strings.Join([]string{g.Operation, g.MemoryID, g.TargetNode, g.Nonce}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return "mesh-grant-consumed-" + hex.EncodeToString(sum[:16])
+}
+
+func meshGrantReceiptMax() int {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_MESH_GRANT_RECEIPT_MAX"))
+	if raw == "" {
+		return defaultMeshGrantReceiptMax
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultMeshGrantReceiptMax
+	}
+	if n > hardMeshGrantReceiptMax {
+		return hardMeshGrantReceiptMax
+	}
+	return n
+}
+
+func meshGrantReceiptEngine() (*Engine, error) {
+	m := meshRuntimeCurrent()
+	if m == nil {
+		return nil, errors.New("mesh grant replay fence requires mesh runtime")
+	}
+	m.mu.RLock()
+	e := m.engine
+	m.mu.RUnlock()
+	if e == nil {
+		return nil, errors.New("mesh grant replay fence requires bound Memory")
+	}
+	if root := fabricRootFor(e); root != nil {
+		e = root
+	}
+	return e, nil
+}
+
+func pruneExpiredMeshGrantReceipts(e *Engine, now int64) error {
+	ids, err := e.listTagFabric(meshGrantReceiptTag)
+	if err != nil {
+		return err
+	}
+	if len(ids) < meshGrantReceiptMax() {
+		return nil
+	}
+	for _, id := range ids {
+		_, memory, er := e.resolveLocalFabricMemory(id)
+		if er != nil {
+			if errors.Is(er, io.EOF) {
+				continue
+			}
+			return er
+		}
+		expires, er := meshScalarUint64(memory.State["expires_unix"])
+		if er != nil || int64(expires) > now {
+			continue
+		}
+		if er := e.deleteExplicitMemoryBounded(id); er != nil {
+			return er
+		}
+	}
+	if e.isDirty() {
+		return e.persistAll()
+	}
+	return nil
+}
+
+func persistConsumedMeshGrant(g *MeshGrant) error {
+	e, err := meshGrantReceiptEngine()
+	if err != nil {
+		return err
+	}
+	id := meshGrantReceiptID(g)
+	if id == "" {
+		return errors.New("mesh grant replay receipt identity unavailable")
+	}
+	if _, existing, err := e.resolveLocalFabricMemory(id); err == nil && existing != nil {
+		return errors.New("mesh grant replay rejected")
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if err := pruneExpiredMeshGrantReceipts(e, time.Now().Unix()); err != nil {
+		return err
+	}
+	ids, err := e.listTagFabric(meshGrantReceiptTag)
+	if err != nil {
+		return err
+	}
+	if len(ids) >= meshGrantReceiptMax() {
+		return fmt.Errorf("mesh grant replay receipt backpressure: %d entries", len(ids))
+	}
+	memory := &Memory{
+		ID:       id,
+		Layer:    "emergent",
+		Tags:     []string{"memory", meshGrantReceiptTag},
+		Content:  "Durable consumed Sovereign Mesh grant receipt.",
+		Revision: 1,
+		State: map[string]any{
+			"operation":    g.Operation,
+			"memory_id":    g.MemoryID,
+			"origin_node":  g.OriginNode,
+			"target_node":  g.TargetNode,
+			"nonce":        g.Nonce,
+			"expires_unix": g.ExpiresUnix,
+		},
+	}
+	if err := e.upsertExplicitMemoryBounded(memory); err != nil {
+		return err
+	}
+	// Persist the fence before allowing the remote side effect to execute.
+	return e.persistAll()
+}
+
 func consumeMeshGrant(g *MeshGrant, allowedOperations []string, memoryID, targetNode string) error {
 	if g == nil {
 		return errors.New("sovereign authorization grant required")
@@ -200,7 +331,14 @@ func consumeMeshGrant(g *MeshGrant, allowedOperations []string, memoryID, target
 	if _, loaded := consumedMeshGrantNonces.LoadOrStore(g.Nonce, g.ExpiresUnix); loaded {
 		return errors.New("mesh grant replay rejected")
 	}
-	// Opportunistic bounded cleanup; correctness does not depend on cleanup.
+	if meshGrantHasSideEffect(g.Operation) {
+		if err := persistConsumedMeshGrant(g); err != nil {
+			consumedMeshGrantNonces.Delete(g.Nonce)
+			return err
+		}
+	}
+	// Opportunistic in-process cleanup. Durable side-effect receipts are pruned
+	// separately only after expiry and only under bounded-ledger pressure.
 	consumedMeshGrantNonces.Range(func(key, value any) bool {
 		expires, ok := value.(int64)
 		if ok && expires <= now {

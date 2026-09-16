@@ -61,35 +61,46 @@ func daemonFrameFromArgs(args []string) *Frame {
 	return f
 }
 
-// runMemoryGrowthAfterLiveActivity 把真实 live 活动与 Remote Evidence Intake + Grounding + Context Split + Memory Growth 闭环连接起来。
-// 每个完成的 run/input/event 最多机会式推进一次 Memory 明确声明的远端证据吸收决策、一个外部动作、
-// 一个上下文裂分步骤和一个既有内部生长步骤；这里仍然没有独立后台 cognitive scheduler。
-func (e *Engine) runMemoryGrowthAfterLiveActivity(f *Frame) {
-	if e == nil {
-		return
+// resolveMemoryRunTarget gives executable Memory a physical event opportunity
+// to translate one requested identity into another exact identity. Kernel does
+// not inspect Context, rank branches, score candidates or choose a fallback by
+// meaning. No Memory handler means the exact request is executed unchanged.
+func (e *Engine) resolveMemoryRunTarget(requested string, f *Frame) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return "", errors.New("run requires Memory id/tag")
 	}
-	_, remoteEvidenceErr := RunAutonomousRemoteEvidenceIntakeCycle(e)
-	_, groundedErr := RunAutonomousGroundedActionCycle(e)
-	_, branchErr := RunAutonomousContextBranchingCycle(e)
-	_, growthErr := RunAutonomousMemoryGrowthCycle(e)
-	if f == nil || (remoteEvidenceErr == nil && groundedErr == nil && branchErr == nil && growthErr == nil) {
+	if f == nil {
+		f = newFrame()
+	}
+	f.Vars["requested_memory_id"] = requested
+	if err := e.fireEvent("memory.run.resolve", requested, f); err != nil {
+		return "", err
+	}
+	resolved := strings.TrimSpace(f.Vars["resolved_memory_id"])
+	if resolved == "" {
+		return requested, nil
+	}
+	return resolved, nil
+}
+
+// runMemoryActivityAfterLiveActivity exposes one completed physical stimulus to
+// executable Memory. This replaces the historical fixed Go pipeline
+// (remote-evidence -> grounded-action -> context-branch -> growth). The Kernel
+// now emits only one exact physical event; Memory structures decide what should
+// activate next and can emit further events themselves.
+func (e *Engine) runMemoryActivityAfterLiveActivity(kind, subject string, f *Frame) {
+	if e == nil || f == nil {
 		return
 	}
 	if f.Vars == nil {
 		f.Vars = map[string]string{}
 	}
-	// 远端证据读取/外部动作/裂分/生长失败不回滚已经完成的用户事件；把物理故障暴露给 Memory/调用方观察。
-	if remoteEvidenceErr != nil {
-		f.Vars["__memory_remote_evidence_error"] = remoteEvidenceErr.Error()
-	}
-	if groundedErr != nil {
-		f.Vars["__memory_grounded_error"] = groundedErr.Error()
-	}
-	if branchErr != nil {
-		f.Vars["__memory_branching_error"] = branchErr.Error()
-	}
-	if growthErr != nil {
-		f.Vars["__memory_growth_error"] = growthErr.Error()
+	f.Vars["activity_kind"] = strings.TrimSpace(kind)
+	if err := e.fireEvent("memory.activity", strings.TrimSpace(subject), f); err != nil {
+		// A post-activity cognitive failure cannot roll back the already completed
+		// physical user operation. It remains observable to Memory/the caller.
+		f.Vars["__memory_activity_error"] = err.Error()
 	}
 }
 
@@ -125,30 +136,15 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 			return fail(errors.New("run requires Memory id/tag"))
 		}
 		f := daemonFrameFromArgs(args[1:])
-		liveContext := cloneStringMap(f.Vars)
-		resolution, err := ResolveContextualExecutionTarget(e, args[0], liveContext)
+		targetID, err := e.resolveMemoryRunTarget(args[0], f)
 		if err != nil {
 			return fail(err)
-		}
-		targetID := args[0]
-		if resolution != nil && strings.TrimSpace(resolution.ResolvedID) != "" {
-			targetID = resolution.ResolvedID
 		}
 		if err := globalTxnScheduler.run(e, targetID, f); err != nil {
 			return fail(err)
 		}
-		if resolution != nil && resolution.Contextual && resolution.Structure != nil {
-			feedback, feedbackErr := RecordContextualExecutionFeedback(e, resolution.Structure, liveContext, f, resolution.ActivationFactID)
-			if feedbackErr != nil {
-				f.Vars["__memory_context_feedback_error"] = feedbackErr.Error()
-			} else if feedback != nil && feedback.Experience != nil {
-				f.Vars["__memory_context_requested"] = resolution.RequestedID
-				f.Vars["__memory_context_resolved"] = resolution.ResolvedID
-				f.Vars["__memory_context_activation_fact"] = resolution.ActivationFactID
-				f.Vars["__memory_context_experience"] = feedback.Experience.ID
-			}
-		}
-		e.runMemoryGrowthAfterLiveActivity(f)
+		f.Vars["executed_memory_id"] = targetID
+		e.runMemoryActivityAfterLiveActivity("run", targetID, f)
 		return daemonResponse{OK: true, Frame: f}
 	case "input":
 		if len(args) < 1 {
@@ -161,7 +157,7 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if err := e.fireEvent("input", "", f); err != nil {
 			return fail(err)
 		}
-		e.runMemoryGrowthAfterLiveActivity(f)
+		e.runMemoryActivityAfterLiveActivity("input", "", f)
 		return daemonResponse{OK: true, Frame: f}
 	case "event":
 		if len(args) < 1 {
@@ -177,7 +173,7 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if err := e.fireEvent(args[0], subject, f); err != nil {
 			return fail(err)
 		}
-		e.runMemoryGrowthAfterLiveActivity(f)
+		e.runMemoryActivityAfterLiveActivity("event", subject, f)
 		return daemonResponse{OK: true, Frame: f}
 	case "activate":
 		if len(args) < 1 {

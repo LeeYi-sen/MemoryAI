@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,11 +15,12 @@ import (
 )
 
 const (
-	meshProposalReplayVersion           = 1
 	defaultMeshProposalReplayMaxEntries = 65536
-	defaultMeshProposalReplayMaxBytes   = int64(64 << 20)
 	hardMeshProposalReplayMaxEntries    = 1 << 20
-	hardMeshProposalReplayMaxBytes      = int64(1 << 30)
+	meshProposalReplayTag               = "memory-mesh-proposal-replay"
+	meshProposalReplaySlotTag           = "memory-mesh-proposal-replay-slot"
+	meshProposalReplayExecuting         = "executing"
+	meshProposalReplayDone              = "done"
 )
 
 type meshProposalReplayEntry struct {
@@ -34,131 +33,42 @@ type meshProposalReplayEntry struct {
 	UpdatedNano int64             `json:"updated_nano"`
 }
 
-type meshProposalReplayDisk struct {
-	Version int                       `json:"version"`
-	Entries []meshProposalReplayEntry `json:"entries"`
-}
-
 type meshProposalReplayState struct {
 	mu         sync.Mutex
-	path       string
-	loaded     bool
-	entries    map[string]meshProposalReplayEntry // request_id -> durable receipt/fence
-	latest     map[string]string                  // slot -> newest request_id
-	live       map[string]bool                    // slot -> executing in this process
-	bytes      int64
+	live       map[string]bool // slot -> executing in this process
 	maxEntries int
-	maxBytes   int64
 }
 
-var meshProposalReplayStates sync.Map // map[canonical replay file path]*meshProposalReplayState
+var meshProposalReplayStates sync.Map // map[*Engine]*meshProposalReplayState
 
-func meshProposalReplayPath(e *Engine) (string, error) {
+func meshProposalReplayRoot(e *Engine) (*Engine, error) {
 	root := eventFabricRoot(e)
-	if root == nil || strings.TrimSpace(root.bodyPath) == "" {
-		return "", fmt.Errorf("mesh proposal replay requires a bound physical Memory body")
+	if root == nil {
+		return nil, errors.New("mesh proposal replay requires a bound Memory body")
 	}
-	body := canonicalPhysicalBodyPath(root.bodyPath)
-	sum := sha256.Sum256([]byte(body))
-	name := "Memory.mesh-proposal-replay." + hex.EncodeToString(sum[:6]) + ".json"
-	return filepath.Join(filepath.Dir(body), name), nil
+	return root, nil
 }
 
 func meshProposalReplayStateFor(e *Engine) (*meshProposalReplayState, error) {
-	path, err := meshProposalReplayPath(e)
+	root, err := meshProposalReplayRoot(e)
 	if err != nil {
 		return nil, err
 	}
-	if raw, ok := meshProposalReplayStates.Load(path); ok {
+	if raw, ok := meshProposalReplayStates.Load(root); ok {
 		return raw.(*meshProposalReplayState), nil
 	}
 	st := &meshProposalReplayState{
-		path:       path,
-		entries:    map[string]meshProposalReplayEntry{},
-		latest:     map[string]string{},
 		live:       map[string]bool{},
 		maxEntries: boundedMeshJournalIntEnv("MEMORYAI_MESH_REPLAY_MAX_ENTRIES", defaultMeshProposalReplayMaxEntries, hardMeshProposalReplayMaxEntries),
-		maxBytes:   boundedMeshJournalInt64Env("MEMORYAI_MESH_REPLAY_MAX_BYTES", defaultMeshProposalReplayMaxBytes, hardMeshProposalReplayMaxBytes),
 	}
-	actual, _ := meshProposalReplayStates.LoadOrStore(path, st)
+	actual, _ := meshProposalReplayStates.LoadOrStore(root, st)
 	return actual.(*meshProposalReplayState), nil
 }
 
 func forgetMeshProposalReplayState(e *Engine) {
-	path, err := meshProposalReplayPath(e)
-	if err == nil {
-		meshProposalReplayStates.Delete(path)
+	if root, err := meshProposalReplayRoot(e); err == nil {
+		meshProposalReplayStates.Delete(root)
 	}
-}
-
-func recoverMeshProposalReplayLocked(st *meshProposalReplayState) error {
-	if st.loaded {
-		return nil
-	}
-	f, err := os.Open(st.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			st.loaded = true
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() > st.maxBytes {
-		return fmt.Errorf("mesh proposal replay ledger exceeds physical byte limit: %d > %d", info.Size(), st.maxBytes)
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, st.maxBytes+1))
-	if err != nil {
-		return err
-	}
-	if int64(len(raw)) > st.maxBytes {
-		return fmt.Errorf("mesh proposal replay ledger exceeds physical byte limit: %d > %d", len(raw), st.maxBytes)
-	}
-	var disk meshProposalReplayDisk
-	if err := json.Unmarshal(raw, &disk); err != nil {
-		return fmt.Errorf("mesh proposal replay ledger decode failed: %w", err)
-	}
-	if disk.Version != meshProposalReplayVersion {
-		return fmt.Errorf("unsupported mesh proposal replay ledger version: %d", disk.Version)
-	}
-	if len(disk.Entries) > st.maxEntries {
-		return fmt.Errorf("mesh proposal replay ledger exceeds physical entry limit: %d > %d", len(disk.Entries), st.maxEntries)
-	}
-	entries := make(map[string]meshProposalReplayEntry, len(disk.Entries))
-	latest := make(map[string]string)
-	for _, entry := range disk.Entries {
-		if strings.TrimSpace(entry.Slot) == "" || strings.TrimSpace(entry.RequestID) == "" {
-			return fmt.Errorf("mesh proposal replay ledger contains invalid identity")
-		}
-		if entry.State != "executing" && entry.State != "done" {
-			return fmt.Errorf("mesh proposal replay ledger contains invalid state %q", entry.State)
-		}
-		if _, exists := entries[entry.RequestID]; exists {
-			return fmt.Errorf("mesh proposal replay ledger contains duplicate request %q", entry.RequestID)
-		}
-		entry.ResultVars = cloneStringMap(entry.ResultVars)
-		entries[entry.RequestID] = entry
-		if currentID, ok := latest[entry.Slot]; ok {
-			current := entries[currentID]
-			if entry.Revision == current.Revision {
-				return fmt.Errorf("mesh proposal replay ledger contains conflicting slot revision %q@%d", entry.Slot, entry.Revision)
-			}
-			if entry.Revision < current.Revision {
-				continue
-			}
-		}
-		latest[entry.Slot] = entry.RequestID
-	}
-	st.entries = entries
-	st.latest = latest
-	st.live = map[string]bool{}
-	st.bytes = int64(len(raw))
-	st.loaded = true
-	return nil
 }
 
 func cloneStringMap(src map[string]string) map[string]string {
@@ -172,34 +82,189 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return out
 }
 
-func marshalMeshProposalReplay(entries map[string]meshProposalReplayEntry) ([]byte, error) {
-	keys := make([]string, 0, len(entries))
-	for requestID := range entries {
-		keys = append(keys, requestID)
-	}
-	sort.Strings(keys)
-	ordered := make([]meshProposalReplayEntry, 0, len(keys))
-	for _, requestID := range keys {
-		entry := entries[requestID]
-		entry.ResultVars = cloneStringMap(entry.ResultVars)
-		ordered = append(ordered, entry)
-	}
-	return json.Marshal(meshProposalReplayDisk{Version: meshProposalReplayVersion, Entries: ordered})
+func meshProposalSlotID(slot string) string {
+	sum := sha256.Sum256([]byte(slot))
+	return "mesh-proposal-slot-" + hex.EncodeToString(sum[:16])
 }
 
-func persistMeshProposalReplayLocked(st *meshProposalReplayState, entries map[string]meshProposalReplayEntry) error {
-	raw, err := marshalMeshProposalReplay(entries)
+func meshProposalReceiptID(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if strings.HasPrefix(requestID, "mesh-proposal-") {
+		return requestID
+	}
+	sum := sha256.Sum256([]byte(requestID))
+	return "mesh-proposal-" + hex.EncodeToString(sum[:])
+}
+
+func meshProposalReplayEntryMemory(entry meshProposalReplayEntry, revision uint64) (*Memory, error) {
+	if strings.TrimSpace(entry.RequestID) == "" || strings.TrimSpace(entry.Slot) == "" {
+		return nil, errors.New("mesh proposal replay entry requires request_id and slot")
+	}
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		return nil, err
+	}
+	return &Memory{
+		ID:       meshProposalReceiptID(entry.RequestID),
+		Layer:    "emergent",
+		Tags:     []string{"memory", meshProposalReplayTag},
+		Content:  "Durable Mesh proposal execution receipt stored inside Memory.",
+		Revision: revision,
+		State: map[string]any{
+			"request_id":   entry.RequestID,
+			"slot":         entry.Slot,
+			"revision":     entry.Revision,
+			"status":       entry.State,
+			"updated_nano": entry.UpdatedNano,
+			"receipt":      string(raw),
+		},
+	}, nil
+}
+
+func meshProposalSlotMemory(slot, requestID string, proposalRevision, revision uint64) *Memory {
+	return &Memory{
+		ID:       meshProposalSlotID(slot),
+		Layer:    "emergent",
+		Tags:     []string{"memory", meshProposalReplaySlotTag},
+		Content:  "Latest durable revision for one Mesh proposal identity slot.",
+		Revision: revision,
+		State: map[string]any{
+			"slot":              slot,
+			"request_id":        requestID,
+			"proposal_revision": proposalRevision,
+		},
+	}
+}
+
+func decodeMeshProposalReplayEntry(memory *Memory) (meshProposalReplayEntry, error) {
+	var entry meshProposalReplayEntry
+	if memory == nil || !memoryHasTag(memory, meshProposalReplayTag) {
+		return entry, errors.New("mesh proposal replay Memory unavailable")
+	}
+	value, ok := memory.State["receipt"]
+	if !ok {
+		return entry, errors.New("mesh proposal replay Memory missing receipt")
+	}
+	var raw []byte
+	switch v := value.(type) {
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = append([]byte(nil), v...)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return entry, err
+		}
+		raw = b
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return entry, err
+	}
+	entry.ResultVars = cloneStringMap(entry.ResultVars)
+	return entry, nil
+}
+
+func loadMeshProposalReplayEntry(e *Engine, requestID string) (meshProposalReplayEntry, uint64, bool, error) {
+	root, err := meshProposalReplayRoot(e)
+	if err != nil {
+		return meshProposalReplayEntry{}, 0, false, err
+	}
+	id := meshProposalReceiptID(requestID)
+	_, memory, err := root.resolveLocalFabricMemory(id)
+	if errors.Is(err, io.EOF) {
+		return meshProposalReplayEntry{}, 0, false, nil
+	}
+	if err != nil {
+		return meshProposalReplayEntry{}, 0, false, err
+	}
+	entry, err := decodeMeshProposalReplayEntry(memory)
+	if err != nil {
+		return meshProposalReplayEntry{}, 0, false, err
+	}
+	return entry, memory.Revision, true, nil
+}
+
+func loadMeshProposalSlot(e *Engine, slot string) (requestID string, proposalRevision, memoryRevision uint64, found bool, err error) {
+	root, err := meshProposalReplayRoot(e)
+	if err != nil {
+		return "", 0, 0, false, err
+	}
+	_, memory, err := root.resolveLocalFabricMemory(meshProposalSlotID(slot))
+	if errors.Is(err, io.EOF) {
+		return "", 0, 0, false, nil
+	}
+	if err != nil {
+		return "", 0, 0, false, err
+	}
+	if memory == nil || !memoryHasTag(memory, meshProposalReplaySlotTag) {
+		return "", 0, 0, false, fmt.Errorf("mesh proposal replay slot collides with non-slot Memory: %s", meshProposalSlotID(slot))
+	}
+	storedSlot := strings.TrimSpace(fmt.Sprint(memory.State["slot"]))
+	if storedSlot != slot {
+		return "", 0, 0, false, errors.New("mesh proposal replay slot identity drift")
+	}
+	requestID = strings.TrimSpace(fmt.Sprint(memory.State["request_id"]))
+	proposalRevision, err = meshScalarUint64(memory.State["proposal_revision"])
+	if err != nil {
+		return "", 0, 0, false, err
+	}
+	return requestID, proposalRevision, memory.Revision, true, nil
+}
+
+func meshScalarUint64(v any) (uint64, error) {
+	switch x := v.(type) {
+	case uint64:
+		return x, nil
+	case uint:
+		return uint64(x), nil
+	case int:
+		if x < 0 {
+			return 0, errors.New("negative uint64 value")
+		}
+		return uint64(x), nil
+	case int64:
+		if x < 0 {
+			return 0, errors.New("negative uint64 value")
+		}
+		return uint64(x), nil
+	case float64:
+		if x < 0 {
+			return 0, errors.New("negative uint64 value")
+		}
+		return uint64(x), nil
+	case string:
+		return strconv.ParseUint(strings.TrimSpace(x), 10, 64)
+	default:
+		return strconv.ParseUint(strings.TrimSpace(fmt.Sprint(v)), 10, 64)
+	}
+}
+
+func persistMeshProposalReplayEntry(e *Engine, entry meshProposalReplayEntry, receiptRevision uint64, updateSlot bool) error {
+	root, err := meshProposalReplayRoot(e)
 	if err != nil {
 		return err
 	}
-	if int64(len(raw)) > st.maxBytes {
-		return fmt.Errorf("mesh proposal replay ledger full: %d bytes (limit %d)", len(raw), st.maxBytes)
+	memory, err := meshProposalReplayEntryMemory(entry, receiptRevision)
+	if err != nil {
+		return err
 	}
-	if err := persistMeshJournalFile(st.path, raw); err != nil {
-		return fmt.Errorf("persist mesh proposal replay ledger: %w", err)
+	if err := root.upsertExplicitMemoryBounded(memory); err != nil {
+		return err
 	}
-	st.bytes = int64(len(raw))
-	return nil
+	if updateSlot {
+		_, _, slotRevision, found, err := loadMeshProposalSlot(root, entry.Slot)
+		if err != nil {
+			return err
+		}
+		if !found {
+			slotRevision = 0
+		}
+		if err := root.upsertExplicitMemoryBounded(meshProposalSlotMemory(entry.Slot, entry.RequestID, entry.Revision, slotRevision+1)); err != nil {
+			return err
+		}
+	}
+	return root.persistAll()
 }
 
 type meshProposalIdentity struct {
@@ -214,12 +279,12 @@ type meshProposalIdentity struct {
 
 func meshProposalIdentityFromFrame(f *Frame, ev PhysicalEvent) (meshProposalIdentity, string, string, error) {
 	if f == nil {
-		return meshProposalIdentity{}, "", "", fmt.Errorf("mesh proposal replay requires frame")
+		return meshProposalIdentity{}, "", "", errors.New("mesh proposal replay requires frame")
 	}
 	memoryID := strings.TrimSpace(f.Vars["memory_id"])
 	originNode := strings.TrimSpace(f.Vars["origin_node"])
 	if memoryID == "" || originNode == "" {
-		return meshProposalIdentity{}, "", "", fmt.Errorf("mesh proposal replay requires memory_id and origin_node")
+		return meshProposalIdentity{}, "", "", errors.New("mesh proposal replay requires memory_id and origin_node")
 	}
 	revision, err := strconv.ParseUint(strings.TrimSpace(f.Vars["revision"]), 10, 64)
 	if err != nil {
@@ -227,7 +292,7 @@ func meshProposalIdentityFromFrame(f *Frame, ev PhysicalEvent) (meshProposalIden
 	}
 	tags := append([]string(nil), f.Lists["tags"]...)
 	sort.Strings(tags)
-	id := meshProposalIdentity{
+	identity := meshProposalIdentity{
 		Event:          strings.TrimSpace(ev.Name),
 		Subject:        strings.TrimSpace(ev.Subject),
 		MemoryID:       memoryID,
@@ -236,28 +301,19 @@ func meshProposalIdentityFromFrame(f *Frame, ev PhysicalEvent) (meshProposalIden
 		Revision:       revision,
 		Tags:           tags,
 	}
-	raw, err := json.Marshal(id)
+	raw, err := json.Marshal(identity)
 	if err != nil {
 		return meshProposalIdentity{}, "", "", err
 	}
 	sum := sha256.Sum256(raw)
 	requestID := "mesh-proposal-" + hex.EncodeToString(sum[:])
 	slot := originNode + "\x00" + memoryID
-	return id, slot, requestID, nil
-}
-
-func cloneReplayEntries(src map[string]meshProposalReplayEntry) map[string]meshProposalReplayEntry {
-	out := make(map[string]meshProposalReplayEntry, len(src))
-	for k, v := range src {
-		v.ResultVars = cloneStringMap(v.ResultVars)
-		out[k] = v
-	}
-	return out
+	return identity, slot, requestID, nil
 }
 
 func applyMeshProposalReplayResult(f *Frame, entry meshProposalReplayEntry) error {
 	if f == nil {
-		return fmt.Errorf("mesh proposal replay requires frame")
+		return errors.New("mesh proposal replay requires frame")
 	}
 	f.Vars["mesh_request_id"] = entry.RequestID
 	for k, v := range entry.ResultVars {
@@ -269,64 +325,65 @@ func applyMeshProposalReplayResult(f *Frame, entry meshProposalReplayEntry) erro
 	return nil
 }
 
-func prepareMeshProposalReplay(e *Engine, f *Frame, ev PhysicalEvent) (*meshProposalReplayState, meshProposalReplayEntry, bool, error) {
+func prepareMeshProposalReplay(e *Engine, f *Frame, ev PhysicalEvent) (*meshProposalReplayState, meshProposalReplayEntry, uint64, bool, error) {
 	identity, slot, requestID, err := meshProposalIdentityFromFrame(f, ev)
 	if err != nil {
-		return nil, meshProposalReplayEntry{}, false, err
+		return nil, meshProposalReplayEntry{}, 0, false, err
 	}
 	st, err := meshProposalReplayStateFor(e)
 	if err != nil {
-		return nil, meshProposalReplayEntry{}, false, err
+		return nil, meshProposalReplayEntry{}, 0, false, err
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if err := recoverMeshProposalReplayLocked(st); err != nil {
-		return nil, meshProposalReplayEntry{}, false, err
-	}
-	if previous, ok := st.entries[requestID]; ok {
+
+	if previous, revision, found, err := loadMeshProposalReplayEntry(e, requestID); err != nil {
+		return st, meshProposalReplayEntry{}, 0, false, err
+	} else if found {
 		if previous.Slot != slot || previous.Revision != identity.Revision {
-			return st, previous, true, fmt.Errorf("mesh proposal replay request identity collision")
+			return st, previous, revision, true, errors.New("mesh proposal replay request identity collision")
 		}
-		if previous.State == "done" {
-			return st, previous, true, nil
+		if previous.State == meshProposalReplayDone {
+			return st, previous, revision, true, nil
 		}
-		return st, previous, true, fmt.Errorf("mesh proposal request %s is durably fenced as in-flight; refusing duplicate execution", requestID)
+		return st, previous, revision, true, fmt.Errorf("mesh proposal request %s is durably fenced as in-flight; refusing duplicate execution", requestID)
 	}
 	if st.live[slot] {
-		return st, meshProposalReplayEntry{}, false, fmt.Errorf("mesh proposal slot %q already executing", slot)
+		return st, meshProposalReplayEntry{}, 0, false, fmt.Errorf("mesh proposal slot %q already executing", slot)
 	}
-	if latestID, ok := st.latest[slot]; ok {
-		previous := st.entries[latestID]
-		if identity.Revision < previous.Revision {
-			return st, previous, false, fmt.Errorf("stale unseen mesh proposal revision %d < %d", identity.Revision, previous.Revision)
+	if _, latestRevision, _, found, err := loadMeshProposalSlot(e, slot); err != nil {
+		return st, meshProposalReplayEntry{}, 0, false, err
+	} else if found {
+		if identity.Revision < latestRevision {
+			return st, meshProposalReplayEntry{}, 0, false, fmt.Errorf("stale unseen mesh proposal revision %d < %d", identity.Revision, latestRevision)
 		}
-		if identity.Revision == previous.Revision {
-			return st, previous, false, fmt.Errorf("conflicting mesh proposal identity at revision %d", identity.Revision)
+		if identity.Revision == latestRevision {
+			return st, meshProposalReplayEntry{}, 0, false, fmt.Errorf("conflicting mesh proposal identity at revision %d", identity.Revision)
 		}
-		// A higher Memory revision is a new physical proposal. Historical receipts
-		// remain addressable by request_id so a delayed old spool replay can still
-		// recover its original result without re-running the Memory event.
 	}
-	if len(st.entries) >= st.maxEntries {
-		return st, meshProposalReplayEntry{}, false, fmt.Errorf("mesh proposal replay ledger full: %d entries (limit %d)", len(st.entries), st.maxEntries)
+	root, err := meshProposalReplayRoot(e)
+	if err != nil {
+		return st, meshProposalReplayEntry{}, 0, false, err
 	}
-
+	ids, err := root.listTagFabric(meshProposalReplayTag)
+	if err != nil {
+		return st, meshProposalReplayEntry{}, 0, false, err
+	}
+	if len(ids) >= st.maxEntries {
+		return st, meshProposalReplayEntry{}, 0, false, fmt.Errorf("mesh proposal replay ledger full: %d entries (limit %d)", len(ids), st.maxEntries)
+	}
 	entry := meshProposalReplayEntry{
 		Slot:        slot,
 		RequestID:   requestID,
 		Revision:    identity.Revision,
-		State:       "executing",
+		State:       meshProposalReplayExecuting,
 		UpdatedNano: time.Now().UnixNano(),
 	}
-	next := cloneReplayEntries(st.entries)
-	next[requestID] = entry
-	if err := persistMeshProposalReplayLocked(st, next); err != nil {
-		return st, meshProposalReplayEntry{}, false, err
+	if err := persistMeshProposalReplayEntry(root, entry, 1, true); err != nil {
+		return st, meshProposalReplayEntry{}, 0, false, err
 	}
-	st.entries = next
-	st.latest[slot] = requestID
 	st.live[slot] = true
-	return st, entry, false, nil
+	return st, entry, 1, false, nil
 }
 
 func meshProposalResultVars(f *Frame) map[string]string {
@@ -342,42 +399,41 @@ func meshProposalResultVars(f *Frame) map[string]string {
 	return out
 }
 
-func finalizeMeshProposalReplay(st *meshProposalReplayState, entry meshProposalReplayEntry, f *Frame, runErr error) error {
+func finalizeMeshProposalReplay(e *Engine, st *meshProposalReplayState, entry meshProposalReplayEntry, receiptRevision uint64, f *Frame, runErr error) error {
 	if st == nil {
-		return fmt.Errorf("mesh proposal replay state unavailable")
+		return errors.New("mesh proposal replay state unavailable")
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	current, ok := st.entries[entry.RequestID]
-	if !ok || current.Slot != entry.Slot {
+	current, currentRevision, found, err := loadMeshProposalReplayEntry(e, entry.RequestID)
+	if err != nil {
 		delete(st.live, entry.Slot)
-		return fmt.Errorf("mesh proposal replay identity changed during execution")
+		return err
+	}
+	if !found || current.Slot != entry.Slot || currentRevision != receiptRevision {
+		delete(st.live, entry.Slot)
+		return errors.New("mesh proposal replay identity changed during execution")
 	}
 	done := current
-	done.State = "done"
+	done.State = meshProposalReplayDone
 	done.ResultVars = meshProposalResultVars(f)
 	if runErr != nil {
 		done.ResultError = runErr.Error()
 	}
 	done.UpdatedNano = time.Now().UnixNano()
-	next := cloneReplayEntries(st.entries)
-	next[entry.RequestID] = done
-	if err := persistMeshProposalReplayLocked(st, next); err != nil {
-		// Keep the durable/in-memory executing fence. A retry must not re-run an
-		// event whose effects may already have happened.
+	if err := persistMeshProposalReplayEntry(e, done, currentRevision+1, false); err != nil {
 		delete(st.live, entry.Slot)
 		return err
 	}
-	st.entries = next
 	delete(st.live, entry.Slot)
 	return nil
 }
 
 func executeMeshProposalEventOnce(e *Engine, f *Frame, ev PhysicalEvent, dispatch func() error) error {
 	if dispatch == nil {
-		return fmt.Errorf("mesh proposal replay requires dispatch function")
+		return errors.New("mesh proposal replay requires dispatch function")
 	}
-	st, entry, replay, err := prepareMeshProposalReplay(e, f, ev)
+	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
 	if replay {
 		if err != nil {
 			f.Vars["mesh_request_id"] = entry.RequestID
@@ -390,8 +446,8 @@ func executeMeshProposalEventOnce(e *Engine, f *Frame, ev PhysicalEvent, dispatc
 	}
 	f.Vars["mesh_request_id"] = entry.RequestID
 	runErr := dispatch()
-	if persistErr := finalizeMeshProposalReplay(st, entry, f, runErr); persistErr != nil {
-		return fmt.Errorf("mesh proposal event executed but replay result was not durably recorded; request remains fenced: %w", persistErr)
+	if persistErr := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, runErr); persistErr != nil {
+		return fmt.Errorf("mesh proposal event executed but replay result was not durably recorded in memory.mem; request remains fenced: %w", persistErr)
 	}
 	return runErr
 }

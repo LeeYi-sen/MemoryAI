@@ -8,12 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
-// automaticShardMu serializes every physical placement decision. Runtime
-// memory_new and explicit structure/import writes share this lock so two paths
-// cannot both decide that the same bounded body still has capacity.
 var automaticShardMu sync.Mutex
+
+const minimumAutomaticShardFreeBytes int64 = 5 << 30
 
 func memoryShardMax() int {
 	const defaultMax = 4096
@@ -26,6 +26,53 @@ func memoryShardMax() int {
 		return defaultMax
 	}
 	return n
+}
+
+func automaticShardMinFreeBytes() int64 {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_SHARD_MIN_FREE_BYTES"))
+	if raw == "" {
+		return minimumAutomaticShardFreeBytes
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < minimumAutomaticShardFreeBytes {
+		return minimumAutomaticShardFreeBytes
+	}
+	return n
+}
+
+func physicalFreeBytes(path string) (int64, error) {
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		path = filepath.Dir(path)
+	} else if err != nil && os.IsNotExist(err) {
+		path = filepath.Dir(path)
+	} else if err != nil {
+		return 0, err
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	free := uint64(stat.Bavail) * uint64(stat.Bsize)
+	if free > uint64(^uint64(0)>>1) {
+		return int64(^uint64(0) >> 1), nil
+	}
+	return int64(free), nil
+}
+
+func ensureAutomaticShardDiskBudget(e *Engine) error {
+	if e == nil || strings.TrimSpace(e.bodyPath) == "" {
+		return fmt.Errorf("automatic shard expansion requires physical body path")
+	}
+	free, err := physicalFreeBytes(e.bodyPath)
+	if err != nil {
+		return fmt.Errorf("automatic shard expansion cannot read free disk: %w", err)
+	}
+	minimum := automaticShardMinFreeBytes()
+	if free < minimum {
+		return fmt.Errorf("automatic shard expansion requires at least %d free bytes on current Memory path; available=%d", minimum, free)
+	}
+	return nil
 }
 
 func shardHasCapacity(e *Engine, additional int) bool {
@@ -59,9 +106,6 @@ func automaticShardPaths(e *Engine) ([]string, error) {
 	return out, nil
 }
 
-// mountAutomaticStorageShards is a boot/recovery operation, not a per-Memory
-// hot-path operation. New shards created by this process are mounted immediately
-// by createAndMountSpace, so runtime placement never needs to rescan the folder.
 func (e *Engine) mountAutomaticStorageShards() {
 	if e == nil || e.manifest.Role != "core" {
 		return
@@ -87,10 +131,6 @@ func (e *Engine) mountedWritableShard() *Engine {
 	if e == nil {
 		return nil
 	}
-
-	// O(1) hot path: the active write shard normally accepts thousands of Memory
-	// insertions before rollover. Do not materialize/sort the entire shard set
-	// unless the preferred shard is actually full.
 	e.spaceMu.RLock()
 	preferred := e.spaces[e.writeSpace]
 	e.spaceMu.RUnlock()
@@ -100,10 +140,6 @@ func (e *Engine) mountedWritableShard() *Engine {
 	if shardHasCapacity(e, 1) {
 		return e
 	}
-
-	// Rollover/recovery fallback: scan already-mounted physical shards only when
-	// the active target has filled. Cost grows with shard count, but occurs once
-	// per shard transition rather than once per Memory insertion.
 	e.spaceMu.RLock()
 	paths := make([]string, 0, len(e.spaces))
 	for p := range e.spaces {
@@ -126,6 +162,12 @@ func (e *Engine) mountedWritableShard() *Engine {
 }
 
 func (e *Engine) createAutomaticWritableShard() (*Engine, error) {
+	// Frozen architecture invariant: Memory may expand itself only while the
+	// current physical path has at least 5 GiB free. Operators may raise, never
+	// lower, this physical safety floor.
+	if err := ensureAutomaticShardDiskBudget(e); err != nil {
+		return nil, err
+	}
 	locator, err := e.createAndMountSpace("")
 	if err != nil {
 		return nil, err
@@ -152,9 +194,6 @@ func (e *Engine) createAutomaticWritableShard() (*Engine, error) {
 	return sp, nil
 }
 
-// placeRuntimeMemoryLocked performs one bounded placement while
-// automaticShardMu is already held. Explicit Fabric upserts use this primitive
-// so duplicate-ID detection and placement are atomic with normal memory_new.
 func (e *Engine) placeRuntimeMemoryLocked(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("runtime Memory placement requires engine and id")
@@ -171,10 +210,6 @@ func (e *Engine) placeRuntimeMemoryLocked(m *Memory) error {
 	return nil
 }
 
-// placeRuntimeMemory atomically chooses/creates one bounded physical shard and
-// inserts a newly-created Memory. Boot already recovered Memory.N.mem files, and
-// shards created during this process are mounted immediately; therefore this
-// hot path performs no filesystem glob or all-shard discovery scan.
 func (e *Engine) placeRuntimeMemory(m *Memory) error {
 	automaticShardMu.Lock()
 	defer automaticShardMu.Unlock()

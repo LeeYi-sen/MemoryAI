@@ -7,7 +7,9 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import tempfile
 
+from build_current_memory_seed import build_current_memory_seed
 from kernel_fabric_execution_overlay import apply_kernel_fabric_execution_overlay
 from kernel_lazy_overlay import apply_kernel_lazy_overlay
 from kernel_mesh_journal_overlay import apply_kernel_mesh_journal_overlay
@@ -30,6 +32,7 @@ DEFAULT_MANIFESTS = (
     ROOT / "bootstrap/v27/Kernel/src/kernel.go.bootstrap.json",
     ROOT / "bootstrap/v27/Kernel/v27-required-structures.bootstrap.json",
 )
+CURRENT_MEMORY_SEED = ROOT / "Kernel/current-required-structures.json"
 
 
 def sha256(data: bytes) -> str:
@@ -113,6 +116,14 @@ def restore_manifest(manifest_path: Path, *, check_only: bool = False) -> dict[s
     }
 
 
+def build_current_seed(*, check_only: bool) -> dict[str, object]:
+    manifest = ROOT / "bootstrap/v27/Kernel/v27-required-structures.bootstrap.json"
+    if check_only:
+        with tempfile.TemporaryDirectory(prefix="memoryai-seed-check-") as tmp:
+            return build_current_memory_seed(manifest, Path(tmp) / "current-required-structures.json")
+    return build_current_memory_seed(manifest, CURRENT_MEMORY_SEED)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Restore, verify and forward-patch source files stored as deterministic bootstrap chunks."
@@ -125,13 +136,14 @@ def main() -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Verify bootstrap chunks and current overlays without writing restored files.",
+        help="Verify bootstrap chunks, Kernel overlays and the complete current Memory cognition seed chain.",
     )
     args = parser.parse_args()
 
     manifests = [ROOT / p for p in args.manifests] if args.manifests else list(DEFAULT_MANIFESTS)
     results = [restore_manifest(p, check_only=args.check) for p in manifests]
-    print(json.dumps({"ok": True, "results": results}, ensure_ascii=False, indent=2))
+    seed = build_current_seed(check_only=args.check)
+    print(json.dumps({"ok": True, "results": results, "current_memory_seed": seed}, ensure_ascii=False, indent=2))
     return 0
 
 

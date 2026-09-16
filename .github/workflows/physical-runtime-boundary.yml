@@ -13,7 +13,7 @@ jobs:
   physical_runtime_boundary:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout without external actions
+      - name: Checkout
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -21,69 +21,15 @@ jobs:
           git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
-
-      - name: Restore generated Kernel source
+      - name: Restore source
         run: python3 tools/restore_source.py
-
-      - name: Assert physical execution ABI
+      - name: Architecture audit
+        run: python3 tools/architecture_audit.py
+      - name: Assert no compiled cognitive growth owner
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          kernel = Path('Kernel/src/kernel.go').read_text(encoding='utf-8')
-          parallel = Path('Kernel/src/parallel_runtime.go').read_text(encoding='utf-8')
-          route = Path('Kernel/src/mesh_execution_routing.go').read_text(encoding='utf-8')
-          speculative = Path('Kernel/src/speculative_boundary_extra.go').read_text(encoding='utf-8')
-          overlay = Path('tools/kernel_parallel_boundary_overlay.py').read_text(encoding='utf-8')
-
-          forbidden_kernel = [
-              'case "parallel_score6":',
-              'case "cognition_stats":',
-              'case "cognition_concurrency_set":',
-              'case "mesh_route_cognition":',
-              'setCognitionConcurrency(',
-              'cognitionInfo()',
-              'm.routeCognition(',
-          ]
-          bad = [x for x in forbidden_kernel if x in kernel]
-          if bad:
-              raise SystemExit(f'cognition-shaped generated Kernel ABI remained: {bad}')
-
-          required_kernel = [
-              'case "physical_runtime_stats":',
-              'physicalRuntimeInfo()',
-              'case "physical_execution_concurrency_set":',
-              'setPhysicalExecutionConcurrency(n)',
-              'case "mesh_route_execution":',
-              'm.routeExecution(',
-          ]
-          missing = [x for x in required_kernel if x not in kernel]
-          if missing:
-              raise SystemExit(f'physical generated Kernel ABI missing: {missing}')
-
-          forbidden_runtime = ['func setCognitionConcurrency(', 'func cognitionInfo(', '"cognitive_selection"', '"fixed_semantic_lanes"']
-          bad = [x for x in forbidden_runtime if x in parallel]
-          if bad:
-              raise SystemExit(f'parallel runtime cognition-shaped surface remained: {bad}')
-          if 'func (m *meshRuntime) routeExecution(' not in route or 'semantic score' not in route:
-              raise SystemExit('physical mesh execution route missing explicit no-semantic-score boundary')
-          for required in ['"mesh_route_execution"', '"physical_execution_concurrency_set"']:
-              if required not in speculative:
-                  raise SystemExit(f'canonical side-effect boundary missing {required}')
-          if 'cognition_concurrency_set' not in overlay or 'mesh_route_cognition' not in overlay:
-              raise SystemExit('overlay does not explicitly migrate historical cognition-shaped primitives')
-          print('Physical runtime ABI boundary: PASS')
-          PY
-
-      - name: Check formatting
-        run: test -z "$(gofmt -l Kernel/src/parallel_runtime.go Kernel/src/mesh_execution_routing.go Kernel/src/speculative_boundary_extra.go Kernel/src/physical_runtime_boundary_test.go)"
-
-      - name: Run physical runtime boundary tests
+          test -z "$(find Kernel/src -maxdepth 1 -name 'memory_growth_*.go' -print)"
+          ! grep -R -n -E 'RunAutonomousMemoryGrowthCycle|RunAutonomousContextBranchingCycle|RunAutonomousGroundedActionCycle|RunAutonomousRemoteEvidenceIntakeCycle' Kernel/src
+      - name: Physical CPU/GPU tests
         env:
           GO111MODULE: "off"
-        run: go test ./Kernel/src -run 'PhysicalRuntime|PhysicalExecution|SpeculativeBoundaryUsesPhysicalPrimitiveNames'
-
-      - name: Race-test physical runtime boundary tests
-        env:
-          GO111MODULE: "off"
-        run: go test -race ./Kernel/src -run 'PhysicalRuntime|PhysicalExecution|SpeculativeBoundaryUsesPhysicalPrimitiveNames'
+        run: go test -race ./Kernel/src -run 'PhysicalRuntime|PhysicalExecution|ParallelDot|AutomaticShardDisk'

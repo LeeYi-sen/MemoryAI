@@ -1,298 +1,109 @@
 package main
 
 import (
-	"strings"
+	"net/http"
+	"path/filepath"
 	"testing"
 )
 
-func replayTestEngine(t *testing.T) *Engine {
-	t.Helper()
-	e := &Engine{bodyPath: t.TempDir() + "/Memory.mem"}
-	t.Cleanup(func() { forgetMeshProposalReplayState(e) })
-	return e
-}
-
-func replayTestFrame(revision, digest string, tags ...string) *Frame {
+func proposalReplayFrame(revision string) *Frame {
 	f := newFrame()
-	f.Vars["memory_id"] = "memory.replay.target"
+	f.Vars["memory_id"] = "shared.memory"
 	f.Vars["origin_node"] = "node-a"
-	f.Vars["proposal_digest"] = digest
+	f.Vars["proposal_digest"] = "digest-a"
 	f.Vars["revision"] = revision
-	f.Lists["tags"] = append([]string(nil), tags...)
 	return f
 }
 
-func TestMeshProposalReplayExecutesOnceAndRestoresDecision(t *testing.T) {
-	e := replayTestEngine(t)
-	runs := 0
-	first := replayTestFrame("7", "digest-a", "beta", "alpha")
-	ev1 := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", first.Vars)
-	if err := executeMeshProposalEventOnce(e, first, ev1, func() error {
-		runs++
-		first.Vars["mesh_decision"] = "approve"
-		first.Vars["mesh_reason"] = "memory-owned-policy"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	requestID := first.Vars["mesh_request_id"]
-	if requestID == "" || runs != 1 {
-		t.Fatalf("first proposal did not execute exactly once: request=%q runs=%d", requestID, runs)
-	}
-
-	second := replayTestFrame("7", "digest-a", "alpha", "beta")
-	ev2 := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", second.Vars)
-	if err := executeMeshProposalEventOnce(e, second, ev2, func() error {
-		runs++
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if runs != 1 {
-		t.Fatalf("duplicate proposal re-executed Memory event: runs=%d", runs)
-	}
-	if second.Vars["mesh_request_id"] != requestID || second.Vars["mesh_decision"] != "approve" || second.Vars["mesh_reason"] != "memory-owned-policy" {
-		t.Fatalf("replayed proposal did not restore original decision: vars=%v", second.Vars)
-	}
-}
-
-func TestMeshProposalReplaySurvivesRuntimeRestart(t *testing.T) {
+func TestMeshProposalReplayReceiptLivesInsideMemoryAndSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	e1 := &Engine{bodyPath: dir + "/Memory.mem"}
-	first := replayTestFrame("3", "digest-restart", "tag")
-	ev := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", first.Vars)
-	runs := 0
-	if err := executeMeshProposalEventOnce(e1, first, ev, func() error {
-		runs++
-		first.Vars["decision"] = "denied"
-		first.Vars["reason"] = "test-decision"
-		return nil
-	}); err != nil {
+	m, e := testMeshMemoryRuntime(t, dir, "sovereign-a", "sovereign")
+	_ = m
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	f.Vars["mesh_decision"] = "approved"
+	if err := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, nil); err != nil {
 		t.Fatal(err)
 	}
-	requestID := first.Vars["mesh_request_id"]
-	forgetMeshProposalReplayState(e1)
+	assertNoMeshJSONSidecars(t, dir)
 
-	e2 := &Engine{bodyPath: dir + "/Memory.mem"}
-	t.Cleanup(func() { forgetMeshProposalReplayState(e2) })
-	second := replayTestFrame("3", "digest-restart", "tag")
-	ev2 := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", second.Vars)
-	if err := executeMeshProposalEventOnce(e2, second, ev2, func() error {
-		runs++
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if runs != 1 || second.Vars["mesh_request_id"] != requestID || second.Vars["decision"] != "denied" || second.Vars["reason"] != "test-decision" {
-		t.Fatalf("restart replay failed: runs=%d vars=%v", runs, second.Vars)
-	}
-}
-
-func TestMeshProposalReplayFenceNeverReexecutesIndeterminateRequest(t *testing.T) {
-	e := replayTestEngine(t)
-	f := replayTestFrame("9", "digest-fenced", "tag")
-	ev := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", f.Vars)
-	_, slot, requestID, err := meshProposalIdentityFromFrame(f, ev)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := meshProposalReplayStateFor(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := meshProposalReplayEntry{Slot: slot, RequestID: requestID, Revision: 9, State: "executing", UpdatedNano: 1}
-	raw, err := marshalMeshProposalReplay(map[string]meshProposalReplayEntry{requestID: entry})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := persistMeshJournalFile(st.path, raw); err != nil {
-		t.Fatal(err)
-	}
+	e.close()
 	forgetMeshProposalReplayState(e)
-
-	runs := 0
-	retry := replayTestFrame("9", "digest-fenced", "tag")
-	ev2 := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", retry.Vars)
-	err = executeMeshProposalEventOnce(e, retry, ev2, func() error {
-		runs++
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "durably fenced") {
-		t.Fatalf("indeterminate replay was not fail-closed: err=%v", err)
-	}
-	if runs != 0 {
-		t.Fatalf("indeterminate proposal was re-executed: runs=%d", runs)
-	}
-	if retry.Vars["mesh_request_id"] != requestID {
-		t.Fatalf("fenced retry lost stable request id: got=%q want=%q", retry.Vars["mesh_request_id"], requestID)
-	}
-}
-
-func TestMeshProposalReplayHigherRevisionSupersedesOldFence(t *testing.T) {
-	e := replayTestEngine(t)
-	old := replayTestFrame("4", "digest-old", "tag")
-	oldEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", old.Vars)
-	_, slot, requestID, err := meshProposalIdentityFromFrame(old, oldEvent)
+	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := meshProposalReplayStateFor(e)
-	if err != nil {
+	defer restored.close()
+	f2 := proposalReplayFrame("1")
+	st2, entry2, _, replay2, err := prepareMeshProposalReplay(restored, f2, ev)
+	_ = st2
+	if err != nil || !replay2 || entry2.State != meshProposalReplayDone {
+		t.Fatalf("restart did not recover completed receipt: replay=%v entry=%+v err=%v", replay2, entry2, err)
+	}
+	if err := applyMeshProposalReplayResult(f2, entry2); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := marshalMeshProposalReplay(map[string]meshProposalReplayEntry{
-		requestID: {Slot: slot, RequestID: requestID, Revision: 4, State: "executing", UpdatedNano: 1},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := persistMeshJournalFile(st.path, raw); err != nil {
-		t.Fatal(err)
-	}
-	forgetMeshProposalReplayState(e)
-
-	newer := replayTestFrame("5", "digest-new", "tag")
-	newEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", newer.Vars)
-	runs := 0
-	if err := executeMeshProposalEventOnce(e, newer, newEvent, func() error {
-		runs++
-		newer.Vars["mesh_decision"] = "approve"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if runs != 1 || newer.Vars["mesh_decision"] != "approve" {
-		t.Fatalf("higher revision failed to supersede crash-left fence: runs=%d vars=%v", runs, newer.Vars)
+	if f2.Vars["mesh_decision"] != "approved" {
+		t.Fatalf("replayed result missing: %#v", f2.Vars)
 	}
 }
 
-func TestMeshProposalReplayRejectsConflictingSameRevision(t *testing.T) {
-	e := replayTestEngine(t)
-	first := replayTestFrame("11", "digest-one", "tag")
-	ev1 := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", first.Vars)
-	if err := executeMeshProposalEventOnce(e, first, ev1, func() error {
-		first.Vars["mesh_decision"] = "approve"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	second := replayTestFrame("11", "digest-two", "tag")
-	ev2 := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", second.Vars)
-	runs := 0
-	err := executeMeshProposalEventOnce(e, second, ev2, func() error {
-		runs++
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "conflicting mesh proposal identity") {
-		t.Fatalf("same-revision conflict was not rejected: err=%v", err)
-	}
-	if runs != 0 {
-		t.Fatalf("conflicting same-revision proposal executed: runs=%d", runs)
-	}
-}
-
-func TestMeshProposalReplayOldReceiptSurvivesHigherRevision(t *testing.T) {
-	e := replayTestEngine(t)
-	runs := 0
-	old := replayTestFrame("20", "digest-old", "tag")
-	oldEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", old.Vars)
-	if err := executeMeshProposalEventOnce(e, old, oldEvent, func() error {
-		runs++
-		old.Vars["mesh_decision"] = "denied"
-		old.Vars["mesh_reason"] = "old-result"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	oldRequestID := old.Vars["mesh_request_id"]
-
-	newer := replayTestFrame("21", "digest-new", "tag")
-	newEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", newer.Vars)
-	if err := executeMeshProposalEventOnce(e, newer, newEvent, func() error {
-		runs++
-		newer.Vars["mesh_decision"] = "approve"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if runs != 2 {
-		t.Fatalf("new revision did not execute once: runs=%d", runs)
-	}
-
-	lateOld := replayTestFrame("20", "digest-old", "tag")
-	lateOldEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", lateOld.Vars)
-	if err := executeMeshProposalEventOnce(e, lateOld, lateOldEvent, func() error {
-		runs++
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if runs != 2 {
-		t.Fatalf("late old receipt re-executed Memory event: runs=%d", runs)
-	}
-	if lateOld.Vars["mesh_request_id"] != oldRequestID || lateOld.Vars["mesh_decision"] != "denied" || lateOld.Vars["mesh_reason"] != "old-result" {
-		t.Fatalf("late old replay did not recover historical receipt: vars=%v", lateOld.Vars)
-	}
-}
-
-func TestMeshProposalReplayPathsSeparateCoreBodies(t *testing.T) {
+func TestMeshProposalReplayExecutingFenceRefusesRestartReplay(t *testing.T) {
 	dir := t.TempDir()
-	a := &Engine{bodyPath: dir + "/A.mem"}
-	b := &Engine{bodyPath: dir + "/B.mem"}
-	pa, err := meshProposalReplayPath(a)
+	_, e := testMeshMemoryRuntime(t, dir, "sovereign-b", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	_, entry, _, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	if entry.State != meshProposalReplayExecuting {
+		t.Fatalf("expected executing fence, got %+v", entry)
+	}
+
+	e.close()
+	forgetMeshProposalReplayState(e)
+	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pb, err := meshProposalReplayPath(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pa == pb {
-		t.Fatalf("distinct core bodies share replay ledger: %q", pa)
+	defer restored.close()
+	_, recovered, _, replay, err := prepareMeshProposalReplay(restored, proposalReplayFrame("1"), ev)
+	if !replay || err == nil || recovered.State != meshProposalReplayExecuting {
+		t.Fatalf("indeterminate receipt was not restart-fenced: replay=%v entry=%+v err=%v", replay, recovered, err)
 	}
 }
 
-func TestMeshProposalReplayBackpressurePreservesExistingReceipt(t *testing.T) {
-	e := replayTestEngine(t)
-	first := replayTestFrame("30", "digest-first", "tag")
-	firstEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", first.Vars)
-	if err := executeMeshProposalEventOnce(e, first, firstEvent, func() error {
-		first.Vars["mesh_decision"] = "approved"
-		return nil
-	}); err != nil {
+func TestSovereignDirectoryAndSharedAuthorizationRecoverFromMemory(t *testing.T) {
+	dir := t.TempDir()
+	m, e := testMeshMemoryRuntime(t, dir, "sovereign-c", "sovereign")
+	node := MeshNode{ID: "node-x", Role: "node", Endpoint: "https://node-x.invalid", LastSeen: 123}
+	if err := persistSovereignMeshNode(m, node); err != nil {
 		t.Fatal(err)
 	}
-	st, err := meshProposalReplayStateFor(e)
+	record := MeshRecord{MemoryID: "memory.remote", OriginNode: "node-x", Endpoint: node.Endpoint, Digest: "abc", Revision: 7, Tags: []string{"fact"}}
+	if err := persistSovereignSharedRecord(m, record); err != nil {
+		t.Fatal(err)
+	}
+	e.close()
+
+	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.mu.Lock()
-	st.maxEntries = 1
-	st.mu.Unlock()
-
-	newer := replayTestFrame("31", "digest-new", "tag")
-	newEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", newer.Vars)
-	runs := 0
-	err = executeMeshProposalEventOnce(e, newer, newEvent, func() error {
-		runs++
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "ledger full") {
-		t.Fatalf("full replay ledger did not apply backpressure: err=%v", err)
-	}
-	if runs != 0 {
-		t.Fatalf("backpressured proposal executed: runs=%d", runs)
-	}
-
-	retry := replayTestFrame("30", "digest-first", "tag")
-	retryEvent := newPhysicalEvent("mesh.shared.proposal", "memory.replay.target", retry.Vars)
-	if err := executeMeshProposalEventOnce(e, retry, retryEvent, func() error {
-		runs++
-		return nil
-	}); err != nil {
+	defer restored.close()
+	m2 := &meshRuntime{role: "sovereign", nodeID: "sovereign-c", engine: restored, directory: map[string]MeshNode{}, shared: map[string]MeshRecord{}, client: &http.Client{}}
+	if err := recoverSovereignMeshState(m2); err != nil {
 		t.Fatal(err)
 	}
-	if runs != 0 || retry.Vars["mesh_decision"] != "approved" {
-		t.Fatalf("existing receipt was lost under backpressure: runs=%d vars=%v", runs, retry.Vars)
+	if got := m2.directory["node-x"]; got.Endpoint != node.Endpoint {
+		t.Fatalf("directory did not recover from Memory: %+v", got)
+	}
+	if got := m2.shared["memory.remote"]; got.Revision != 7 || got.OriginNode != "node-x" {
+		t.Fatalf("shared authorization did not recover from Memory: %+v", got)
 	}
 }

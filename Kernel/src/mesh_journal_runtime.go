@@ -8,18 +8,18 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 )
 
 const (
-	meshJournalVersion           = 1
+	meshJournalVersion           = 2
 	defaultMeshJournalMaxEntries = 1024
 	defaultMeshJournalMaxBytes   = int64(8 << 20)
 	hardMeshJournalMaxEntries    = 65536
 	hardMeshJournalMaxBytes      = int64(256 << 20)
+	meshDeferredJournalTag       = "memory-mesh-deferred-journal"
 )
 
 type meshJournalDisk struct {
@@ -30,8 +30,8 @@ type meshJournalDisk struct {
 
 type meshJournalState struct {
 	mu         sync.Mutex
-	path       string
 	loaded     bool
+	memoryID   string
 	bytes      int64
 	maxEntries int
 	maxBytes   int64
@@ -69,6 +69,11 @@ func boundedMeshJournalInt64Env(name string, fallback, hardMax int64) int64 {
 	return n
 }
 
+func meshDeferredJournalMemoryIDForNode(nodeID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(nodeID)))
+	return "__memoryai.mesh.deferred." + hex.EncodeToString(sum[:12])
+}
+
 func meshJournalStateFor(m *meshRuntime) *meshJournalState {
 	if m == nil {
 		return nil
@@ -76,7 +81,11 @@ func meshJournalStateFor(m *meshRuntime) *meshJournalState {
 	if raw, ok := meshJournalStates.Load(m); ok {
 		return raw.(*meshJournalState)
 	}
+	m.mu.RLock()
+	nodeID := m.nodeID
+	m.mu.RUnlock()
 	st := &meshJournalState{
+		memoryID:   meshDeferredJournalMemoryIDForNode(nodeID),
 		maxEntries: boundedMeshJournalIntEnv("MEMORYAI_MESH_JOURNAL_MAX_ENTRIES", defaultMeshJournalMaxEntries, hardMeshJournalMaxEntries),
 		maxBytes:   boundedMeshJournalInt64Env("MEMORYAI_MESH_JOURNAL_MAX_BYTES", defaultMeshJournalMaxBytes, hardMeshJournalMaxBytes),
 	}
@@ -84,27 +93,209 @@ func meshJournalStateFor(m *meshRuntime) *meshJournalState {
 	return actual.(*meshJournalState)
 }
 
-func meshJournalPath(m *meshRuntime) (string, error) {
-	if m == nil {
-		return "", fmt.Errorf("mesh journal runtime unavailable")
+func marshalMeshJournal(nodeID string, entries []MeshRequest) ([]byte, error) {
+	return json.Marshal(meshJournalDisk{Version: meshJournalVersion, NodeID: nodeID, Entries: entries})
+}
+
+func decodeMeshJournalMemory(memory *Memory, maxEntries int, maxBytes int64) (meshJournalDisk, int64, error) {
+	var disk meshJournalDisk
+	if memory == nil {
+		return disk, 0, nil
 	}
-	if override := strings.TrimSpace(os.Getenv("MEMORYAI_MESH_JOURNAL_PATH")); override != "" {
-		abs, err := filepath.Abs(override)
+	rawValue, ok := memory.State["journal_state"]
+	if !ok {
+		return disk, 0, errors.New("mesh deferred journal Memory missing journal_state")
+	}
+	var raw []byte
+	switch v := rawValue.(type) {
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = append([]byte(nil), v...)
+	default:
+		encoded, err := json.Marshal(v)
 		if err != nil {
-			return "", err
+			return disk, 0, err
 		}
-		return filepath.Clean(abs), nil
+		raw = encoded
+	}
+	if int64(len(raw)) > maxBytes {
+		return disk, int64(len(raw)), fmt.Errorf("mesh deferred journal exceeds physical byte limit: %d > %d", len(raw), maxBytes)
+	}
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		return disk, int64(len(raw)), fmt.Errorf("mesh deferred journal decode failed: %w", err)
+	}
+	if disk.Version != meshJournalVersion && disk.Version != 1 {
+		return disk, int64(len(raw)), fmt.Errorf("unsupported mesh deferred journal version: %d", disk.Version)
+	}
+	if len(disk.Entries) > maxEntries {
+		return disk, int64(len(raw)), fmt.Errorf("mesh deferred journal exceeds physical entry limit: %d > %d", len(disk.Entries), maxEntries)
+	}
+	return disk, int64(len(raw)), nil
+}
+
+func meshJournalEngine(m *meshRuntime) (*Engine, error) {
+	if m == nil {
+		return nil, errors.New("mesh journal runtime unavailable")
 	}
 	m.mu.RLock()
 	e := m.engine
+	m.mu.RUnlock()
+	if e == nil {
+		return nil, errors.New("mesh journal requires a bound Memory body")
+	}
+	if root := fabricRootFor(e); root != nil {
+		e = root
+	}
+	return e, nil
+}
+
+func upsertMeshDeferredJournalMemory(e *Engine, nodeID string, entries []MeshRequest, revision uint64) (int64, error) {
+	if e == nil {
+		return 0, errors.New("mesh journal engine unavailable")
+	}
+	raw, err := marshalMeshJournal(nodeID, entries)
+	if err != nil {
+		return 0, err
+	}
+	m := &Memory{
+		ID:       meshDeferredJournalMemoryIDForNode(nodeID),
+		Layer:    "emergent",
+		Tags:     []string{"memory", meshDeferredJournalTag},
+		Content:  "Durable deferred Sovereign Mesh requests stored inside Memory.",
+		Revision: revision,
+		State: map[string]any{
+			"node_id":       nodeID,
+			"entry_count":   len(entries),
+			"journal_state": string(raw),
+		},
+	}
+	if err := e.upsertExplicitMemoryBounded(m); err != nil {
+		return 0, err
+	}
+	return int64(len(raw)), nil
+}
+
+func recoverMeshDeferredJournal(m *meshRuntime) error {
+	st := meshJournalStateFor(m)
+	if st == nil {
+		return errors.New("mesh journal runtime unavailable")
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return recoverMeshDeferredJournalLocked(m, st)
+}
+
+func recoverMeshDeferredJournalLocked(m *meshRuntime, st *meshJournalState) error {
+	if st.loaded {
+		return nil
+	}
+	e, err := meshJournalEngine(m)
+	if err != nil {
+		return err
+	}
+	m.mu.RLock()
 	nodeID := m.nodeID
 	m.mu.RUnlock()
-	if e == nil || strings.TrimSpace(e.bodyPath) == "" {
-		return "", fmt.Errorf("mesh journal requires a bound physical Memory body")
+	_, memory, err := e.resolveLocalFabricMemory(st.memoryID)
+	if errors.Is(err, io.EOF) {
+		m.mu.Lock()
+		m.journal = nil
+		m.mu.Unlock()
+		st.bytes = 0
+		st.loaded = true
+		return nil
 	}
-	h := sha256.Sum256([]byte(nodeID))
-	name := "Memory.mesh-journal." + hex.EncodeToString(h[:6]) + ".json"
-	return filepath.Join(filepath.Dir(canonicalPhysicalBodyPath(e.bodyPath)), name), nil
+	if err != nil {
+		return err
+	}
+	if memory == nil || !memoryHasTag(memory, meshDeferredJournalTag) {
+		return fmt.Errorf("mesh deferred journal id collides with non-journal Memory: %s", st.memoryID)
+	}
+	disk, rawBytes, err := decodeMeshJournalMemory(memory, st.maxEntries, st.maxBytes)
+	if err != nil {
+		return err
+	}
+	if disk.NodeID != "" && disk.NodeID != nodeID {
+		return fmt.Errorf("mesh deferred journal node mismatch: %q != %q", disk.NodeID, nodeID)
+	}
+	m.mu.Lock()
+	m.journal = append([]MeshRequest(nil), disk.Entries...)
+	m.mu.Unlock()
+	st.bytes = rawBytes
+	st.loaded = true
+	return nil
+}
+
+func persistMeshDeferredJournalLocked(m *meshRuntime, st *meshJournalState, entries []MeshRequest) error {
+	e, err := meshJournalEngine(m)
+	if err != nil {
+		return err
+	}
+	m.mu.RLock()
+	nodeID := m.nodeID
+	m.mu.RUnlock()
+	raw, err := marshalMeshJournal(nodeID, entries)
+	if err != nil {
+		return err
+	}
+	if len(entries) > st.maxEntries {
+		return fmt.Errorf("mesh deferred journal full: %d entries (limit %d)", len(entries), st.maxEntries)
+	}
+	if int64(len(raw)) > st.maxBytes {
+		return fmt.Errorf("mesh deferred journal full: %d bytes (limit %d)", len(raw), st.maxBytes)
+	}
+	revision := uint64(1)
+	if _, existing, er := e.resolveLocalFabricMemory(st.memoryID); er == nil && existing != nil {
+		revision = existing.Revision + 1
+	} else if er != nil && !errors.Is(er, io.EOF) {
+		return er
+	}
+	bytesWritten, err := upsertMeshDeferredJournalMemory(e, nodeID, entries, revision)
+	if err != nil {
+		return err
+	}
+	// This receipt is part of the physical delivery boundary. Persist it before
+	// reporting that the request was durably deferred.
+	if err := e.persistAll(); err != nil {
+		return fmt.Errorf("persist mesh deferred journal in memory.mem: %w", err)
+	}
+	st.bytes = bytesWritten
+	return nil
+}
+
+func deferMeshRequest(m *meshRuntime, req MeshRequest) error {
+	st := meshJournalStateFor(m)
+	if st == nil {
+		return errors.New("mesh journal runtime unavailable")
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if err := recoverMeshDeferredJournalLocked(m, st); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	next := append([]MeshRequest(nil), m.journal...)
+	m.mu.RUnlock()
+	logicalKey := meshJournalLogicalKey(req)
+	replaced := false
+	for i := range next {
+		if meshJournalLogicalKey(next[i]) == logicalKey {
+			next[i] = req
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next = append(next, req)
+	}
+	if err := persistMeshDeferredJournalLocked(m, st, next); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.journal = next
+	m.mu.Unlock()
+	return nil
 }
 
 func meshJournalLogicalKey(req MeshRequest) string {
@@ -122,177 +313,10 @@ func meshJournalExactKey(req MeshRequest) string {
 	return hex.EncodeToString(h[:])
 }
 
-func marshalMeshJournal(nodeID string, entries []MeshRequest) ([]byte, error) {
-	return json.Marshal(meshJournalDisk{
-		Version: meshJournalVersion,
-		NodeID:  nodeID,
-		Entries: entries,
-	})
-}
-
-func persistMeshJournalFile(path string, raw []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".memoryai-mesh-journal-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		cleanup()
-		return err
-	}
-	if _, err := tmp.Write(raw); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
-}
-
-func recoverMeshDeferredJournal(m *meshRuntime) error {
-	st := meshJournalStateFor(m)
-	if st == nil {
-		return fmt.Errorf("mesh journal runtime unavailable")
-	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return recoverMeshDeferredJournalLocked(m, st)
-}
-
-func recoverMeshDeferredJournalLocked(m *meshRuntime, st *meshJournalState) error {
-	if st.loaded {
-		return nil
-	}
-	path, err := meshJournalPath(m)
-	if err != nil {
-		return err
-	}
-	st.path = path
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			m.mu.Lock()
-			m.journal = nil
-			m.mu.Unlock()
-			st.bytes = 0
-			st.loaded = true
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() > st.maxBytes {
-		return fmt.Errorf("mesh deferred journal exceeds physical byte limit: %d > %d", info.Size(), st.maxBytes)
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, st.maxBytes+1))
-	if err != nil {
-		return err
-	}
-	if int64(len(raw)) > st.maxBytes {
-		return fmt.Errorf("mesh deferred journal exceeds physical byte limit: %d > %d", len(raw), st.maxBytes)
-	}
-	var disk meshJournalDisk
-	if err := json.Unmarshal(raw, &disk); err != nil {
-		return fmt.Errorf("mesh deferred journal decode failed: %w", err)
-	}
-	if disk.Version != meshJournalVersion {
-		return fmt.Errorf("unsupported mesh deferred journal version: %d", disk.Version)
-	}
-	m.mu.RLock()
-	nodeID := m.nodeID
-	m.mu.RUnlock()
-	if disk.NodeID != "" && disk.NodeID != nodeID {
-		return fmt.Errorf("mesh deferred journal node mismatch: %q != %q", disk.NodeID, nodeID)
-	}
-	if len(disk.Entries) > st.maxEntries {
-		return fmt.Errorf("mesh deferred journal exceeds physical entry limit: %d > %d", len(disk.Entries), st.maxEntries)
-	}
-	entries := append([]MeshRequest(nil), disk.Entries...)
-	m.mu.Lock()
-	m.journal = entries
-	m.mu.Unlock()
-	st.bytes = int64(len(raw))
-	st.loaded = true
-	return nil
-}
-
-func deferMeshRequest(m *meshRuntime, req MeshRequest) error {
-	st := meshJournalStateFor(m)
-	if st == nil {
-		return fmt.Errorf("mesh journal runtime unavailable")
-	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if err := recoverMeshDeferredJournalLocked(m, st); err != nil {
-		return err
-	}
-	m.mu.RLock()
-	nodeID := m.nodeID
-	next := append([]MeshRequest(nil), m.journal...)
-	m.mu.RUnlock()
-
-	logicalKey := meshJournalLogicalKey(req)
-	replaced := false
-	for i := range next {
-		if meshJournalLogicalKey(next[i]) == logicalKey {
-			next[i] = req
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		if len(next) >= st.maxEntries {
-			return fmt.Errorf("mesh deferred journal full: %d entries (limit %d)", len(next), st.maxEntries)
-		}
-		next = append(next, req)
-	}
-	raw, err := marshalMeshJournal(nodeID, next)
-	if err != nil {
-		return err
-	}
-	if int64(len(raw)) > st.maxBytes {
-		return fmt.Errorf("mesh deferred journal full: %d bytes (limit %d)", len(raw), st.maxBytes)
-	}
-	if err := persistMeshJournalFile(st.path, raw); err != nil {
-		return fmt.Errorf("persist mesh deferred journal: %w", err)
-	}
-	m.mu.Lock()
-	m.journal = next
-	m.mu.Unlock()
-	st.bytes = int64(len(raw))
-	return nil
-}
-
 func removeDeferredMeshRequestExact(m *meshRuntime, req MeshRequest) error {
 	st := meshJournalStateFor(m)
 	if st == nil {
-		return fmt.Errorf("mesh journal runtime unavailable")
+		return errors.New("mesh journal runtime unavailable")
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -300,7 +324,6 @@ func removeDeferredMeshRequestExact(m *meshRuntime, req MeshRequest) error {
 		return err
 	}
 	m.mu.RLock()
-	nodeID := m.nodeID
 	current := append([]MeshRequest(nil), m.journal...)
 	m.mu.RUnlock()
 	target := meshJournalExactKey(req)
@@ -314,23 +337,14 @@ func removeDeferredMeshRequestExact(m *meshRuntime, req MeshRequest) error {
 	if idx < 0 {
 		return nil
 	}
-	next := make([]MeshRequest, 0, len(current)-1)
-	next = append(next, current[:idx]...)
+	next := append([]MeshRequest(nil), current[:idx]...)
 	next = append(next, current[idx+1:]...)
-	raw, err := marshalMeshJournal(nodeID, next)
-	if err != nil {
+	if err := persistMeshDeferredJournalLocked(m, st, next); err != nil {
 		return err
-	}
-	if int64(len(raw)) > st.maxBytes {
-		return fmt.Errorf("mesh deferred journal rewrite exceeds byte limit")
-	}
-	if err := persistMeshJournalFile(st.path, raw); err != nil {
-		return fmt.Errorf("persist mesh deferred journal removal: %w", err)
 	}
 	m.mu.Lock()
 	m.journal = next
 	m.mu.Unlock()
-	st.bytes = int64(len(raw))
 	return nil
 }
 
@@ -341,42 +355,46 @@ func flushMeshDeferredJournal(m *meshRuntime) error {
 	m.mu.RLock()
 	pending := append([]MeshRequest(nil), m.journal...)
 	m.mu.RUnlock()
-	failed := 0
 	for _, req := range pending {
 		if _, err := m.authorityRPC(req); err != nil {
-			failed++
 			continue
 		}
 		if err := removeDeferredMeshRequestExact(m, req); err != nil {
-			return fmt.Errorf("authority accepted deferred mesh request but local spool update failed: %w", err)
+			return fmt.Errorf("authority accepted deferred mesh request but Memory spool update failed: %w", err)
 		}
 	}
 	m.mu.RLock()
 	remaining := len(m.journal)
 	m.mu.RUnlock()
-	if failed > 0 || remaining > 0 {
+	if remaining > 0 {
 		return fmt.Errorf("%d mesh journal entries remain deferred", remaining)
 	}
 	return nil
 }
 
-func recoverMeshJournalAfterBind(e *Engine) {
+func recoverMeshJournalAfterBind(e *Engine) error {
 	if e == nil {
-		return
+		return nil
 	}
 	m := meshRuntimeCurrent()
 	if m == nil {
-		return
+		return nil
+	}
+	if err := recoverSovereignMeshState(m); err != nil {
+		return fmt.Errorf("mesh sovereign Memory recovery: %w", err)
+	}
+	if m.role == "sovereign" {
+		m.mu.RLock()
+		self := m.directory[m.nodeID]
+		m.mu.RUnlock()
+		if err := persistSovereignMeshNode(m, self); err != nil {
+			return fmt.Errorf("mesh sovereign self-directory persistence: %w", err)
+		}
 	}
 	if err := recoverMeshDeferredJournal(m); err != nil {
-		m.mu.Lock()
-		if m.startupErr == "" {
-			m.startupErr = "mesh journal recovery: " + err.Error()
-		} else {
-			m.startupErr += "; mesh journal recovery: " + err.Error()
-		}
-		m.mu.Unlock()
+		return fmt.Errorf("mesh journal recovery: %w", err)
 	}
+	return nil
 }
 
 func (m *meshRuntime) proposeSharedDurable(id string) (MeshResponse, error) {
@@ -404,7 +422,7 @@ func (m *meshRuntime) proposeSharedDurable(id string) (MeshResponse, error) {
 		return res, nil
 	}
 	if err := deferMeshRequest(m, req); err != nil {
-		return MeshResponse{OK: false, Status: "backpressure", Decision: "not-deferred", Reason: authorityErr.Error()}, fmt.Errorf("sovereign authority unavailable and durable mesh journal rejected request: %w", err)
+		return MeshResponse{OK: false, Status: "backpressure", Decision: "not-deferred", Reason: authorityErr.Error()}, fmt.Errorf("sovereign authority unavailable and Memory journal rejected request: %w", err)
 	}
 	return MeshResponse{OK: true, Status: "deferred", Decision: "authority-unreachable", Reason: authorityErr.Error()}, nil
 }
@@ -421,13 +439,14 @@ func meshDeferredJournalInfo(m *meshRuntime) map[string]any {
 	m.mu.RUnlock()
 	return map[string]any{
 		"loaded":       st.loaded,
-		"path":         st.path,
+		"memory_id":    st.memoryID,
 		"entries":      entries,
 		"bytes":        st.bytes,
 		"max_entries":  st.maxEntries,
 		"max_bytes":    st.maxBytes,
-		"durability":   "atomic-file-spool",
+		"durability":   "memory.mem",
 		"backpressure": true,
+		"sidecar":      false,
 	}
 }
 

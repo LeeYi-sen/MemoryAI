@@ -15,9 +15,6 @@ type remoteMutationACK struct {
 	Error string `json:"error,omitempty"`
 }
 
-// requireRemoteMutationACK converts the remote mem-node application-level ACK
-// into the VM's physical error boundary. A successful TCP/JSON exchange is not
-// a successful mutation unless the remote node explicitly confirms ok=true.
 func requireRemoteMutationACK(operation, payload string) error {
 	var ack remoteMutationACK
 	if err := json.Unmarshal([]byte(payload), &ack); err != nil {
@@ -64,10 +61,83 @@ func sameStructuralMemory(a, b *Memory) bool {
 	return structuralMemoryDigest(a) == structuralMemoryDigest(b)
 }
 
-func durableTargetMatches(dst *Engine, id string, intended *Memory) error {
-	got, err := resolveSpecificOwnerMemoryCopy(dst, id)
+type logicalDiskMemoryState int
+
+const (
+	logicalDiskUnknown logicalDiskMemoryState = iota
+	logicalDiskAbsent
+	logicalDiskPresent
+)
+
+// physicalMemoryWithJournal reads the durable logical view of one body: the
+// indexed base Store plus the newest valid in-body mutation-journal overlay.
+// It never trusts a journal whose base fingerprint does not match the body.
+func physicalMemoryWithJournal(path, id string) (*Memory, logicalDiskMemoryState, error) {
+	path = canonicalPhysicalBodyPath(path)
+	zr, err := zip.OpenReader(path)
 	if err != nil {
-		return fmt.Errorf("durable transfer target %q cannot be read after persistence: %w", id, err)
+		if errors.Is(err, io.EOF) || errors.Is(err, os.ErrNotExist) {
+			return nil, logicalDiskAbsent, nil
+		}
+		return nil, logicalDiskUnknown, err
+	}
+	defer zr.Close()
+	var mf Manifest
+	if err := readJSONZip(&zr.Reader, "manifest.json", &mf); err != nil {
+		return nil, logicalDiskUnknown, err
+	}
+	st, err := openIndexedStore(path, zr, mf.Store)
+	if err != nil {
+		return nil, logicalDiskUnknown, err
+	}
+	baseMemory, baseErr := st.GetID(id)
+	_ = st.Close()
+	if baseErr != nil && !errors.Is(baseErr, io.EOF) {
+		return nil, logicalDiskUnknown, baseErr
+	}
+
+	rec, journalErr := readMutationJournal(path)
+	if journalErr != nil && !errors.Is(journalErr, errMutationJournalUnavailable) {
+		return nil, logicalDiskUnknown, journalErr
+	}
+	if rec != nil {
+		base, err := mutationJournalBaseFingerprint(path)
+		if err != nil {
+			return nil, logicalDiskUnknown, err
+		}
+		if rec.payload.Base != base {
+			return nil, logicalDiskUnknown, errors.New("mutation journal base fingerprint mismatch during physical verification")
+		}
+		for i := len(rec.payload.Mutations) - 1; i >= 0; i-- {
+			mutation := rec.payload.Mutations[i]
+			if mutation.ID != id {
+				continue
+			}
+			if mutation.Deleted {
+				return nil, logicalDiskAbsent, nil
+			}
+			if mutation.Memory == nil {
+				return nil, logicalDiskUnknown, errors.New("mutation journal contains nil Memory mutation")
+			}
+			return copyMemory(mutation.Memory), logicalDiskPresent, nil
+		}
+	}
+	if errors.Is(baseErr, io.EOF) || baseMemory == nil {
+		return nil, logicalDiskAbsent, nil
+	}
+	return copyMemory(baseMemory), logicalDiskPresent, nil
+}
+
+func durableTargetMatches(dst *Engine, id string, intended *Memory) error {
+	if dst == nil {
+		return errors.New("durable transfer target unavailable")
+	}
+	got, state, err := physicalMemoryWithJournal(dst.bodyPath, id)
+	if err != nil {
+		return fmt.Errorf("durable transfer target %q physical verification failed: %w", id, err)
+	}
+	if state != logicalDiskPresent || got == nil {
+		return fmt.Errorf("durable transfer target %q cannot be read after persistence", id)
 	}
 	if !sameStructuralMemory(got, intended) {
 		return fmt.Errorf("durable transfer target %q changed before ACK", id)
@@ -109,11 +179,6 @@ func markTransferSourceDeletedIfUnchanged(owner *Engine, id, expectedDigest stri
 	return nil
 }
 
-// restoreTransferSourceAfterDeleteFailure is deliberately loss-averse. If the
-// durable-delete phase fails after the destination has already committed, the
-// original source is reintroduced as dirty local state when no concurrent writer
-// has recreated it. A later persistence may therefore leave a duplicate, but it
-// must never erase the only surviving copy of Memory.
 func restoreTransferSourceAfterDeleteFailure(owner *Engine, snapshot *Memory) {
 	if owner == nil || snapshot == nil || strings.TrimSpace(snapshot.ID) == "" {
 		return
@@ -147,15 +212,20 @@ func durableDeleteTransferSource(owner *Engine, snapshot *Memory) error {
 	if err := markTransferSourceDeletedIfUnchanged(owner, id, expected); err != nil {
 		return err
 	}
-	if err := persistEngineIfDirty(owner); err != nil {
+	// Source deletion can now use the in-body journal because verification below
+	// reads the journal overlay rather than only the base ZIP Store.
+	if err := persistEngineIncremental(owner); err != nil {
 		restoreTransferSourceAfterDeleteFailure(owner, snapshot)
 		return fmt.Errorf("source durable delete failed after destination commit: %w", err)
 	}
-	if _, err := resolveSpecificOwnerMemoryCopy(owner, id); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return fmt.Errorf("source %q still exists after durable delete; destination retained", id)
-		}
+	got, state, err := physicalMemoryWithJournal(owner.bodyPath, id)
+	if err != nil {
+		restoreTransferSourceAfterDeleteFailure(owner, snapshot)
 		return fmt.Errorf("source %q durable delete verification failed: %w", id, err)
+	}
+	if state != logicalDiskAbsent || got != nil {
+		restoreTransferSourceAfterDeleteFailure(owner, snapshot)
+		return fmt.Errorf("source %q still exists after durable delete; destination retained", id)
 	}
 	return nil
 }
@@ -169,38 +239,16 @@ const (
 	transferCandidateDiskConflicting
 )
 
-// probeTransferCandidateOnDisk inspects the physical body directly without
-// opening a second Engine. It is used only after a persistence error to
-// distinguish a provably pre-commit failure from a post-rename/finalization
-// failure. Unknown/conflicting outcomes are deliberately loss-averse.
 func probeTransferCandidateOnDisk(dst *Engine, candidate *Memory) transferCandidateDiskState {
 	if dst == nil || candidate == nil || strings.TrimSpace(candidate.ID) == "" {
 		return transferCandidateDiskUnknown
 	}
-	path := canonicalPhysicalBodyPath(dst.bodyPath)
-	zr, err := zip.OpenReader(path)
-	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, os.ErrNotExist) {
-			return transferCandidateDiskAbsent
-		}
+	got, state, err := physicalMemoryWithJournal(dst.bodyPath, candidate.ID)
+	if err != nil || state == logicalDiskUnknown {
 		return transferCandidateDiskUnknown
 	}
-	defer zr.Close()
-	var mf Manifest
-	if err := readJSONZip(&zr.Reader, "manifest.json", &mf); err != nil {
-		return transferCandidateDiskUnknown
-	}
-	st, err := openIndexedStore(path, zr, mf.Store)
-	if err != nil {
-		return transferCandidateDiskUnknown
-	}
-	defer st.Close()
-	got, err := st.GetID(candidate.ID)
-	if errors.Is(err, io.EOF) {
+	if state == logicalDiskAbsent || got == nil {
 		return transferCandidateDiskAbsent
-	}
-	if err != nil || got == nil {
-		return transferCandidateDiskUnknown
 	}
 	if sameStructuralMemory(got, candidate) {
 		return transferCandidateDiskMatching
@@ -208,10 +256,6 @@ func probeTransferCandidateOnDisk(dst *Engine, candidate *Memory) transferCandid
 	return transferCandidateDiskConflicting
 }
 
-// handleFailedTransferTargetPersistence rolls back only when the physical body
-// can be proven not to contain the candidate. It holds the Engine persistence
-// lock across probe + rollback so another persistence pass cannot race between
-// the two and durably commit a candidate after an "absent" observation.
 func handleFailedTransferTargetPersistence(dst *Engine, candidate *Memory) string {
 	if dst == nil || candidate == nil {
 		return "unknown"
@@ -237,10 +281,6 @@ func addTransferTargetCandidateBounded(dst *Engine, candidate *Memory) error {
 	if dst == nil || candidate == nil || strings.TrimSpace(candidate.ID) == "" {
 		return errors.New("Memory transfer target candidate unavailable")
 	}
-	// Explicit space_copy/space_move selects one physical body. It must obey the
-	// same per-body physical quota as automatic placement rather than silently
-	// overflowing the selected shard. automaticShardMu closes the capacity race
-	// against memory_new/import placement.
 	automaticShardMu.Lock()
 	defer automaticShardMu.Unlock()
 	if existing, err := resolveSpecificOwnerMemoryCopy(dst, candidate.ID); err == nil && existing != nil {
@@ -310,13 +350,6 @@ func rollbackUnpersistedTransferCandidate(dst *Engine, candidate *Memory) bool {
 	return true
 }
 
-// transferMemoryDurable is a physical two-phase move/copy boundary:
-//  1. copy a stable source snapshot into the destination;
-//  2. durably persist and verify the destination;
-//  3. only for move, delete the unchanged source and durably persist deletion.
-//
-// If phase 3 fails, the already-durable destination is kept and the source is
-// retained/restored. Duplicate physical copies are preferable to Memory loss.
 func transferMemoryDurable(e *Engine, id, target string, move bool) (string, error) {
 	if e == nil {
 		return "", errors.New("Memory transfer requires engine")
@@ -346,7 +379,7 @@ func transferMemoryDurable(e *Engine, id, target string, move bool) (string, err
 	newID := candidate.ID
 	if existing, er := resolveSpecificOwnerMemoryCopy(dst, newID); er == nil {
 		if sameStructuralMemory(existing, candidate) {
-			if err := persistEngineIfDirty(dst); err != nil {
+			if err := persistEngineIncremental(dst); err != nil {
 				return "", fmt.Errorf("destination durability failed: %w", err)
 			}
 			if err := durableTargetMatches(dst, newID, candidate); err != nil {
@@ -380,7 +413,7 @@ func transferMemoryDurable(e *Engine, id, target string, move bool) (string, err
 	if err := addTransferTargetCandidateBounded(dst, candidate); err != nil {
 		return "", err
 	}
-	if err := persistEngineIfDirty(dst); err != nil {
+	if err := persistEngineIncremental(dst); err != nil {
 		outcome := handleFailedTransferTargetPersistence(dst, candidate)
 		switch outcome {
 		case "rolled_back":

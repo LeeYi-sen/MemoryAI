@@ -13,7 +13,7 @@ jobs:
   remote_body_integrity:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout without external actions
+      - name: Checkout
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -21,124 +21,11 @@ jobs:
           git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
-
-      - name: Restore generated Kernel source
+      - name: Restore source
         run: python3 tools/restore_source.py
-
-      - name: Assert physical body transaction and durability boundaries
-        run: |
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          kernel = Path('Kernel/src/kernel.go').read_text(encoding='utf-8')
-          txn_runtime = Path('Kernel/src/remote_body_txn_runtime.go').read_text(encoding='utf-8')
-          durability_runtime = Path('Kernel/src/remote_durability_runtime.go').read_text(encoding='utf-8')
-          txn_overlay = Path('tools/kernel_remote_body_txn_overlay.py').read_text(encoding='utf-8')
-          durability_overlay = Path('tools/kernel_remote_durability_overlay.py').read_text(encoding='utf-8')
-          tests = (
-              Path('Kernel/src/remote_body_txn_test.go').read_text(encoding='utf-8')
-              + Path('Kernel/src/remote_body_symlink_test.go').read_text(encoding='utf-8')
-              + Path('Kernel/src/remote_body_mount_alias_test.go').read_text(encoding='utf-8')
-              + Path('Kernel/src/remote_durability_runtime_test.go').read_text(encoding='utf-8')
-          )
-
-          required_kernel = [
-              'loadEngineCanonical(',
-              'loadPassiveStorageSerialized(',
-              'releaseMountBodyTxn := acquireRemoteBodyTransaction(cp)',
-              'activePhysicalBody(cp)',
-              'releaseUnmountBodyTxn := acquireRemoteBodyTransaction(cp)',
-              'releaseBodyCloseTxn := acquireRemoteBodyTransaction(sp.bodyPath)',
-              'releasePassiveBodyTransaction(e)',
-              'requireRemoteMutationACK("space_create", resp)',
-              'requireRemoteMutationACK("space_put", resp)',
-              'requireRemoteMutationACK("space_upsert", resp)',
-              'requireRemoteMutationACK("space_delete", resp)',
-              'return transferMemoryDurable(e, id, target, move)',
-              'if er = persistEngineIfDirty(sp); er != nil {',
-          ]
-          missing = [x for x in required_kernel if x not in kernel]
-          if missing:
-              raise SystemExit(f'generated Kernel remote durability boundary missing: {missing}')
-          if re.search(r'(?<!func )\bloadEngine\(', kernel):
-              raise SystemExit('generated Kernel contains non-canonical loadEngine call')
-          if re.search(r'(?<!func )\bloadPassiveStorage\(', kernel):
-              raise SystemExit('generated Kernel contains unserialized passive load')
-          if 'sp.saveBody(p)' in kernel:
-              raise SystemExit('remote mem-node still persists through request alias path')
-          if 'src.deletedIDs[id] = true' in kernel:
-              raise SystemExit('historical pre-durability transfer deletion remained')
-
-          required_txn_runtime = [
-              'remoteBodyTxnLockEntry', 'entry.refs++', 'entry.refs--',
-              'delete(remoteBodyTxnLocks, key)', 'filepath.EvalSymlinks',
-              'loadEngineCanonical', 'activePhysicalBodies',
-              'registerActivePhysicalBody', 'unregisterActivePhysicalBody',
-              'loadPassiveStorageSerialized', 'releasePassiveBodyTransaction',
-          ]
-          missing = [x for x in required_txn_runtime if x not in txn_runtime]
-          if missing:
-              raise SystemExit(f'remote-body runtime boundary missing: {missing}')
-
-          required_durability_runtime = [
-              'requireRemoteMutationACK', 'transferMemoryDurable',
-              'persistEngineIfDirty(dst)', 'durableTargetMatches',
-              'markTransferSourceDeletedIfUnchanged',
-              'persistEngineIfDirty(owner)',
-              'restoreTransferSourceAfterDeleteFailure',
-          ]
-          missing = [x for x in required_durability_runtime if x not in durability_runtime]
-          if missing:
-              raise SystemExit(f'remote durability runtime boundary missing: {missing}')
-
-          required_txn_overlay = [
-              'engine_call_pattern', 'passive_call_pattern',
-              'acquireRemoteBodyTransaction(cp)', 'activePhysicalBody(cp)',
-              'acquireRemoteBodyTransaction(sp.bodyPath)',
-          ]
-          missing = [x for x in required_txn_overlay if x not in txn_overlay]
-          if missing:
-              raise SystemExit(f'remote-body overlay boundary missing: {missing}')
-
-          required_durability_overlay = [
-              'remote create ACK', 'remote put ACK', 'remote upsert ACK',
-              'remote delete ACK', 'transferMemoryDurable',
-              'persistEngineIfDirty(sp)',
-          ]
-          missing = [x for x in required_durability_overlay if x not in durability_overlay]
-          if missing:
-              raise SystemExit(f'remote durability overlay boundary missing: {missing}')
-
-          required_tests = [
-              'TestPassiveBodyTransactionSerializesLoadThroughClose',
-              'TestPassiveBodyTransactionsDoNotSerializeDifferentBodies',
-              'TestPassiveBodyRejectsSecondEngineWhileMounted',
-              'TestMountWaitsForPassiveTransactionAndLoadsDurableResult',
-              'TestRemoteBodyTransactionRegistryReclaimsAfterQueuedWaiter',
-              'TestRemoteBodyTransactionCanonicalizesSymlinkAlias',
-              'TestUnmountWaitsForPhysicalBodyTransaction',
-              'TestRootCloseWaitsForMountedBodyTransaction',
-              'TestPassiveSymlinkPersistenceTargetsRealBody',
-              'TestMountRejectsSymlinkAliasOfLivePhysicalBody',
-              'TestRequireRemoteMutationACKRejectsApplicationFailure',
-              'TestTransferMemoryDurableMovePersistsTargetBeforeSourceRemoval',
-              'TestTransferMemoryDurableTargetFailureRetainsSource',
-              'TestTransferSourceChangePreventsDelete',
-              'TestTransferDeletePersistenceFailureRestoresSource',
-          ]
-          missing = [x for x in required_tests if x not in tests]
-          if missing:
-              raise SystemExit(f'remote durability regression coverage missing: {missing}')
-          print('Remote physical body transaction + durability boundaries: PASS')
-          PY
-
-      - name: Run remote body durability tests
+      - name: Assert journal-aware remote durability
+        run: python3 tools/architecture_audit.py
+      - name: Run remote-body and transfer regressions
         env:
           GO111MODULE: "off"
-        run: go test ./Kernel/src -run 'RemoteBody|PassiveBody|Mount|Unmount|RootClose|RemoteMutationACK|TransferMemoryDurable|TransferSource|TransferDelete'
-
-      - name: Race-test remote body durability tests
-        env:
-          GO111MODULE: "off"
-        run: go test -race ./Kernel/src -run 'RemoteBody|PassiveBody|Mount|Unmount|RootClose|RemoteMutationACK|TransferMemoryDurable|TransferSource|TransferDelete'
+        run: go test -race ./Kernel/src -run 'RemoteBody|PassiveBody|Mount|Unmount|RootClose|RemoteMutationACK|TransferMemoryDurable|TransferSource|TransferDelete|PhysicalMemoryWithJournal|TransferProbeTreatsJournal'

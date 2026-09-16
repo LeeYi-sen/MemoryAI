@@ -29,14 +29,16 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
             f"remote-durability overlay upstream boundary missing: {missing}"
         )
 
-    create_old = '''\tcase "remote_space_create":
+    replacements = (
+        (
+            '''\tcase "remote_space_create":
 \t\tresp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "create", "name": x(op.Args["name"])}, parseTimeout(x(op.Args["timeout_ms"])))
 \t\tif err != nil {
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    create_new = '''\tcase "remote_space_create":
+''',
+            '''\tcase "remote_space_create":
 \t\tresp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "create", "name": x(op.Args["name"])}, parseTimeout(x(op.Args["timeout_ms"])))
 \t\tif err != nil {
 \t\t\treturn -1, err
@@ -45,10 +47,11 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    text = _replace_once(text, create_old, create_new, "remote create ACK")
-
-    put_old = '''\tcase "remote_space_put":
+''',
+            "remote create ACK",
+        ),
+        (
+            '''\tcase "remote_space_put":
 \t\tm, err := e.resolve(x(op.A))
 \t\tif err != nil {
 \t\t\treturn -1, err
@@ -58,8 +61,8 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    put_new = '''\tcase "remote_space_put":
+''',
+            '''\tcase "remote_space_put":
 \t\tm, err := e.resolve(x(op.A))
 \t\tif err != nil {
 \t\t\treturn -1, err
@@ -72,10 +75,11 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    text = _replace_once(text, put_old, put_new, "remote put ACK")
-
-    upsert_old = '''\tcase "remote_space_upsert":
+''',
+            "remote put ACK",
+        ),
+        (
+            '''\tcase "remote_space_upsert":
 \t\tm, err := e.resolve(x(op.A))
 \t\tif err != nil {
 \t\t\treturn -1, err
@@ -85,8 +89,8 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    upsert_new = '''\tcase "remote_space_upsert":
+''',
+            '''\tcase "remote_space_upsert":
 \t\tm, err := e.resolve(x(op.A))
 \t\tif err != nil {
 \t\t\treturn -1, err
@@ -99,17 +103,18 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    text = _replace_once(text, upsert_old, upsert_new, "remote upsert ACK")
-
-    delete_old = '''\tcase "remote_space_delete":
+''',
+            "remote upsert ACK",
+        ),
+        (
+            '''\tcase "remote_space_delete":
 \t\tresp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "delete", "name": x(op.Args["name"]), "id": x(op.Args["id"])}, parseTimeout(x(op.Args["timeout_ms"])))
 \t\tif err != nil {
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    delete_new = '''\tcase "remote_space_delete":
+''',
+            '''\tcase "remote_space_delete":
 \t\tresp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "delete", "name": x(op.Args["name"]), "id": x(op.Args["id"])}, parseTimeout(x(op.Args["timeout_ms"])))
 \t\tif err != nil {
 \t\t\treturn -1, err
@@ -118,18 +123,25 @@ def apply_kernel_remote_durability_overlay(raw: bytes) -> bytes:
 \t\t\treturn -1, err
 \t\t}
 \t\tf.Vars[op.Args["out"]] = resp
-'''
-    text = _replace_once(text, delete_old, delete_new, "remote delete ACK")
+''',
+            "remote delete ACK",
+        ),
+    )
+    for old, new, label in replacements:
+        text = _replace_once(text, old, new, label)
 
     transfer_pattern = re.compile(
         r'func \(e \*Engine\) transferMemory\(id, target string, move bool\) \(string, error\) \{.*?\n\}\nfunc sameStrings',
         re.S,
     )
-    transfer_replacement = '''func (e *Engine) transferMemory(id, target string, move bool) (string, error) {
+    text, count = transfer_pattern.subn(
+        '''func (e *Engine) transferMemory(id, target string, move bool) (string, error) {
 \treturn transferMemoryDurable(e, id, target, move)
 }
-func sameStrings'''
-    text, count = transfer_pattern.subn(transfer_replacement, text, count=1)
+func sameStrings''',
+        text,
+        count=1,
+    )
     if count != 1:
         raise RuntimeError(
             f"remote-durability overlay transfer boundary: expected one match, got {count}"
@@ -141,14 +153,17 @@ func sameStrings'''
         raise RuntimeError(
             f"remote-durability overlay remote write persistence: expected two historical saveBody(p) calls, got {save_count}"
         )
+    # Physical verification is journal-aware, so remote mutation ACK paths no
+    # longer need full-body rewrites. The in-body dual-slot journal is durable.
     text = text.replace(
         historical_save,
-        'if er = persistEngineIfDirty(sp); er != nil {',
+        'if er = persistEngineIncremental(sp); er != nil {',
     )
 
     forbidden = (
         historical_save,
         'src.deletedIDs[id] = true',
+        'persistEngineIfDirty(sp)',
     )
     bad = [token for token in forbidden if token in text]
     if bad:
@@ -160,7 +175,7 @@ func sameStrings'''
         'requireRemoteMutationACK("space_upsert", resp)',
         'requireRemoteMutationACK("space_delete", resp)',
         'return transferMemoryDurable(e, id, target, move)',
-        'persistEngineIfDirty(sp)',
+        'persistEngineIncremental(sp)',
     )
     missing = [token for token in required_after if token not in text]
     if missing:

@@ -69,6 +69,9 @@ func (m *meshRuntime) handleAuthority(req MeshRequest) MeshResponse {
 		}
 		n := *req.Node
 		n.LastSeen = time.Now().Unix()
+		if err := persistSovereignMeshNode(m, n); err != nil {
+			return MeshResponse{OK: false, Error: "persist Sovereign node directory: " + err.Error()}
+		}
 		m.mu.Lock()
 		m.directory[n.ID] = n
 		m.mu.Unlock()
@@ -187,6 +190,11 @@ func (m *meshRuntime) authorizeSharedProposal(req MeshRequest) MeshResponse {
 		rec := MeshRecord{
 			MemoryID: req.MemoryID, OriginNode: req.OriginNode, Endpoint: req.Endpoint,
 			Digest: req.ProposalDigest, Revision: req.Revision, Tags: append([]string(nil), req.Tags...),
+		}
+		// Authorization is a durable Sovereign fact. Persist it inside Memory
+		// before acknowledging approval so a restart cannot silently forget it.
+		if err := persistSovereignSharedRecord(m, rec); err != nil {
+			return MeshResponse{OK: false, Error: "persist Sovereign shared authorization: " + err.Error()}
 		}
 		m.mu.Lock()
 		m.shared[rec.MemoryID] = rec

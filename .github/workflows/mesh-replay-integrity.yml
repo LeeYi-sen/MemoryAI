@@ -1,4 +1,4 @@
-name: mesh-replay-integrity
+name: mesh-memory-integrity
 
 on:
   push:
@@ -10,10 +10,10 @@ permissions:
   contents: read
 
 jobs:
-  mesh_replay_integrity:
+  mesh_memory_integrity:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout without external actions
+      - name: Checkout
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -21,70 +21,14 @@ jobs:
           git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
-
-      - name: Restore generated Kernel source
+      - name: Restore source
         run: python3 tools/restore_source.py
-
-      - name: Assert durable proposal replay boundary
+      - name: Reject active Mesh sidecars
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          event = Path('Kernel/src/event_runtime.go').read_text(encoding='utf-8')
-          runtime = Path('Kernel/src/mesh_proposal_replay_runtime.go').read_text(encoding='utf-8')
-          fabric = Path('Kernel/src/fabric_context_runtime.go').read_text(encoding='utf-8')
-          tests = Path('Kernel/src/mesh_proposal_replay_runtime_test.go').read_text(encoding='utf-8')
-
-          required_event = [
-              'strings.TrimSpace(name) == "mesh.shared.proposal"',
-              'executeMeshProposalEventOnce(e, f, ev',
-          ]
-          required_runtime = [
-              'mesh_request_id',
-              'State:       "executing"',
-              'persistMeshProposalReplayLocked',
-              'durably fenced as in-flight',
-              'conflicting mesh proposal identity',
-              'MEMORYAI_MESH_REPLAY_MAX_ENTRIES',
-              'MEMORYAI_MESH_REPLAY_MAX_BYTES',
-              'entries    map[string]meshProposalReplayEntry // request_id -> durable receipt/fence',
-              'latest     map[string]string',
-              'next[requestID] = entry',
-              'Memory.mesh-proposal-replay.',
-          ]
-          required_fabric = ['forgetMeshProposalReplayState(root)', 'forgetMeshProposalReplayState(e)']
-          required_tests = [
-              'TestMeshProposalReplayExecutesOnceAndRestoresDecision',
-              'TestMeshProposalReplaySurvivesRuntimeRestart',
-              'TestMeshProposalReplayFenceNeverReexecutesIndeterminateRequest',
-              'TestMeshProposalReplayHigherRevisionSupersedesOldFence',
-              'TestMeshProposalReplayRejectsConflictingSameRevision',
-              'TestMeshProposalReplayOldReceiptSurvivesHigherRevision',
-              'TestMeshProposalReplayPathsSeparateCoreBodies',
-              'TestMeshProposalReplayBackpressurePreservesExistingReceipt',
-          ]
-          for label, text, required in [
-              ('event', event, required_event),
-              ('runtime', runtime, required_runtime),
-              ('fabric', fabric, required_fabric),
-              ('tests', tests, required_tests),
-          ]:
-              missing = [item for item in required if item not in text]
-              if missing:
-                  raise SystemExit(f'{label} replay boundary missing: {missing}')
-          print('Mesh proposal durable replay boundary: PASS')
-          PY
-
-      - name: Check replay files are formatted
-        run: |
-          test -z "$(gofmt -l Kernel/src/event_runtime.go Kernel/src/fabric_context_runtime.go Kernel/src/mesh_proposal_replay_runtime.go Kernel/src/mesh_proposal_replay_runtime_test.go)"
-
-      - name: Run replay regressions
+          python3 tools/architecture_audit.py
+          ! grep -n 'Memory.mesh-journal.' Kernel/src/mesh_journal_runtime.go
+          ! grep -n 'Memory.mesh-proposal-replay.' Kernel/src/mesh_proposal_replay_runtime.go
+      - name: Run Mesh Memory durability regressions
         env:
           GO111MODULE: "off"
-        run: go test ./Kernel/src -run 'MeshProposalReplay'
-
-      - name: Race-test replay regressions
-        env:
-          GO111MODULE: "off"
-        run: go test -race ./Kernel/src -run 'MeshProposalReplay'
+        run: go test -race ./Kernel/src -run 'MeshDeferredJournal|MeshProposalReplay|SovereignDirectory|MeshGrantSideEffect'

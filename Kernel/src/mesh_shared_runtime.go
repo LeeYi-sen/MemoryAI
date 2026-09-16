@@ -5,31 +5,10 @@ import (
 	"strings"
 )
 
+// proposeShared is retained only as a source-compatible physical entrypoint.
+// All production callers route through the same Memory-backed durable spool.
 func (m *meshRuntime) proposeShared(id string) (MeshResponse, error) {
-	m.mu.RLock()
-	e := m.engine
-	origin := m.nodeID
-	endpoint := m.endpoint
-	m.mu.RUnlock()
-	if e == nil {
-		return MeshResponse{}, errors.New("mesh engine unavailable")
-	}
-	_, mem, err := e.resolveLocalFabricMemoryCopy(strings.TrimSpace(id))
-	if err != nil {
-		return MeshResponse{}, err
-	}
-	req := MeshRequest{
-		Op: "shared_propose", MemoryID: mem.ID, ProposalDigest: memoryJSONDigest(mem),
-		Revision: mem.Revision, OriginNode: origin, Endpoint: endpoint, Tags: append([]string(nil), mem.Tags...),
-	}
-	res, err := m.authorityRPC(req)
-	if err != nil {
-		m.mu.Lock()
-		m.journal = append(m.journal, req)
-		m.mu.Unlock()
-		return MeshResponse{OK: true, Status: "deferred", Decision: "authority-unreachable", Reason: err.Error()}, nil
-	}
-	return res, nil
+	return m.proposeSharedDurable(id)
 }
 
 func (m *meshRuntime) serveLocalMemory(id string) MeshResponse {

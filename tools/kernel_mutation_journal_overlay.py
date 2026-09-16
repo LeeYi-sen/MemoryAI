@@ -32,10 +32,6 @@ def apply_kernel_mutation_journal_overlay(raw: bytes) -> bytes:
         raise RuntimeError("mutation-journal overlay found no canonical Engine loads")
     text = load_pattern.sub("loadEngineWithMutationJournal(", text)
 
-    # Only persistAll's periodic/background hot path becomes incremental. Other
-    # full-durability barriers (notably remote mem-node ACK and loss-averse move)
-    # intentionally keep persistEngineIfDirty until their physical verification
-    # logic is journal-aware.
     persist_start, persist_end, persist_block = _top_level_function_block(
         text, "func (e *Engine) persistAll() error {"
     )
@@ -72,13 +68,12 @@ def apply_kernel_mutation_journal_overlay(raw: bytes) -> bytes:
     if final_persist_block.count("persistEngineIncremental(e)") != 1 or final_persist_block.count("persistEngineIncremental(sp)") != 1:
         raise RuntimeError("incremental persistAll routing missing or duplicated")
 
-    # The current remote durability overlay deliberately leaves two mem-node
-    # mutation ACK barriers on full persistence. Do not consume them accidentally.
-    remote_full_barriers = text.count("persistEngineIfDirty(sp)")
-    if remote_full_barriers != 2:
-        raise RuntimeError(
-            f"mutation-journal overlay expected two remote full-durability barriers outside persistAll, got {remote_full_barriers}"
-        )
+    # Entry 026: remote mutation and move verification now reads base+journal,
+    # so no ACK-critical full-body barrier remains in the generated Kernel.
+    if "persistEngineIfDirty(sp)" in text:
+        raise RuntimeError("remote full-body persistence barrier remained after journal-aware verification")
+    if text.count("persistEngineIncremental(sp)") < 3:
+        raise RuntimeError("expected mounted persistAll plus remote incremental durability barriers")
     if text.count("writeDetZipWithMutationJournal(out, entries)") != 1:
         raise RuntimeError("journal-capable full-body writer missing or duplicated")
     return text.encode("utf-8")

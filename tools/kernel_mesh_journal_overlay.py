@@ -23,7 +23,7 @@ def apply_kernel_mesh_journal_overlay(raw: bytes) -> bytes:
         )
     text = text.replace(
         "bindMeshEngine(e)",
-        "bindMeshEngine(e)\n\trecoverMeshJournalAfterBind(e)",
+        "bindMeshEngine(e)\n\tif err := migrateLegacyRuntimeState(e); err != nil { die(err) }\n\tif err := recoverMeshJournalAfterBind(e); err != nil { die(err) }",
         1,
     )
 
@@ -52,6 +52,7 @@ def apply_kernel_mesh_journal_overlay(raw: bytes) -> bytes:
         raise RuntimeError(f"legacy unbounded mesh journal VM boundary remained: {bad}")
 
     required_after = (
+        "migrateLegacyRuntimeState(e)",
         "recoverMeshJournalAfterBind(e)",
         ".proposeSharedDurable(",
         "flushMeshDeferredJournal(",

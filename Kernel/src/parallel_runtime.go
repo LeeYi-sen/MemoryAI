@@ -3,22 +3,49 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
 
-// parallelRuntime is a physical execution accelerator only. It never chooses
-// which executable Memory should run, assigns semantic priority, or interprets
-// vector dimensions.
+// physicalGPUBackend is a physical arithmetic accelerator only. It receives
+// anonymous scalar lanes; no semantic dimension, score, utility or policy is
+// visible to the backend.
+type physicalGPUBackend interface {
+	Name() string
+	Available() bool
+	Dot(vectors [][]float32, weights []float32) ([]float32, error)
+	Info() map[string]any
+}
+
 type parallelRuntime struct {
 	concurrency int64
 	jobs        uint64
 	peak        int64
 	inflight    int64
+	gpuJobs     uint64
+	gpuFallback uint64
 }
 
 var globalParallelRuntime = newParallelRuntime()
+var globalPhysicalGPU physicalGPUBackend = newPhysicalGPUBackend()
+var physicalGPUMinScalarOps int64 = defaultPhysicalGPUThreshold()
+
+func defaultPhysicalGPUThreshold() int64 {
+	const fallback int64 = 16384
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_GPU_MIN_SCALAR_OPS"))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 1 {
+		return fallback
+	}
+	return n
+}
 
 func newParallelRuntime() *parallelRuntime {
 	n := runtime.GOMAXPROCS(0)
@@ -106,18 +133,7 @@ func parallelCPUFor(count, maxParallel int, fn func(int)) {
 	wg.Wait()
 }
 
-// Dot is dimension-agnostic physical arithmetic. Kernel knows only that each
-// row has the same number of scalar lanes as weights; lane meaning, weighting,
-// interpretation and any notion of a semantic score belong entirely to Memory.
-func (r *parallelRuntime) Dot(vectors [][]float32, weights []float32) ([]float32, string, error) {
-	if len(weights) == 0 {
-		return nil, "", fmt.Errorf("parallel dot requires at least one physical lane")
-	}
-	for i := range vectors {
-		if len(vectors[i]) != len(weights) {
-			return nil, "", fmt.Errorf("parallel dot lane mismatch at row %d: %d != %d", i, len(vectors[i]), len(weights))
-		}
-	}
+func cpuDot(vectors [][]float32, weights []float32) []float32 {
 	out := make([]float32, len(vectors))
 	parallelCPUFor(len(vectors), 0, func(i int) {
 		var sum float32
@@ -126,17 +142,81 @@ func (r *parallelRuntime) Dot(vectors [][]float32, weights []float32) ([]float32
 		}
 		out[i] = sum
 	})
-	return out, "cpu-dot", nil
+	return out
+}
+
+func validateDotShape(vectors [][]float32, weights []float32) error {
+	if len(weights) == 0 {
+		return fmt.Errorf("parallel dot requires at least one physical lane")
+	}
+	for i := range vectors {
+		if len(vectors[i]) != len(weights) {
+			return fmt.Errorf("parallel dot lane mismatch at row %d: %d != %d", i, len(vectors[i]), len(weights))
+		}
+	}
+	return nil
+}
+
+func (r *parallelRuntime) Dot(vectors [][]float32, weights []float32) ([]float32, string, error) {
+	if err := validateDotShape(vectors, weights); err != nil {
+		return nil, "", err
+	}
+	if len(vectors) == 0 {
+		return []float32{}, "cpu-dot", nil
+	}
+	gpu := globalPhysicalGPU
+	scalarOps := int64(len(vectors)) * int64(len(weights))
+	if gpu == nil || !gpu.Available() || scalarOps < atomic.LoadInt64(&physicalGPUMinScalarOps) || len(vectors) < 2 {
+		return cpuDot(vectors, weights), "cpu-dot", nil
+	}
+
+	// Run CPU and GPU on disjoint rows concurrently. This is a physical workload
+	// split only; row meaning and lane meaning remain opaque to Kernel.
+	split := len(vectors) / 2
+	cpuRows := vectors[:split]
+	gpuRows := vectors[split:]
+	out := make([]float32, len(vectors))
+	var gpuOut []float32
+	var gpuErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		atomic.AddUint64(&r.gpuJobs, 1)
+		gpuOut, gpuErr = gpu.Dot(gpuRows, weights)
+	}()
+	cpuOut := cpuDot(cpuRows, weights)
+	wg.Wait()
+	copy(out[:split], cpuOut)
+	if gpuErr != nil || len(gpuOut) != len(gpuRows) {
+		atomic.AddUint64(&r.gpuFallback, 1)
+		copy(out[split:], cpuDot(gpuRows, weights))
+		return out, "cpu-dot-gpu-fallback", nil
+	}
+	copy(out[split:], gpuOut)
+	return out, "cpu+" + gpu.Name() + "-hybrid-dot", nil
 }
 
 func (r *parallelRuntime) Info() map[string]any {
+	gpuInfo := map[string]any{"available": false, "backend": "none"}
+	if globalPhysicalGPU != nil {
+		gpuInfo = globalPhysicalGPU.Info()
+	}
+	backend := "cpu"
+	if available, _ := gpuInfo["available"].(bool); available {
+		backend = "cpu+gpu-hybrid"
+	}
 	return map[string]any{
-		"backend":              "cpu",
+		"backend":              backend,
 		"physical_concurrency": atomic.LoadInt64(&r.concurrency),
 		"gomaxprocs":           runtime.GOMAXPROCS(0),
 		"jobs":                 atomic.LoadUint64(&r.jobs),
 		"inflight":             atomic.LoadInt64(&r.inflight),
 		"peak_parallel":        atomic.LoadInt64(&r.peak),
+		"gpu_jobs":             atomic.LoadUint64(&r.gpuJobs),
+		"gpu_fallbacks":        atomic.LoadUint64(&r.gpuFallback),
+		"gpu_min_scalar_ops":   atomic.LoadInt64(&physicalGPUMinScalarOps),
+		"gpu":                  gpuInfo,
 	}
 }
 
@@ -156,12 +236,12 @@ func physicalRuntimeInfo() map[string]any {
 func parallelSelfTest() error {
 	vectors := [][]float32{{1, 2, 3, 4}, {4, 3, 2, 1}}
 	weights := []float32{1, 1, 1, 1}
-	got, backend, err := globalParallelRuntime.Dot(vectors, weights)
+	got, _, err := globalParallelRuntime.Dot(vectors, weights)
 	if err != nil {
 		return err
 	}
-	if backend != "cpu-dot" || len(got) != 2 || got[0] != 10 || got[1] != 10 {
-		return fmt.Errorf("parallel physical arithmetic self-test failed: backend=%s values=%v", backend, got)
+	if len(got) != 2 || got[0] != 10 || got[1] != 10 {
+		return fmt.Errorf("parallel physical arithmetic self-test failed: values=%v", got)
 	}
 	wideVectors := [][]float32{{1, 1, 1, 1, 1, 1, 1, 1, 1}}
 	wideWeights := []float32{1, 1, 1, 1, 1, 1, 1, 1, 1}

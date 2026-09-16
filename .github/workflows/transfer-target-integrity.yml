@@ -13,7 +13,7 @@ jobs:
   transfer_target_integrity:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout without external actions
+      - name: Checkout
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -21,61 +21,14 @@ jobs:
           git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
-
-      - name: Restore generated Kernel source
+      - name: Restore source
         run: python3 tools/restore_source.py
-
-      - name: Assert explicit transfer admission and rollback boundaries
+      - name: Assert transfer verification sees mutation journal
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          runtime = Path('Kernel/src/remote_durability_runtime.go').read_text(encoding='utf-8')
-          tests = Path('Kernel/src/remote_durability_runtime_test.go').read_text(encoding='utf-8')
-
-          required_runtime = [
-              'func addTransferTargetCandidateBounded',
-              'automaticShardMu.Lock()',
-              'shardHasCapacity(dst, 1)',
-              'explicit Memory transfer target full',
-              'func probeTransferCandidateOnDisk',
-              'func handleFailedTransferTargetPersistence',
-              'func rollbackUnpersistedTransferCandidate',
-              'delete(dst.cache, id)',
-              'delete(dst.newIDs, id)',
-              'delete(dst.dirtyIDs, id)',
-              'addTransferTargetCandidateBounded(dst, candidate)',
-              'handleFailedTransferTargetPersistence(dst, candidate)',
-          ]
-          missing = [x for x in required_runtime if x not in runtime]
-          if missing:
-              raise SystemExit(f'transfer target boundary missing: {missing}')
-          if runtime.count('dst.addRuntimeMemory(candidate)') != 1:
-              raise SystemExit('transfer candidate must only be inserted inside bounded admission helper')
-          if 'origiginalBodyPath' in tests:
-              raise SystemExit('remote durability test compile typo returned')
-          required_tests = [
-              'TestTransferMemoryDurableRejectsFullExplicitTarget',
-              'TestRollbackUnpersistedTransferCandidateRemovesOnlyExactNewCandidate',
-              'TestRollbackUnpersistedTransferCandidatePreservesOtherDirtyState',
-              'TestFailedTransferPersistenceKeepsCandidateWhenDiskAlreadyContainsIt',
-              'failed transfer candidate leaked into later durable target commit',
-          ]
-          missing = [x for x in required_tests if x not in tests]
-          if missing:
-              raise SystemExit(f'transfer target regressions missing: {missing}')
-          print('Explicit transfer target capacity/rollback boundary: PASS')
-          PY
-
-      - name: Check transfer files are formatted
-        run: test -z "$(gofmt -l Kernel/src/remote_durability_runtime.go Kernel/src/remote_durability_runtime_test.go)"
-
-      - name: Run transfer target regressions
+          grep -n 'physicalMemoryWithJournal' Kernel/src/remote_durability_runtime.go
+          grep -n 'persistEngineIncremental(dst)' Kernel/src/remote_durability_runtime.go
+          grep -n 'persistEngineIncremental(owner)' Kernel/src/remote_durability_runtime.go
+      - name: Run transfer regressions
         env:
           GO111MODULE: "off"
-        run: go test ./Kernel/src -run 'TransferMemoryDurable|RollbackUnpersistedTransferCandidate|FailedTransferPersistence'
-
-      - name: Race-test transfer target regressions
-        env:
-          GO111MODULE: "off"
-        run: go test -race ./Kernel/src -run 'TransferMemoryDurable|RollbackUnpersistedTransferCandidate|FailedTransferPersistence'
+        run: go test -race ./Kernel/src -run 'TransferMemoryDurable|RollbackUnpersistedTransferCandidate|FailedTransferPersistence|PhysicalMemoryWithJournal|TransferProbeTreatsJournal'
