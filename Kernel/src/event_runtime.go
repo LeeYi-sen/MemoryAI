@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -187,6 +188,50 @@ func (e *Engine) eventCandidateIDs(ev PhysicalEvent, subjectTags map[string]bool
 	return out, nil
 }
 
+func applyPhysicalEventFrame(f *Frame, ev PhysicalEvent) {
+	f.Vars["__event"] = ev.Name
+	f.Vars["__event_id"] = ev.ID
+	f.Vars["__subject"] = ev.Subject
+	for k, v := range ev.Vars {
+		if !strings.HasPrefix(k, "__") {
+			f.Vars[k] = v
+		}
+	}
+}
+
+func equalFrameList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeIndependentEventFrame(dst, base, branch *Frame) {
+	for k, v := range branch.Vars {
+		if old, ok := base.Vars[k]; !ok || old != v {
+			dst.Vars[k] = v
+		}
+	}
+	for k, values := range branch.Lists {
+		if !equalFrameList(values, base.Lists[k]) {
+			dst.Lists[k] = append([]string(nil), values...)
+		}
+	}
+	if len(branch.Output) > len(base.Output) {
+		dst.Output = append(dst.Output, branch.Output[len(base.Output):]...)
+	}
+	if len(branch.Events) > 0 {
+		dst.Events = append(dst.Events, branch.Events...)
+	}
+	dst.memoryWrites += branch.memoryWrites
+	dst.eventCount += branch.eventCount
+}
+
 func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 	if strings.TrimSpace(ev.Name) == "" {
 		return fmt.Errorf("physical event name required")
@@ -201,7 +246,9 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 		return err
 	}
 	atomic.AddUint64(&root.eventStats.dispatched, 1)
+	applyPhysicalEventFrame(f, ev)
 
+	matched := make([]string, 0, len(ids))
 	for _, id := range ids {
 		var handler *Memory
 		if e.speculative {
@@ -209,45 +256,84 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 		} else {
 			_, handler, err = root.resolveLocalFabricMemory(id)
 		}
-		if err != nil || !memoryMatchesPhysicalEvent(handler, ev, subjectTags) {
-			continue
-		}
-		f.Vars["__event"] = ev.Name
-		f.Vars["__event_id"] = ev.ID
-		f.Vars["__subject"] = ev.Subject
-		for k, v := range ev.Vars {
-			if !strings.HasPrefix(k, "__") {
-				f.Vars[k] = v
-			}
-		}
-		atomic.AddUint64(&root.eventStats.handlerRuns, 1)
-		atomic.AddUint64(&physicalEventHandlerRuns, 1)
-		if e.speculative {
-			if err := e.run(id, f); err != nil {
-				atomic.AddUint64(&physicalEventHandlerFailures, 1)
-				return err
-			}
-			continue
-		}
-		if f.Vars["__txn_canonical"] == "1" {
-			// The outer scheduler already owns the canonical lane. Do not re-enter
-			// Scheduler/commitMu here, but keep the root Engine as execution context
-			// so a handler in one passive shard can call/read/write sibling shards.
-			if _, _, er := root.resolveLocalFabricMemory(id); er != nil {
-				return er
-			}
-			if err := root.run(id, f); err != nil {
-				atomic.AddUint64(&physicalEventHandlerFailures, 1)
-				return err
-			}
-			continue
-		}
-		if err := globalTxnScheduler.run(root, id, f); err != nil {
-			atomic.AddUint64(&physicalEventHandlerFailures, 1)
-			return err
+		if err == nil && memoryMatchesPhysicalEvent(handler, ev, subjectTags) {
+			matched = append(matched, id)
 		}
 	}
-	return nil
+	if len(matched) == 0 {
+		return nil
+	}
+
+	// Speculative/canonical execution already owns an outer transaction lane.
+	// Keep nested dispatch serial to avoid re-entering physical commit machinery,
+	// but isolate failures so one Memory cannot suppress unrelated handlers.
+	if e.speculative || f.Vars["__txn_canonical"] == "1" || physicalConcurrency(0) <= 1 || len(matched) == 1 {
+		var errs []error
+		for _, id := range matched {
+			atomic.AddUint64(&root.eventStats.handlerRuns, 1)
+			atomic.AddUint64(&physicalEventHandlerRuns, 1)
+			var runErr error
+			if e.speculative {
+				runErr = e.run(id, f)
+			} else if f.Vars["__txn_canonical"] == "1" {
+				if _, _, er := root.resolveLocalFabricMemory(id); er != nil {
+					runErr = er
+				} else {
+					runErr = root.run(id, f)
+				}
+			} else {
+				runErr = globalTxnScheduler.run(root, id, f)
+			}
+			if runErr != nil {
+				atomic.AddUint64(&physicalEventHandlerFailures, 1)
+				errs = append(errs, fmt.Errorf("event handler %s: %w", id, runErr))
+			}
+		}
+		return errors.Join(errs...)
+	}
+
+	// Top-level independent handlers receive identical physical event frames and
+	// execute through the existing speculative scheduler. No semantic priority is
+	// introduced: concurrency is bounded only by the physical execution limit.
+	base := cloneFrame(f)
+	type handlerResult struct {
+		frame *Frame
+		err   error
+	}
+	results := make([]handlerResult, len(matched))
+	workers := physicalConcurrency(0)
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, id := range matched {
+		wg.Add(1)
+		go func(index int, memoryID string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			branch := cloneFrame(base)
+			atomic.AddUint64(&root.eventStats.handlerRuns, 1)
+			atomic.AddUint64(&physicalEventHandlerRuns, 1)
+			runErr := globalTxnScheduler.run(root, memoryID, branch)
+			if runErr != nil {
+				atomic.AddUint64(&physicalEventHandlerFailures, 1)
+			}
+			results[index] = handlerResult{frame: branch, err: runErr}
+		}(i, id)
+	}
+	wg.Wait()
+
+	var errs []error
+	// matched is already stable Memory-ID order. Merge only ephemeral Frame deltas
+	// in that order; Memory mutations were committed independently by Scheduler.
+	for i, id := range matched {
+		if results[i].frame != nil {
+			mergeIndependentEventFrame(f, base, results[i].frame)
+		}
+		if results[i].err != nil {
+			errs = append(errs, fmt.Errorf("event handler %s: %w", id, results[i].err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {

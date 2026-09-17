@@ -132,3 +132,10 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - AR-022 DONE: remaining CLI/daemon `topK` caller vocabulary was renamed to `pageCap`; architecture audit now scans callers as well as activation runtime sources.
 - Canonical seed SHA-256 is now `ab90e81cf7ca55cfa404a350b5f386aa231c3bab291b39a8bdc99dc73aa4647e`; regenerated `data/Memory.mem` SHA-256 is `c569121ae4835d313e2e66975db11f93c1edade4c2189b99f04a313170805e78`, still 99 Memories.
 - Validation: seed contract PASS; architecture audit PASS (132 Kernel opcodes / 99 Memory Programs audited); Memory.mem verify PASS; full direct `GO111MODULE=off go test ./Kernel/src` PASS; focused race for schema/physical runtime boundary PASS; no `go build` or release packaging.
+
+### Entry 033 — autonomous idle and independent event concurrency
+- Base HEAD: `4ca0ce1` (`Entry 032: repair Memory ABI and schema drift`).
+- AR-001: daemon now runs a configurable physical-only idle ticker (`MEMORYAI_IDLE_INTERVAL_MS`, default 1s). It emits only `event:idle`; all meaning, goals and cognition remain Memory-owned.
+- AR-005: top-level independent Event handlers execute concurrently through the existing speculative transaction scheduler, bounded by physical execution concurrency. Each handler gets the same physical event frame; ephemeral Frame deltas are merged deterministically in stable Memory-ID order.
+- Handler failure is isolated: one failing Memory no longer suppresses unrelated handlers. Errors are aggregated after all matched handlers finish. Nested speculative/canonical event dispatch remains serial to avoid re-entering commit lanes.
+- Fresh validation: RED tests first confirmed no autonomous idle, sibling suppression and speculative peak=1. GREEN focused tests PASS; focused `go test -race` PASS; repository layout, seed contract, architecture audit, Memory.mem verification and full direct `GO111MODULE=off go test ./Kernel/src` PASS. No `go build` or release packaging executed.

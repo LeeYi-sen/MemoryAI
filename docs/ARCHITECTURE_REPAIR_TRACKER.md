@@ -15,11 +15,11 @@
 
 | ID | Priority | Status | Issue | Primary area | Completion contract | Commit | Verification |
 |---|---|---|---|---|---|---|---|
-| AR-001 | P0 | OPEN | Daemon lacks autonomous idle heartbeat | `Kernel/src/daemon_runtime.go` | Add physical idle ticker that only emits idle; cadence is physical/configurable, cognition remains Memory-owned. | - | - |
+| AR-001 | P0 | DONE | Daemon lacks autonomous idle heartbeat | `Kernel/src/daemon_runtime.go` | Add physical idle ticker that only emits idle; cadence is physical/configurable, cognition remains Memory-owned. | Entry 033 | autonomous idle test PASS; focused race PASS; full go test PASS |
 | AR-002 | P0 | DONE | Memory seed uses obsolete opcodes | `Kernel/current-required-structures.json; Kernel/src/*` | Migrate cognition_concurrency_set, cognition_stats, mesh_route_cognition to current physical ABI without moving policy into Kernel. | Entry 032 | architecture audit PASS; full go test PASS; focused race PASS |
 | AR-003 | P0 | OPEN | Pending external requests have no physical executor | `Kernel/src/source_adapter_runtime.go; daemon/event runtime` | Consume io.external.request.pending, execute adapter, persist done state, emit external.response/action.response. | - | - |
 | AR-004 | P0 | OPEN | Source adapter tags do not match Memory selectors | `Kernel/src/source_adapter_runtime.go; current seed` | Align generic physical adapter metadata with Memory-owned enabled/action selection. | - | - |
-| AR-005 | P0 | OPEN | Event cognition handlers are serialized/fail-fast | `Kernel/src/event_runtime.go; scheduler runtime` | Run independent handlers concurrently where physically safe and isolate one handler failure from unrelated cognition chains. | - | - |
+| AR-005 | P0 | DONE | Event cognition handlers are serialized/fail-fast | `Kernel/src/event_runtime.go; scheduler runtime` | Run independent handlers concurrently where physically safe and isolate one handler failure from unrelated cognition chains. | Entry 033 | failure isolation + parallel peak tests PASS; focused race PASS; full go test PASS |
 | AR-006 | P1 | OPEN | v31 semantic event graph is disconnected | `Kernel/current-required-structures.json` | Connect live Experience/semantic events without hard-coded language semantics in Kernel. | - | - |
 | AR-007 | P0 | DONE | Semantic Memories miss event.emit capability | `Kernel/current-required-structures.json` | Add required capabilities and permanent capability audit. | Entry 032 | 99-Memory capability audit PASS |
 | AR-008 | P1 | OPEN | Natural-language reply path is incomplete | `Current seed; daemon response boundary` | Close cognition -> expression frame -> learned surface rendering -> reply result. | - | - |
@@ -70,3 +70,5 @@ AR-020 -> AR-021. Remove remaining cognition-shaped namespace/policy leakage fro
 - 2026-09-17: Tracker created from the complete post-Entry-029 audit. All 26 confirmed items start as `OPEN`; implementation begins with Batch A.
 - 2026-09-17 / Entry 031: AR-023 and AR-024 DONE. Audit now validates every Memory opcode against `execPrimitive` and every privileged opcode against declared capability. Live audit correctly blocks the still-open AR-002/AR-007 drift.
 - 2026-09-17 / Entry 032: AR-002, AR-007, AR-013 and AR-022 DONE. Current seed uses only supported physical opcodes, semantic emitters declare `event.emit`, executable contract fields round-trip through Kernel Memory schema, lifecycle reads generic physical handler counters, and activation caller vocabulary is pageCap-only.
+
+- 2026-09-17 / Entry 033: AR-001 and AR-005 DONE. Daemon now emits configurable physical idle ticks autonomously; top-level independent Event handlers run concurrently through the physical speculative scheduler, handler errors are aggregated after unrelated handlers finish, and nested canonical/speculative dispatch remains serial for physical safety.

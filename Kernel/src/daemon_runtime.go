@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 type daemonRequest struct {
@@ -25,6 +26,35 @@ type daemonResponse struct {
 }
 
 var daemonConnections uint64
+
+const defaultDaemonIdleInterval = time.Second
+
+func daemonIdleInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_IDLE_INTERVAL_MS"))
+	if raw == "" {
+		return defaultDaemonIdleInterval
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 1 {
+		return defaultDaemonIdleInterval
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func (e *Engine) runPhysicalIdleTicker(stop <-chan struct{}) {
+	ticker := time.NewTicker(daemonIdleInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			// The ticker is a physical clock only. What idle means and which
+			// cognition runs are entirely selected by executable Memory triggers.
+			_ = e.fireEvent("idle", "", newFrame())
+		case <-stop:
+			return
+		}
+	}
+}
 
 func runDaemonClient(socket string, args []string) error {
 	if strings.TrimSpace(socket) == "" {
@@ -230,6 +260,10 @@ func (e *Engine) runDaemon(socket string) error {
 	if err := os.Chmod(socket, 0600); err != nil {
 		return err
 	}
+
+	idleStop := make(chan struct{})
+	go e.runPhysicalIdleTicker(idleStop)
+	defer close(idleStop)
 
 	for {
 		c, err := ln.Accept()
