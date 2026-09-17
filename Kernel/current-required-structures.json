@@ -4760,6 +4760,14 @@
           "code": "memory_copy"
         },
         {
+          "code": "memory_history_append",
+          "a": "{{ef_sid}}",
+          "b": "{{ef_var}}",
+          "args": {
+            "field": "mutation_variants"
+          }
+        },
+        {
           "a": "{{ef_var}}",
           "b": "mutation_parent",
           "c": "{{ef_sid}}",
@@ -4852,7 +4860,7 @@
           "code": "label"
         }
       ],
-      "revision": 4,
+      "revision": 5,
       "tags": [
         "memory",
         "cog.self-evolution",
@@ -4860,6 +4868,174 @@
       ],
       "trigger": [
         "event:structure.feedback"
+      ]
+    },
+    {
+      "id": "evolution.fission.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Memory-owned executable fission: derive two child variants by deleting opposite program boundaries from one executable parent.",
+      "tags": [
+        "memory",
+        "cog.evolution",
+        "cog.fission",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "program.mutate",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:structure.fission.request"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "efi_parent",
+          "b": "__event.parent_id"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "efi_none",
+          "b": "{{efi_parent}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{efi_none}}",
+          "b": "efi_end"
+        },
+        {
+          "code": "program_len",
+          "a": "{{efi_parent}}",
+          "b": "efi_n"
+        },
+        {
+          "code": "cmp_ge",
+          "a": "efi_enough",
+          "b": "{{efi_n}}",
+          "c": "2"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{efi_enough}}",
+          "b": "efi_make"
+        },
+        {
+          "code": "jump",
+          "a": "efi_end"
+        },
+        {
+          "code": "label",
+          "a": "efi_make"
+        },
+        {
+          "code": "memory_copy",
+          "a": "efi_left",
+          "b": "{{efi_parent}}",
+          "args": {
+            "layer": "emergent",
+            "tags": "cog.evolution.variant,cog.evolution.fission,cog.evolvable"
+          }
+        },
+        {
+          "code": "memory_copy",
+          "a": "efi_right",
+          "b": "{{efi_parent}}",
+          "args": {
+            "layer": "emergent",
+            "tags": "cog.evolution.variant,cog.evolution.fission,cog.evolvable"
+          }
+        },
+        {
+          "code": "program_delete",
+          "a": "{{efi_left}}",
+          "b": "0"
+        },
+        {
+          "code": "num_sub",
+          "a": "efi_last",
+          "b": "{{efi_n}}",
+          "c": "1"
+        },
+        {
+          "code": "program_delete",
+          "a": "{{efi_right}}",
+          "b": "{{efi_last}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{efi_left}}",
+          "b": "fission_parent",
+          "c": "{{efi_parent}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{efi_right}}",
+          "b": "fission_parent",
+          "c": "{{efi_parent}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{efi_left}}",
+          "b": "fission_branch",
+          "c": "left"
+        },
+        {
+          "code": "state_set",
+          "a": "{{efi_right}}",
+          "b": "fission_branch",
+          "c": "right"
+        },
+        {
+          "code": "memory_history_append",
+          "a": "{{efi_parent}}",
+          "b": "{{efi_left}}",
+          "args": {
+            "field": "mutation_variants"
+          }
+        },
+        {
+          "code": "memory_history_append",
+          "a": "{{efi_parent}}",
+          "b": "{{efi_right}}",
+          "args": {
+            "field": "mutation_variants"
+          }
+        },
+        {
+          "code": "copy",
+          "a": "fission_left_id",
+          "b": "efi_left"
+        },
+        {
+          "code": "copy",
+          "a": "fission_right_id",
+          "b": "efi_right"
+        },
+        {
+          "code": "emit_event",
+          "a": "structure.fissioned",
+          "b": "{{efi_left}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "structure.fissioned",
+          "b": "{{efi_right}}"
+        },
+        {
+          "code": "label",
+          "a": "efi_end"
+        }
       ]
     },
     {
@@ -5065,6 +5241,139 @@
       ]
     },
     {
+      "id": "evolution.recombine.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Memory-owned executable recombination: copy one executable parent and splice a bounded program fragment from another using generic VM structure primitives.",
+      "tags": [
+        "memory",
+        "cog.evolution",
+        "cog.recombination",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "program.mutate",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:structure.recombine.request"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "er_a",
+          "b": "__event.parent_a"
+        },
+        {
+          "code": "copy",
+          "a": "er_b",
+          "b": "__event.parent_b"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "er_noa",
+          "b": "{{er_a}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{er_noa}}",
+          "b": "er_end"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "er_nob",
+          "b": "{{er_b}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{er_nob}}",
+          "b": "er_end"
+        },
+        {
+          "code": "memory_copy",
+          "a": "er_child",
+          "b": "{{er_a}}",
+          "args": {
+            "layer": "emergent",
+            "tags": "cog.evolution.variant,cog.evolution.recombined,cog.evolvable"
+          }
+        },
+        {
+          "code": "program_len",
+          "a": "{{er_child}}",
+          "b": "er_insert"
+        },
+        {
+          "code": "program_insert_from",
+          "a": "{{er_child}}",
+          "b": "{{er_insert}}",
+          "c": "{{er_b}}",
+          "args": {
+            "start": "0",
+            "count": "1"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{er_child}}",
+          "b": "recombination_parent_a",
+          "c": "{{er_a}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{er_child}}",
+          "b": "recombination_parent_b",
+          "c": "{{er_b}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{er_child}}",
+          "b": "mutation_strategy",
+          "c": "program-fragment-recombination"
+        },
+        {
+          "code": "memory_history_append",
+          "a": "{{er_a}}",
+          "b": "{{er_child}}",
+          "args": {
+            "field": "mutation_variants"
+          }
+        },
+        {
+          "code": "memory_history_append",
+          "a": "{{er_b}}",
+          "b": "{{er_child}}",
+          "args": {
+            "field": "mutation_variants"
+          }
+        },
+        {
+          "code": "copy",
+          "a": "recombined_id",
+          "b": "er_child"
+        },
+        {
+          "code": "emit_event",
+          "a": "structure.recombined",
+          "b": "{{er_child}}"
+        },
+        {
+          "code": "label",
+          "a": "er_end"
+        }
+      ]
+    },
+    {
       "budget": {
         "max_alloc_bytes": 16777216,
         "max_cpu_us": 300000,
@@ -5162,6 +5471,210 @@
       "trigger": [
         "event:research.feedback",
         "subject_tag:cog.research.feedback"
+      ]
+    },
+    {
+      "id": "execution.outcome.record.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Turn explicit structure feedback into durable Memory-owned success/failure history; physical RuntimeExecCount is never treated as success.",
+      "tags": [
+        "memory",
+        "cog.execution.outcome",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:structure.feedback"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "eo_sid",
+          "b": "__event.structure_id"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "eo_none",
+          "b": "{{eo_sid}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{eo_none}}",
+          "b": "eo_end"
+        },
+        {
+          "code": "copy",
+          "a": "eo_gain",
+          "b": "__event.gain"
+        },
+        {
+          "code": "var_default",
+          "a": "eo_gain",
+          "b": "0"
+        },
+        {
+          "code": "copy",
+          "a": "eo_cost",
+          "b": "__event.cost"
+        },
+        {
+          "code": "var_default",
+          "a": "eo_cost",
+          "b": "0"
+        },
+        {
+          "code": "num_sub",
+          "a": "eo_net",
+          "b": "{{eo_gain}}",
+          "c": "{{eo_cost}}"
+        },
+        {
+          "code": "state_get",
+          "a": "policy.execution.outcome",
+          "b": "success_net_min",
+          "c": "eo_min"
+        },
+        {
+          "code": "cmp_ge",
+          "a": "eo_ok",
+          "b": "{{eo_net}}",
+          "c": "{{eo_min}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{eo_ok}}",
+          "b": "eo_success"
+        },
+        {
+          "code": "memory_new",
+          "a": "eo_rec",
+          "args": {
+            "content": "Memory-owned failed execution outcome derived from explicit structure feedback.",
+            "layer": "acquired",
+            "parents": "{{eo_sid}},execution.outcome.record.parent",
+            "tags": "memory,cog.execution.outcome,cog.execution.outcome.failure"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "structure_id",
+          "c": "{{eo_sid}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "gain",
+          "c": "{{eo_gain}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "cost",
+          "c": "{{eo_cost}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "net",
+          "c": "{{eo_net}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "outcome",
+          "c": "failure"
+        },
+        {
+          "code": "memory_history_append",
+          "a": "{{eo_sid}}",
+          "b": "{{eo_rec}}",
+          "args": {
+            "field": "failure_history"
+          }
+        },
+        {
+          "code": "jump",
+          "a": "eo_emit"
+        },
+        {
+          "code": "label",
+          "a": "eo_success"
+        },
+        {
+          "code": "memory_new",
+          "a": "eo_rec",
+          "args": {
+            "content": "Memory-owned successful execution outcome derived from explicit structure feedback.",
+            "layer": "acquired",
+            "parents": "{{eo_sid}},execution.outcome.record.parent",
+            "tags": "memory,cog.execution.outcome,cog.execution.outcome.success"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "structure_id",
+          "c": "{{eo_sid}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "gain",
+          "c": "{{eo_gain}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "cost",
+          "c": "{{eo_cost}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "net",
+          "c": "{{eo_net}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{eo_rec}}",
+          "b": "outcome",
+          "c": "success"
+        },
+        {
+          "code": "memory_history_append",
+          "a": "{{eo_sid}}",
+          "b": "{{eo_rec}}",
+          "args": {
+            "field": "success_history"
+          }
+        },
+        {
+          "code": "label",
+          "a": "eo_emit"
+        },
+        {
+          "code": "emit_event",
+          "a": "structure.outcome.recorded",
+          "b": "{{eo_rec}}"
+        },
+        {
+          "code": "label",
+          "a": "eo_end"
+        }
       ]
     },
     {
@@ -8000,6 +8513,453 @@
       ]
     },
     {
+      "id": "memory.fusion.decide.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Apply mutable Memory-owned policy to a physically evaluated fusion candidate.",
+      "tags": [
+        "memory",
+        "cog.memory.fusion",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:memory.fusion.evaluated",
+        "subject_tag:cog.memory.fusion.candidate"
+      ],
+      "program": [
+        {
+          "code": "state_get",
+          "a": "policy.memory.fusion",
+          "b": "enabled",
+          "c": "fdec_enabled"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "fdec_yes",
+          "b": "{{fdec_enabled}}",
+          "c": "1"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{fdec_yes}}",
+          "b": "fdec_approve"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "approved",
+          "c": "0"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "denied"
+        },
+        {
+          "code": "jump",
+          "a": "fdec_emit"
+        },
+        {
+          "code": "label",
+          "a": "fdec_approve"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "approved",
+          "c": "1"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "approved"
+        },
+        {
+          "code": "label",
+          "a": "fdec_emit"
+        },
+        {
+          "code": "emit_event",
+          "a": "memory.fusion.decided",
+          "b": "{{__subject}}"
+        }
+      ]
+    },
+    {
+      "id": "memory.fusion.discover.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Discover an explicit Memory-body fusion candidate without deciding whether to merge it.",
+      "tags": [
+        "memory",
+        "cog.memory.fusion",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:memory.fusion.request"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "fd_source",
+          "b": "__event.source_path"
+        },
+        {
+          "code": "copy",
+          "a": "fd_target",
+          "b": "__event.target_path"
+        },
+        {
+          "code": "var_default",
+          "a": "fd_target",
+          "b": "primary"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "fd_none",
+          "b": "{{fd_source}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{fd_none}}",
+          "b": "fd_end"
+        },
+        {
+          "code": "memory_new",
+          "a": "fd_candidate",
+          "args": {
+            "content": "Explicit Memory-body fusion candidate awaiting Memory-owned evaluation and decision.",
+            "layer": "emergent",
+            "parents": "memory.fusion.discover.parent",
+            "tags": "memory,cog.memory.fusion.candidate"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{fd_candidate}}",
+          "b": "source_path",
+          "c": "{{fd_source}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{fd_candidate}}",
+          "b": "target_path",
+          "c": "{{fd_target}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{fd_candidate}}",
+          "b": "status",
+          "c": "discovered"
+        },
+        {
+          "code": "copy",
+          "a": "fusion_candidate_id",
+          "b": "fd_candidate"
+        },
+        {
+          "code": "emit_event",
+          "a": "memory.fusion.discovered",
+          "b": "{{fd_candidate}}"
+        },
+        {
+          "code": "label",
+          "a": "fd_end"
+        }
+      ]
+    },
+    {
+      "id": "memory.fusion.evaluate.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Evaluate only physical reachability of a fusion candidate; no conflict winner or semantic preference is chosen.",
+      "tags": [
+        "memory",
+        "cog.memory.fusion",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "storage.manage",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:memory.fusion.discovered",
+        "subject_tag:cog.memory.fusion.candidate"
+      ],
+      "program": [
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "source_path",
+          "c": "fe_source"
+        },
+        {
+          "code": "space_mount",
+          "a": "{{fe_source}}",
+          "b": "fe_mounted"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "mounted_source",
+          "c": "{{fe_mounted}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "evaluated"
+        },
+        {
+          "code": "emit_event",
+          "a": "memory.fusion.evaluated",
+          "b": "{{__subject}}"
+        }
+      ]
+    },
+    {
+      "id": "memory.fusion.execute.parent",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Execute an approved Memory-body fusion physically, preserve divergent identities as opaque conflict evidence, and return resolution to Memory.",
+      "tags": [
+        "memory",
+        "cog.memory.fusion",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "memory.write",
+        "storage.manage",
+        "persist",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 67108864,
+        "max_cpu_us": 2000000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 134217728,
+        "max_memory_writes": 1024,
+        "max_ops": 6000
+      },
+      "trigger": [
+        "event:memory.fusion.decided",
+        "subject_tag:cog.memory.fusion.candidate"
+      ],
+      "program": [
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "approved",
+          "c": "fx_approved"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "fx_yes",
+          "b": "{{fx_approved}}",
+          "c": "1"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{fx_yes}}",
+          "b": "fx_run"
+        },
+        {
+          "code": "jump",
+          "a": "fx_end"
+        },
+        {
+          "code": "label",
+          "a": "fx_run"
+        },
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "mounted_source",
+          "c": "fx_source"
+        },
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "target_path",
+          "c": "fx_target"
+        },
+        {
+          "code": "space_merge",
+          "a": "{{fx_source}}",
+          "b": "{{fx_target}}",
+          "c": "fx_result"
+        },
+        {
+          "code": "json_get",
+          "a": "{{fx_result}}",
+          "b": "copied",
+          "c": "fx_copied"
+        },
+        {
+          "code": "json_get",
+          "a": "{{fx_result}}",
+          "b": "duplicates",
+          "c": "fx_duplicates"
+        },
+        {
+          "code": "json_get",
+          "a": "{{fx_result}}",
+          "b": "conflicts",
+          "c": "fx_conflicts"
+        },
+        {
+          "code": "json_get",
+          "a": "{{fx_result}}",
+          "b": "conflict_records",
+          "c": "fx_records"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "merge_result",
+          "c": "{{fx_result}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "copied",
+          "c": "{{fx_copied}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "duplicates",
+          "c": "{{fx_duplicates}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "conflicts",
+          "c": "{{fx_conflicts}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "conflict_records",
+          "c": "{{fx_records}}"
+        },
+        {
+          "code": "persist"
+        },
+        {
+          "code": "space_unmount",
+          "a": "{{fx_source}}",
+          "b": "fx_unmounted"
+        },
+        {
+          "code": "cmp_gt",
+          "a": "fx_has_conflict",
+          "b": "{{fx_conflicts}}",
+          "c": "0"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{fx_has_conflict}}",
+          "b": "fx_conflict"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "fused"
+        },
+        {
+          "code": "emit_event",
+          "a": "memory.fusion.completed",
+          "b": "{{__subject}}"
+        },
+        {
+          "code": "jump",
+          "a": "fx_end"
+        },
+        {
+          "code": "label",
+          "a": "fx_conflict"
+        },
+        {
+          "code": "memory_new",
+          "a": "fx_conflict_mem",
+          "args": {
+            "content": "Opaque divergent Memory-body records preserved for later Memory-owned reconciliation.",
+            "layer": "emergent",
+            "parents": "{{__subject}},memory.fusion.execute.parent",
+            "tags": "memory,cog.memory.fusion.conflict"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{fx_conflict_mem}}",
+          "b": "fusion_candidate_id",
+          "c": "{{__subject}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{fx_conflict_mem}}",
+          "b": "conflict_records",
+          "c": "{{fx_records}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "conflict-preserved"
+        },
+        {
+          "code": "emit_event",
+          "a": "memory.fusion.conflict",
+          "b": "{{fx_conflict_mem}}"
+        },
+        {
+          "code": "label",
+          "a": "fx_end"
+        }
+      ]
+    },
+    {
       "capabilities": [
         "memory.read",
         "memory.write",
@@ -9960,6 +10920,22 @@
       ]
     },
     {
+      "id": "policy.execution.outcome",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Memory-owned policy for classifying explicit structure feedback into durable success/failure outcome history.",
+      "tags": [
+        "memory",
+        "cog.policy.mutable",
+        "cog.execution.outcome",
+        "cog.evolvable"
+      ],
+      "state": {
+        "success_net_min": "0.000001"
+      }
+    },
+    {
       "budget": {
         "max_alloc_bytes": 16777216,
         "max_cpu_us": 300000,
@@ -10924,6 +11900,23 @@
         "cog.evolvable",
         "cog.evolvable.role.memory-fabric"
       ]
+    },
+    {
+      "id": "policy.memory.fusion",
+      "layer": "emergent",
+      "generation": 36,
+      "revision": 1,
+      "content": "Memory-owned policy for explicit Memory-body fusion requests. Kernel supplies only physical body operations and conflict evidence.",
+      "tags": [
+        "memory",
+        "cog.policy.mutable",
+        "cog.memory.fusion",
+        "cog.evolvable"
+      ],
+      "state": {
+        "enabled": "1",
+        "request_mode": "explicit"
+      }
     },
     {
       "content": "Memory-owned adaptive policy; values are hypotheses revised by outcomes and cognitive credit.",

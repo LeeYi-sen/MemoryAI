@@ -71,6 +71,9 @@ type Memory struct {
 	Executable       bool           `json:"executable,omitempty"`
 	InputPattern     map[string]any `json:"input_pattern,omitempty"`
 	OutputEffect     map[string]any `json:"output_effect,omitempty"`
+	SuccessHistory   []string       `json:"success_history,omitempty"`
+	FailureHistory   []string       `json:"failure_history,omitempty"`
+	MutationVariants []string       `json:"mutation_variants,omitempty"`
 	Trigger          []string       `json:"trigger,omitempty"`
 	Capabilities     []string       `json:"capabilities,omitempty"`
 	CapabilitySig    string         `json:"capability_sig,omitempty"`
@@ -1924,6 +1927,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		child.Generation = parent.Generation + 1
 		child.Parents = []string{parent.ID}
+		child.SuccessHistory = nil
+		child.FailureHistory = nil
+		child.MutationVariants = nil
 		child.RuntimeExecCount = 0
 		child.CreatedUnix = time.Now().Unix()
 		child.Revision = parent.Revision + 1
@@ -1939,6 +1945,41 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		f.memoryWrites++
 		f.Vars[op.A] = child.ID
+	case "memory_history_append":
+		target, err := e.resolveMutable(x(op.A))
+		if err != nil {
+			return -1, err
+		}
+		owner := e.ownerOf(target.ID)
+		if owner == nil {
+			return -1, fmt.Errorf("mutable owner unavailable: %s", target.ID)
+		}
+		value := strings.TrimSpace(x(op.B))
+		field := strings.TrimSpace(x(op.Args["field"]))
+		if value == "" {
+			break
+		}
+		owner.dataMu.Lock()
+		var dst *[]string
+		switch field {
+		case "success_history":
+			dst = &target.SuccessHistory
+		case "failure_history":
+			dst = &target.FailureHistory
+		case "mutation_variants":
+			dst = &target.MutationVariants
+		default:
+			owner.dataMu.Unlock()
+			return -1, fmt.Errorf("unknown Memory history field %q", field)
+		}
+		if !contains(*dst, value) {
+			*dst = append(*dst, value)
+			target.Revision++
+			owner.dirty = true
+			owner.dirtyIDs[target.ID] = true
+			f.memoryWrites++
+		}
+		owner.dataMu.Unlock()
 	case "memory_tag_add":
 		target, err := e.resolveMutable(x(op.A))
 		if err != nil {
@@ -2936,7 +2977,8 @@ func structuralMemoryEqual(a, b *Memory) bool {
 	if a == nil || b == nil || a.ID != b.ID || a.Layer != b.Layer || a.Generation != b.Generation || a.Content != b.Content || a.Executable != b.Executable {
 		return false
 	}
-	if !sameStrings(a.Parents, b.Parents) || !sameStrings(a.Tags, b.Tags) || !sameStrings(a.Trigger, b.Trigger) || !sameStrings(a.Capabilities, b.Capabilities) || !sameProgram(a.Program, b.Program) {
+	if !sameStrings(a.Parents, b.Parents) || !sameStrings(a.Tags, b.Tags) || !sameStrings(a.Trigger, b.Trigger) || !sameStrings(a.Capabilities, b.Capabilities) || !sameProgram(a.Program, b.Program) ||
+		!sameStrings(a.SuccessHistory, b.SuccessHistory) || !sameStrings(a.FailureHistory, b.FailureHistory) || !sameStrings(a.MutationVariants, b.MutationVariants) {
 		return false
 	}
 	ab, _ := json.Marshal(struct {
@@ -3020,7 +3062,7 @@ func (e *Engine) importMemory(in *Memory, dst *Engine, mode string) (string, str
 	return q.ID, "imported", nil
 }
 
-func (e *Engine) mergeSpace(source, target string) (map[string]int, error) {
+func (e *Engine) mergeSpace(source, target string) (map[string]any, error) {
 	cp, err := e.mountSpace(source)
 	if err != nil {
 		return nil, err
@@ -3036,25 +3078,41 @@ func (e *Engine) mergeSpace(source, target string) (map[string]int, error) {
 		}
 		dst = e.spaces[tp]
 	}
+	if src == dst {
+		return nil, errors.New("space_merge source and target must differ")
+	}
 	ms, err := src.allMemories()
 	if err != nil {
 		return nil, err
 	}
-	stat := map[string]int{"copied": 0, "reconciled": 0, "conflicts": 0}
+	stat := map[string]any{"copied": 0, "duplicates": 0, "conflicts": 0, "conflict_ids": []string{}, "conflict_records": []map[string]string{}}
+	conflictIDs := []string{}
+	conflictRecords := []map[string]string{}
 	for _, m := range ms {
-		_, status, er := e.importMemory(m, dst, "reconcile")
-		if er != nil {
+		existing, er := dst.resolveIDLocal(m.ID)
+		if er == nil && existing != nil {
+			if memoryJSONDigest(existing) == memoryJSONDigest(m) {
+				stat["duplicates"] = stat["duplicates"].(int) + 1
+				continue
+			}
+			stat["conflicts"] = stat["conflicts"].(int) + 1
+			conflictIDs = append(conflictIDs, m.ID)
+			sourceJSON, _ := json.Marshal(m)
+			targetJSON, _ := json.Marshal(existing)
+			conflictRecords = append(conflictRecords, map[string]string{
+				"id": m.ID, "source_json": string(sourceJSON), "target_json": string(targetJSON),
+				"source_digest": memoryJSONDigest(m), "target_digest": memoryJSONDigest(existing),
+			})
+			continue
+		}
+		if er != nil && er != io.EOF {
 			return nil, er
 		}
-		switch status {
-		case "imported":
-			stat["copied"]++
-		case "reconciled":
-			stat["reconciled"]++
-		case "conflict-preserved":
-			stat["conflicts"]++
-		}
+		dst.addRuntimeMemory(copyMemory(m))
+		stat["copied"] = stat["copied"].(int) + 1
 	}
+	stat["conflict_ids"] = conflictIDs
+	stat["conflict_records"] = conflictRecords
 	return stat, nil
 }
 
