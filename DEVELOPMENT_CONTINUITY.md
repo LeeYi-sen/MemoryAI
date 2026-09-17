@@ -110,3 +110,9 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Development workflow explicitly changed to direct tests/no release compilation: no `go build`, no Kernel binary generation, no release packaging. CI retains direct `go test` / targeted race tests and architecture/source/Memory validation.
 - Fresh direct validation during this entry: repository-layout tests PASS; direct seed contract PASS; `Memory.mem --verify-only` PASS; architecture audit PASS; gofmt clean; full `GO111MODULE=off go test ./Kernel/src` PASS. No new release Gate is claimed.
 - Architecture audit identified the open drift list recorded above; these findings are not silently treated as fixed. Subsequent development must close them from current Git `main`, with Memory-owned cognition preserved.
+### Entry 030 — live architecture repair tracker
+- Base HEAD: `35092d85314afe2bccabde28c314ef04165608ba` (`Entry 029: switch to direct-source development baseline`).
+- Added `docs/ARCHITECTURE_REPAIR_TRACKER.md` as the live source-of-truth for the 26 confirmed architecture drift/unfinished items from the Entry 029 audit.
+- Every repair commit must update the tracker status/commit/verification fields and this continuity file atomically.
+- Repair order is dependency-driven: permanent ABI/capability gates first, then autonomous runtime, external evidence, semantic reply loop, self-growth/body fusion, Sovereign Mesh, and remaining Kernel boundary cleanup.
+- Development remains direct-test only: no `go build`, Kernel binary generation or release packaging.
