@@ -123,3 +123,12 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - AR-024 DONE: the audit parses Kernel `privilegedOpCapability` and fails when a Memory Program uses a privileged opcode without the matching declared capability (or `kernel.admin`).
 - TDD evidence: both regression tests first failed because the old audit returned success; after the Gate implementation both pass. The live audit now intentionally fails on the still-open obsolete-opcode drift, proving the Gate is active.
 - No `go build` or release packaging was run.
+
+### Entry 032 — repair current Memory ABI/schema/capability drift
+- Base HEAD: `f340cb03fa303e52b5215b1645837ca0fea147d6` (Entry 031 ABI Gates).
+- AR-002 DONE: migrated `cognition_concurrency_set` -> `physical_execution_concurrency_set`, `mesh_route_cognition` -> `mesh_route_execution`, and `cognition_stats` -> `physical_runtime_stats`. Lifecycle Memory now consumes generic `event_handler_runs` / `event_handler_failures`; Kernel supplies only physical counters.
+- AR-007 DONE: every current Memory Program that emits an event now declares `event.emit`; the new full-seed capability Gate passes.
+- AR-013 DONE: Kernel `Memory` now round-trips `executable`, `input_pattern`, and `output_effect`; structural equality includes these executable contract fields.
+- AR-022 DONE: remaining CLI/daemon `topK` caller vocabulary was renamed to `pageCap`; architecture audit now scans callers as well as activation runtime sources.
+- Canonical seed SHA-256 is now `ab90e81cf7ca55cfa404a350b5f386aa231c3bab291b39a8bdc99dc73aa4647e`; regenerated `data/Memory.mem` SHA-256 is `c569121ae4835d313e2e66975db11f93c1edade4c2189b99f04a313170805e78`, still 99 Memories.
+- Validation: seed contract PASS; architecture audit PASS (132 Kernel opcodes / 99 Memory Programs audited); Memory.mem verify PASS; full direct `GO111MODULE=off go test ./Kernel/src` PASS; focused race for schema/physical runtime boundary PASS; no `go build` or release packaging.

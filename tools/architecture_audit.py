@@ -151,6 +151,9 @@ def audit() -> dict[str, object]:
     )
     if re.search(r"\b(?:Score|topK)\b", activation_sources):
         raise RuntimeError("physical activation retains cognitive-shaped Score/topK identifier")
+    activation_callers = daemon + "\n" + read("Kernel/src/kernel.go")
+    if re.search(r"\btopK\b", activation_callers):
+        raise RuntimeError("physical activation caller retains cognitive-shaped topK identifier")
 
     remote = read("Kernel/src/remote_durability_runtime.go")
     require(remote, ["physicalMemoryWithJournal", "readMutationJournal", "persistEngineIncremental(dst)", "persistEngineIncremental(owner)"], "remote durability")

@@ -31,6 +31,8 @@ type eventRuntimeStats struct {
 }
 
 var physicalEventSequence uint64
+var physicalEventHandlerRuns uint64
+var physicalEventHandlerFailures uint64
 
 func newPhysicalEvent(name, subject string, vars map[string]string) PhysicalEvent {
 	copyVars := map[string]string{}
@@ -219,8 +221,10 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 			}
 		}
 		atomic.AddUint64(&root.eventStats.handlerRuns, 1)
+		atomic.AddUint64(&physicalEventHandlerRuns, 1)
 		if e.speculative {
 			if err := e.run(id, f); err != nil {
+				atomic.AddUint64(&physicalEventHandlerFailures, 1)
 				return err
 			}
 			continue
@@ -233,11 +237,13 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 				return er
 			}
 			if err := root.run(id, f); err != nil {
+				atomic.AddUint64(&physicalEventHandlerFailures, 1)
 				return err
 			}
 			continue
 		}
 		if err := globalTxnScheduler.run(root, id, f); err != nil {
+			atomic.AddUint64(&physicalEventHandlerFailures, 1)
 			return err
 		}
 	}

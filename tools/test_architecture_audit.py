@@ -59,6 +59,16 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unsupported Memory opcode"):
             self.run_audit(repo)
 
+    def test_rejects_topk_vocabulary_in_activation_callers(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        payload = normalized_seed_copy(repo)
+        (repo / "Kernel/current-required-structures.json").write_text(json.dumps(payload), encoding="utf-8")
+        daemon = repo / "Kernel/src/daemon_runtime.go"
+        daemon.write_text(daemon.read_text(encoding="utf-8") + "\nvar topK int\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "topK"):
+            self.run_audit(repo)
+
     def test_rejects_privileged_opcode_without_declared_capability(self):
         tmp, repo = self.with_repo()
         self.addCleanup(tmp.cleanup)

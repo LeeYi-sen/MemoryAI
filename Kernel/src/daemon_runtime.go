@@ -179,14 +179,14 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if len(args) < 1 {
 			return fail(errors.New("activate requires exact stimulus"))
 		}
-		topK := 0
+		pageCap := 0
 		if len(args) > 1 {
-			topK, _ = strconv.Atoi(args[1])
+			pageCap, _ = strconv.Atoi(args[1])
 		}
 		if err := globalActivationRuntime.Build(e); err != nil {
 			return fail(err)
 		}
-		res, err := globalActivationRuntime.Activate(e, args[0], topK)
+		res, err := globalActivationRuntime.Activate(e, args[0], pageCap)
 		if err != nil {
 			return fail(err)
 		}

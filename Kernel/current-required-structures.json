@@ -11410,7 +11410,7 @@
           },
           "b": "md_node",
           "c": "md_frame",
-          "code": "mesh_route_cognition"
+          "code": "mesh_route_execution"
         },
         {
           "a": "{{__subject}}",
@@ -11706,24 +11706,24 @@
       "capabilities": [
         "memory.write"
       ],
-      "content": "Memory decides whether a physical restart is warranted from observed cognition health and mutable lifecycle policy; Kernel supplies counters only.",
+      "content": "Memory decides whether a physical restart is warranted from generic runtime handler health and mutable lifecycle policy; Kernel supplies physical counters only.",
       "generation": 26,
       "id": "self.lifecycle.decide.parent",
       "layer": "inherited",
       "program": [
         {
           "a": "ld_json",
-          "code": "cognition_stats"
+          "code": "physical_runtime_stats"
         },
         {
           "a": "{{ld_json}}",
-          "b": "ticks",
+          "b": "event_handler_runs",
           "c": "ld_ticks",
           "code": "json_get"
         },
         {
           "a": "{{ld_json}}",
-          "b": "failures",
+          "b": "event_handler_failures",
           "c": "ld_fail",
           "code": "json_get"
         },
@@ -12021,7 +12021,7 @@
         },
         {
           "a": "{{pr_t}}",
-          "code": "cognition_concurrency_set"
+          "code": "physical_execution_concurrency_set"
         },
         {
           "a": "pr_end",
@@ -12033,7 +12033,7 @@
         },
         {
           "a": "{{pr_min}}",
-          "code": "cognition_concurrency_set"
+          "code": "physical_execution_concurrency_set"
         },
         {
           "a": "pr_end",
@@ -15667,6 +15667,7 @@
     },
     {
       "capabilities": [
+        "event.emit",
         "memory.write"
       ],
       "content": "Convert repeated raw surface observations into mutable Memory-owned grounding structures.",
@@ -16064,6 +16065,7 @@
     },
     {
       "capabilities": [
+        "event.emit",
         "memory.write"
       ],
       "content": "Induce and stabilize predicate relations from repeated grounded observations.",
@@ -16360,6 +16362,7 @@
     },
     {
       "capabilities": [
+        "event.emit",
         "memory.write"
       ],
       "content": "Resolve interaction roles through learned surface grounding instead of hard-coded language rules.",
@@ -16465,6 +16468,7 @@
     },
     {
       "capabilities": [
+        "event.emit",
         "memory.write"
       ],
       "content": "Project a stable relation into a semantic output frame; natural-language rendering remains Memory/presentation owned.",

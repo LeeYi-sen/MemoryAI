@@ -227,9 +227,11 @@ func parallelRuntimeJSON() string {
 
 func physicalRuntimeInfo() map[string]any {
 	return map[string]any{
-		"parallel":    globalParallelRuntime.Info(),
-		"speculative": speculativeInfo(),
-		"scheduler":   globalTxnScheduler.Info(),
+		"parallel":               globalParallelRuntime.Info(),
+		"speculative":            speculativeInfo(),
+		"scheduler":              globalTxnScheduler.Info(),
+		"event_handler_runs":     atomic.LoadUint64(&physicalEventHandlerRuns),
+		"event_handler_failures": atomic.LoadUint64(&physicalEventHandlerFailures),
 	}
 }
 

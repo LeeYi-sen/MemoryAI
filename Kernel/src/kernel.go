@@ -68,6 +68,9 @@ type Memory struct {
 	Parents          []string       `json:"parents,omitempty"`
 	Tags             []string       `json:"tags,omitempty"`
 	Content          string         `json:"content,omitempty"`
+	Executable       bool           `json:"executable,omitempty"`
+	InputPattern     map[string]any `json:"input_pattern,omitempty"`
+	OutputEffect     map[string]any `json:"output_effect,omitempty"`
 	Trigger          []string       `json:"trigger,omitempty"`
 	Capabilities     []string       `json:"capabilities,omitempty"`
 	CapabilitySig    string         `json:"capability_sig,omitempty"`
@@ -379,12 +382,12 @@ func main() {
 			err = errors.New("activate requires stimulus text")
 		} else {
 			if err = globalActivationRuntime.Build(e); err == nil {
-				topK := 0
+				pageCap := 0
 				if len(args) >= 3 {
-					topK, _ = strconv.Atoi(args[2])
+					pageCap, _ = strconv.Atoi(args[2])
 				}
 				var ar ActivationResult
-				ar, err = globalActivationRuntime.Activate(e, args[1], topK)
+				ar, err = globalActivationRuntime.Activate(e, args[1], pageCap)
 				if err == nil {
 					b, _ := json.MarshalIndent(ar, "", "  ")
 					fmt.Println(string(b))
@@ -2929,14 +2932,22 @@ func sameProgram(a, b []Op) bool {
 	return true
 }
 func structuralMemoryEqual(a, b *Memory) bool {
-	if a == nil || b == nil || a.ID != b.ID || a.Layer != b.Layer || a.Generation != b.Generation || a.Content != b.Content {
+	if a == nil || b == nil || a.ID != b.ID || a.Layer != b.Layer || a.Generation != b.Generation || a.Content != b.Content || a.Executable != b.Executable {
 		return false
 	}
 	if !sameStrings(a.Parents, b.Parents) || !sameStrings(a.Tags, b.Tags) || !sameStrings(a.Trigger, b.Trigger) || !sameStrings(a.Capabilities, b.Capabilities) || !sameProgram(a.Program, b.Program) {
 		return false
 	}
-	ab, _ := json.Marshal(a.Budget)
-	bb, _ := json.Marshal(b.Budget)
+	ab, _ := json.Marshal(struct {
+		Budget       ResourceBudget
+		InputPattern map[string]any
+		OutputEffect map[string]any
+	}{a.Budget, a.InputPattern, a.OutputEffect})
+	bb, _ := json.Marshal(struct {
+		Budget       ResourceBudget
+		InputPattern map[string]any
+		OutputEffect map[string]any
+	}{b.Budget, b.InputPattern, b.OutputEffect})
 	return string(ab) == string(bb)
 }
 

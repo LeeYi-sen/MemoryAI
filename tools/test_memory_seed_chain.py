@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED = ROOT / "Kernel/current-required-structures.json"
-FINAL_V29_SHA = "49c002cdfb99a6ae49213634be348fe83de126ad31b2a75fdcdeaa5245fa29b2"
+FINAL_V29_SHA = "ab90e81cf7ca55cfa404a350b5f386aa231c3bab291b39a8bdc99dc73aa4647e"
 
 
 class CurrentMemorySeedSourceTest(unittest.TestCase):
