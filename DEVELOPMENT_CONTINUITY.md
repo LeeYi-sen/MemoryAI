@@ -116,3 +116,10 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Every repair commit must update the tracker status/commit/verification fields and this continuity file atomically.
 - Repair order is dependency-driven: permanent ABI/capability gates first, then autonomous runtime, external evidence, semantic reply loop, self-growth/body fusion, Sovereign Mesh, and remaining Kernel boundary cleanup.
 - Development remains direct-test only: no `go build`, Kernel binary generation or release packaging.
+
+### Entry 031 — enforce Memory/Kernel ABI and capability audit
+- Base HEAD: `de55f11e322f7a13a78340d0b0acfc9131a3ed47` (Entry 030 tracker baseline).
+- AR-023 DONE: `tools/architecture_audit.py` now parses the production `execPrimitive` switch and fails if any current Memory Program references an unsupported opcode.
+- AR-024 DONE: the audit parses Kernel `privilegedOpCapability` and fails when a Memory Program uses a privileged opcode without the matching declared capability (or `kernel.admin`).
+- TDD evidence: both regression tests first failed because the old audit returned success; after the Gate implementation both pass. The live audit now intentionally fails on the still-open obsolete-opcode drift, proving the Gate is active.
+- No `go build` or release packaging was run.

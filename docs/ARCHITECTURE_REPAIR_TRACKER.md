@@ -37,8 +37,8 @@
 | AR-020 | P1 | OPEN | Kernel recognizes cog.surface/cog.input for trace policy | `Kernel/src/kernel.go` | Remove cognition-label interpretation from Kernel tracing. | - | - |
 | AR-021 | P2 | OPEN | Physical storage metadata uses cog.storage namespace | `Kernel/src/kernel.go; current seed if referenced` | Rename to physical storage namespace with compatibility migration. | - | - |
 | AR-022 | P2 | OPEN | Activation callers retain topK vocabulary | `Kernel/src/kernel.go; daemon_runtime.go` | Rename caller variables/arguments to pageCap and expand audit scope. | - | - |
-| AR-023 | P0 | OPEN | Architecture audit does not validate Memory-Kernel opcode ABI | `tools/architecture_audit.py` | Fail when seed uses unsupported/obsolete opcode. | - | - |
-| AR-024 | P0 | OPEN | Architecture audit does not validate capability requirements | `tools/architecture_audit.py` | Fail on privileged opcode without declared capability; lock semantic regression. | - | - |
+| AR-023 | P0 | DONE | Architecture audit does not validate Memory-Kernel opcode ABI | `tools/architecture_audit.py` | Fail when seed uses unsupported/obsolete opcode. | Entry 031 | `test_architecture_audit.py` PASS; live audit rejects AR-002 obsolete opcodes |
+| AR-024 | P0 | DONE | Architecture audit does not validate capability requirements | `tools/architecture_audit.py` | Fail on privileged opcode without declared capability; lock semantic regression. | Entry 031 | synthetic missing-capability regression PASS |
 | AR-025 | P2 | OPEN | memory_copy can retain stale CapabilitySig | `Kernel/src/kernel.go; security tests` | Clear or regenerate signature after structural identity/program mutation. | - | - |
 | AR-026 | P2 | OPEN | Structural digest includes CapabilitySig | `Kernel/src/structure_runtime.go` | Exclude physical security signature from structural Memory identity digest. | - | - |
 
@@ -68,3 +68,4 @@ AR-020 -> AR-021. Remove remaining cognition-shaped namespace/policy leakage fro
 ## Update log
 
 - 2026-09-17: Tracker created from the complete post-Entry-029 audit. All 26 confirmed items start as `OPEN`; implementation begins with Batch A.
+- 2026-09-17 / Entry 031: AR-023 and AR-024 DONE. Audit now validates every Memory opcode against `execPrimitive` and every privileged opcode against declared capability. Live audit correctly blocks the still-open AR-002/AR-007 drift.

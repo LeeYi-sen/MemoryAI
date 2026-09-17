@@ -26,6 +26,64 @@ def forbid(text: str, tokens: list[str], label: str) -> None:
         raise RuntimeError(f"{label} contains forbidden architecture boundary: {found}")
 
 
+
+def load_memory_seed() -> list[dict[str, object]]:
+    payload = json.loads(read("Kernel/current-required-structures.json"))
+    if isinstance(payload, dict):
+        memories = payload.get("memories")
+    else:
+        memories = payload
+    if not isinstance(memories, list):
+        raise RuntimeError("current Memory seed must contain a memories list")
+    return [m for m in memories if isinstance(m, dict)]
+
+
+def kernel_primitive_opcodes() -> set[str]:
+    kernel = read("Kernel/src/kernel.go")
+    start = kernel.find("func (e *Engine) execPrimitive")
+    end = kernel.find("\nfunc fieldString", start)
+    if start < 0 or end < 0:
+        raise RuntimeError("cannot locate Kernel execPrimitive opcode switch")
+    block = kernel[start:end]
+    return set(re.findall(r'case\s+"([^"]+)"\s*:', block))
+
+
+def privileged_opcode_capabilities() -> dict[str, str]:
+    security = read("Kernel/src/security_runtime.go")
+    start = security.find("var privilegedOpCapability")
+    end = security.find("\n}\n", start)
+    if start < 0 or end < 0:
+        raise RuntimeError("cannot locate privilegedOpCapability map")
+    block = security[start:end]
+    return dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]+)"', block))
+
+
+def audit_memory_kernel_abi() -> dict[str, int]:
+    memories = load_memory_seed()
+    supported = kernel_primitive_opcodes()
+    privileged = privileged_opcode_capabilities()
+    unsupported: list[str] = []
+    missing_caps: list[str] = []
+    for memory in memories:
+        mid = str(memory.get("id", "<unknown>"))
+        capabilities = {str(c) for c in (memory.get("capabilities") or [])}
+        for op in memory.get("program") or []:
+            if not isinstance(op, dict):
+                continue
+            code = str(op.get("code", "")).strip()
+            if not code:
+                continue
+            if code not in supported:
+                unsupported.append(f"{mid}:{code}")
+            required = privileged.get(code)
+            if required and required not in capabilities and "kernel.admin" not in capabilities:
+                missing_caps.append(f"{mid}:{code}->{required}")
+    if unsupported:
+        raise RuntimeError(f"unsupported Memory opcode(s): {unsupported}")
+    if missing_caps:
+        raise RuntimeError(f"Memory opcode missing capability: {missing_caps}")
+    return {"memory_programs": len(memories), "kernel_opcodes": len(supported)}
+
 def audit() -> dict[str, object]:
     growth = sorted(p.name for p in SRC.glob("memory_growth_*.go"))
     if growth:
@@ -106,6 +164,8 @@ def audit() -> dict[str, object]:
     require(parallel, ["physicalGPUBackend", "cpu+", "hybrid-dot", "gpu_fallback"], "parallel runtime")
     require(gpu_linux, ["libOpenCL.so.1", "dlopen", "memai_opencl_dot", "semantic"], "OpenCL physical backend")
     forbid(parallel + gpu_linux, ["semantic score", "fixed_semantic_lanes", "cognitive_selection"], "GPU runtime")
+
+    abi = audit_memory_kernel_abi()
 
     kernel_source = ROOT / "Kernel/src/kernel.go"
     memory_seed = ROOT / "Kernel/current-required-structures.json"
@@ -188,6 +248,8 @@ def audit() -> dict[str, object]:
         "physical_activation": "exact-candidate-page/no-score",
         "physical_gpu": "OpenCL dynamic + CPU fallback",
         "cognitive_dispatch_owner": "Memory",
+        "memory_programs_audited": abi["memory_programs"],
+        "kernel_opcodes_audited": abi["kernel_opcodes"],
     }
 
 
