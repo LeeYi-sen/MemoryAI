@@ -91,6 +91,120 @@
       ]
     },
     {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "answer.request.from.experience.parent",
+      "content": "Turn a recognized Memory-owned query Surface into an answer request referencing Memory semantic relations.",
+      "tags": [
+        "memory",
+        "cog.semantic",
+        "cog.answer",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "event.emit",
+        "memory.write"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 1500
+      },
+      "trigger": [
+        "event:experience.raw",
+        "subject_tag:cog.experience.raw"
+      ],
+      "program": [
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "surface",
+          "c": "are_surface"
+        },
+        {
+          "code": "sha256_text",
+          "a": "are_surface",
+          "b": "are_h"
+        },
+        {
+          "code": "tag_list",
+          "a": "cog.semantic.query.surface.hash.{{are_h}}",
+          "b": "are_maps"
+        },
+        {
+          "code": "list_len",
+          "a": "are_maps",
+          "b": "are_n"
+        },
+        {
+          "code": "cmp_gt",
+          "a": "are_have",
+          "b": "{{are_n}}",
+          "c": "0"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{are_have}}",
+          "b": "are_make"
+        },
+        {
+          "code": "jump",
+          "a": "are_end"
+        },
+        {
+          "code": "label",
+          "a": "are_make"
+        },
+        {
+          "code": "list_get",
+          "a": "are_maps",
+          "b": "0",
+          "c": "are_map"
+        },
+        {
+          "code": "state_get",
+          "a": "{{are_map}}",
+          "b": "relation_id",
+          "c": "are_rel"
+        },
+        {
+          "code": "memory_new",
+          "a": "are_req",
+          "args": {
+            "content": "Answer request activated by a grounded query Surface.",
+            "layer": "acquired",
+            "parents": "{{__subject}},{{are_map}},answer.request.from.experience.parent",
+            "tags": "memory,cog.answer.request"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{are_req}}",
+          "b": "relation_id",
+          "c": "{{are_rel}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{are_req}}",
+          "b": "experience_id",
+          "c": "{{__subject}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "semantic.answer.request",
+          "b": "{{are_req}}"
+        },
+        {
+          "code": "label",
+          "a": "are_end"
+        }
+      ]
+    },
+    {
       "budget": {
         "max_alloc_bytes": 16777216,
         "max_cpu_us": 300000,
@@ -2026,6 +2140,40 @@
       ]
     },
     {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "concept.addressee",
+      "content": "Addressee role concept.",
+      "tags": [
+        "memory",
+        "cog.concept",
+        "cog.concept.stable",
+        "cog.concept.role.addressee"
+      ],
+      "state": {
+        "preferred_surface": "你"
+      },
+      "parents": []
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "concept.identity",
+      "content": "Identity relation concept.",
+      "tags": [
+        "memory",
+        "cog.concept",
+        "cog.concept.stable",
+        "cog.concept.identity"
+      ],
+      "state": {
+        "preferred_surface": "是"
+      },
+      "parents": []
+    },
+    {
       "budget": {
         "max_alloc_bytes": 16777216,
         "max_cpu_us": 300000,
@@ -2227,6 +2375,58 @@
         "event:surface.composed",
         "subject_tag:cog.experience.raw"
       ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "concept.memoryai",
+      "content": "MemoryAI self-name concept.",
+      "tags": [
+        "memory",
+        "cog.concept",
+        "cog.concept.stable",
+        "cog.concept.identity.self-name"
+      ],
+      "state": {
+        "preferred_surface": "MemoryAI"
+      },
+      "parents": []
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "concept.query.identity",
+      "content": "Identity-query concept.",
+      "tags": [
+        "memory",
+        "cog.concept",
+        "cog.concept.stable",
+        "cog.concept.query",
+        "cog.concept.query.identity"
+      ],
+      "state": {
+        "preferred_surface": "谁"
+      },
+      "parents": []
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "concept.self",
+      "content": "Self-reference concept learned/seeded in initial Memory.",
+      "tags": [
+        "memory",
+        "cog.concept",
+        "cog.concept.stable",
+        "cog.concept.self"
+      ],
+      "state": {
+        "preferred_surface": "我"
+      },
+      "parents": []
     },
     {
       "budget": {
@@ -5308,6 +5508,170 @@
       ],
       "trigger": [
         "event:causal.experiment.requested"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "expression.surface.bootstrap.zh.self-identity",
+      "content": "Initial natural-language Surface rendering for the stable self-identity relation; owned and mutable by Memory.",
+      "tags": [
+        "memory",
+        "cog.expression.surface.stable",
+        "cog.expression.surface.stable.key.5f9332c4968b961d72d95e54a2c1c65d2954f073c319a2b765f9aa3271e3c6ad",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "relation_key": "concept.self|concept.identity|concept.memoryai",
+        "surface": "我是MemoryAI",
+        "locale_hint": "zh",
+        "status": "stable",
+        "provenance": "initial-memory"
+      },
+      "parents": [
+        "semantic.relation.self.identity"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "expression.surface.render.parent",
+      "content": "Render semantic expression frames through learned stable Surface mappings stored in Memory.",
+      "tags": [
+        "memory",
+        "cog.expression",
+        "cog.semantic",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "event.emit",
+        "memory.write"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 1500
+      },
+      "trigger": [
+        "event:expression.frame.ready",
+        "subject_tag:cog.expression.frame"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "esr_frame_subject",
+          "b": "__subject"
+        },
+        {
+          "code": "state_get",
+          "a": "{{esr_frame_subject}}",
+          "b": "subject_id",
+          "c": "esr_s"
+        },
+        {
+          "code": "state_get",
+          "a": "{{esr_frame_subject}}",
+          "b": "predicate_id",
+          "c": "esr_p"
+        },
+        {
+          "code": "state_get",
+          "a": "{{esr_frame_subject}}",
+          "b": "object_id",
+          "c": "esr_o"
+        },
+        {
+          "code": "set",
+          "a": "esr_keyraw",
+          "b": "{{esr_s}}|{{esr_p}}|{{esr_o}}"
+        },
+        {
+          "code": "sha256_text",
+          "a": "esr_keyraw",
+          "b": "esr_h"
+        },
+        {
+          "code": "tag_list",
+          "a": "cog.expression.surface.stable.key.{{esr_h}}",
+          "b": "esr_maps"
+        },
+        {
+          "code": "list_len",
+          "a": "esr_maps",
+          "b": "esr_n"
+        },
+        {
+          "code": "cmp_gt",
+          "a": "esr_have",
+          "b": "{{esr_n}}",
+          "c": "0"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{esr_have}}",
+          "b": "esr_render"
+        },
+        {
+          "code": "jump",
+          "a": "esr_end"
+        },
+        {
+          "code": "label",
+          "a": "esr_render"
+        },
+        {
+          "code": "list_get",
+          "a": "esr_maps",
+          "b": "0",
+          "c": "esr_map"
+        },
+        {
+          "code": "state_get",
+          "a": "{{esr_map}}",
+          "b": "surface",
+          "c": "esr_reply"
+        },
+        {
+          "code": "copy",
+          "a": "reply_text",
+          "b": "esr_reply"
+        },
+        {
+          "code": "state_set",
+          "a": "{{esr_frame_subject}}",
+          "b": "reply_text",
+          "c": "{{esr_reply}}"
+        },
+        {
+          "code": "memory_new",
+          "a": "esr_reply_mem",
+          "args": {
+            "content": "Rendered reply Surface produced from semantic frame and learned Surface mapping.",
+            "layer": "emergent",
+            "parents": "{{esr_frame_subject}},{{esr_map}},expression.surface.render.parent",
+            "tags": "memory,cog.reply.ready"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{esr_reply_mem}}",
+          "b": "reply_text",
+          "c": "{{esr_reply}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "reply.ready",
+          "b": "{{esr_reply_mem}}"
+        },
+        {
+          "code": "label",
+          "a": "esr_end"
+        }
       ]
     },
     {
@@ -11858,6 +12222,44 @@
       ]
     },
     {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "reply.capture.parent",
+      "content": "Capture a rendered Memory reply back into the live Frame without introducing language semantics in Kernel.",
+      "tags": [
+        "memory",
+        "cog.reply",
+        "runtime.trigger"
+      ],
+      "capabilities": [],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 1500
+      },
+      "trigger": [
+        "event:reply.ready",
+        "subject_tag:cog.reply.ready"
+      ],
+      "program": [
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "reply_text",
+          "c": "rc_reply"
+        },
+        {
+          "code": "copy",
+          "a": "reply_text",
+          "b": "rc_reply"
+        }
+      ]
+    },
+    {
       "budget": {
         "max_alloc_bytes": 16777216,
         "max_cpu_us": 300000,
@@ -14451,6 +14853,193 @@
       ]
     },
     {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "semantic.experience.bridge.parent",
+      "content": "Bridge live raw Experience into Memory-owned semantic observation and interaction events without Kernel language rules.",
+      "tags": [
+        "memory",
+        "cog.semantic",
+        "cog.bridge",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "event.emit",
+        "memory.write"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 1500
+      },
+      "trigger": [
+        "event:experience.created",
+        "subject_tag:cog.experience.raw"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "seb_experience",
+          "b": "__subject"
+        },
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "surface",
+          "c": "seb_surface"
+        },
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "source_id",
+          "c": "seb_source"
+        },
+        {
+          "code": "sha256_text",
+          "a": "seb_surface",
+          "b": "seb_h"
+        },
+        {
+          "code": "memory_new",
+          "a": "seb_interaction",
+          "args": {
+            "content": "Live interaction projected from raw Experience by Memory.",
+            "layer": "acquired",
+            "parents": "{{seb_experience}},semantic.experience.bridge.parent",
+            "tags": "memory,cog.interaction.raw"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_interaction}}",
+          "b": "surface",
+          "c": "{{seb_surface}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_interaction}}",
+          "b": "role_surface",
+          "c": "{{seb_surface}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_interaction}}",
+          "b": "source_id",
+          "c": "{{seb_source}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "interaction.raw",
+          "b": "{{seb_interaction}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "experience.raw",
+          "b": "{{seb_experience}}"
+        },
+        {
+          "code": "tag_list",
+          "a": "cog.surface.grounding.stable.hash.{{seb_h}}",
+          "b": "seb_maps"
+        },
+        {
+          "code": "list_len",
+          "a": "seb_maps",
+          "b": "seb_n"
+        },
+        {
+          "code": "cmp_gt",
+          "a": "seb_have",
+          "b": "{{seb_n}}",
+          "c": "0"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{seb_have}}",
+          "b": "seb_ground"
+        },
+        {
+          "code": "jump",
+          "a": "seb_end"
+        },
+        {
+          "code": "label",
+          "a": "seb_ground"
+        },
+        {
+          "code": "list_get",
+          "a": "seb_maps",
+          "b": "0",
+          "c": "seb_map"
+        },
+        {
+          "code": "state_get",
+          "a": "{{seb_map}}",
+          "b": "concept_id",
+          "c": "seb_concept"
+        },
+        {
+          "code": "memory_new",
+          "a": "seb_obs",
+          "args": {
+            "content": "Live semantic grounding observation derived from a Memory-owned stable Surface map.",
+            "layer": "acquired",
+            "parents": "{{seb_experience}},{{seb_map}},semantic.experience.bridge.parent",
+            "tags": "memory,cog.semantic.ground,cog.semantic.ground.observation"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_obs}}",
+          "b": "surface",
+          "c": "{{seb_surface}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_obs}}",
+          "b": "semantic_kind",
+          "c": "concept"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_obs}}",
+          "b": "target_id",
+          "c": "{{seb_concept}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_obs}}",
+          "b": "observation_support",
+          "c": "1"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_obs}}",
+          "b": "independent_sources",
+          "c": "1"
+        },
+        {
+          "code": "state_set",
+          "a": "{{seb_obs}}",
+          "b": "source_id",
+          "c": "{{seb_source}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "semantic.ground.observed",
+          "b": "{{seb_obs}}"
+        },
+        {
+          "code": "label",
+          "a": "seb_end"
+        }
+      ]
+    },
+    {
       "capabilities": [
         "event.emit",
         "memory.write"
@@ -14828,6 +15417,181 @@
       ]
     },
     {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "semantic.query.bootstrap.zh.who-are-you",
+      "content": "Initial grounded Chinese identity query pattern stored as evolvable Memory, never Kernel language policy.",
+      "tags": [
+        "memory",
+        "cog.semantic.query",
+        "cog.semantic.query.stable",
+        "cog.semantic.query.surface.hash.daa423a1ea94e73a7a1f83f7b42409510109c6202116f13dcbd32d5a5c6f5423",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "surface": "你是谁",
+        "surface_hash": "daa423a1ea94e73a7a1f83f7b42409510109c6202116f13dcbd32d5a5c6f5423",
+        "query_concept_id": "concept.query.identity",
+        "relation_id": "semantic.relation.self.identity",
+        "status": "stable"
+      },
+      "parents": [
+        "concept.query.identity",
+        "semantic.relation.self.identity"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "semantic.relation.bridge.parent",
+      "content": "Project a recognized Memory-owned query surface into a semantic relation observation; Kernel never classifies language.",
+      "tags": [
+        "memory",
+        "cog.semantic",
+        "cog.bridge",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "event.emit",
+        "memory.write"
+      ],
+      "budget": {
+        "max_alloc_bytes": 16777216,
+        "max_cpu_us": 300000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 33554432,
+        "max_memory_writes": 160,
+        "max_ops": 1500
+      },
+      "trigger": [
+        "event:experience.raw",
+        "subject_tag:cog.experience.raw"
+      ],
+      "program": [
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "surface",
+          "c": "srb_surface"
+        },
+        {
+          "code": "sha256_text",
+          "a": "srb_surface",
+          "b": "srb_h"
+        },
+        {
+          "code": "tag_list",
+          "a": "cog.semantic.query.surface.hash.{{srb_h}}",
+          "b": "srb_maps"
+        },
+        {
+          "code": "list_len",
+          "a": "srb_maps",
+          "b": "srb_n"
+        },
+        {
+          "code": "cmp_gt",
+          "a": "srb_have",
+          "b": "{{srb_n}}",
+          "c": "0"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{srb_have}}",
+          "b": "srb_observe"
+        },
+        {
+          "code": "jump",
+          "a": "srb_end"
+        },
+        {
+          "code": "label",
+          "a": "srb_observe"
+        },
+        {
+          "code": "list_get",
+          "a": "srb_maps",
+          "b": "0",
+          "c": "srb_map"
+        },
+        {
+          "code": "state_get",
+          "a": "{{srb_map}}",
+          "b": "relation_id",
+          "c": "srb_rel"
+        },
+        {
+          "code": "state_get",
+          "a": "{{srb_rel}}",
+          "b": "subject_id",
+          "c": "srb_s"
+        },
+        {
+          "code": "state_get",
+          "a": "{{srb_rel}}",
+          "b": "predicate_id",
+          "c": "srb_p"
+        },
+        {
+          "code": "state_get",
+          "a": "{{srb_rel}}",
+          "b": "object_id",
+          "c": "srb_o"
+        },
+        {
+          "code": "state_get",
+          "a": "{{__subject}}",
+          "b": "source_id",
+          "c": "srb_source"
+        },
+        {
+          "code": "memory_new",
+          "a": "srb_obs",
+          "args": {
+            "content": "Semantic relation observation activated from Memory-owned Surface grounding.",
+            "layer": "acquired",
+            "parents": "{{__subject}},{{srb_rel}},semantic.relation.bridge.parent",
+            "tags": "memory,cog.semantic.relation.observation"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{srb_obs}}",
+          "b": "subject_id",
+          "c": "{{srb_s}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{srb_obs}}",
+          "b": "predicate_id",
+          "c": "{{srb_p}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{srb_obs}}",
+          "b": "object_id",
+          "c": "{{srb_o}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{srb_obs}}",
+          "b": "source_id",
+          "c": "{{srb_source}}"
+        },
+        {
+          "code": "emit_event",
+          "a": "semantic.relation.observed",
+          "b": "{{srb_obs}}"
+        },
+        {
+          "code": "label",
+          "a": "srb_end"
+        }
+      ]
+    },
+    {
       "capabilities": [
         "event.emit",
         "memory.write"
@@ -15122,6 +15886,30 @@
       "trigger": [
         "event:semantic.relation.observed",
         "subject_tag:cog.semantic.relation.observation"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "semantic.relation.self.identity",
+      "content": "Stable self-identity relation available to Memory semantic queries.",
+      "tags": [
+        "memory",
+        "cog.semantic.relation",
+        "cog.semantic.relation.stable",
+        "cog.bootstrap.identity"
+      ],
+      "state": {
+        "subject_id": "concept.self",
+        "predicate_id": "concept.identity",
+        "object_id": "concept.memoryai",
+        "status": "stable"
+      },
+      "parents": [
+        "concept.self",
+        "concept.identity",
+        "concept.memoryai"
       ]
     },
     {
@@ -16042,6 +16830,121 @@
       "trigger": [
         "event:surface.sequence.learned",
         "subject_tag:cog.experience.raw"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "surface.grounding.bootstrap.zh.memoryai",
+      "content": "Initial Chinese Surface grounding carried by Memory and replaceable by later evidence.",
+      "tags": [
+        "memory",
+        "cog.surface.grounding.stable",
+        "cog.surface.grounding.stable.hash.e84fc9317acfd4d1e959a926399e2fab98983ca370cbfa2369a895a6f1a86154",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "surface": "MemoryAI",
+        "surface_hash": "e84fc9317acfd4d1e959a926399e2fab98983ca370cbfa2369a895a6f1a86154",
+        "concept_id": "concept.memoryai",
+        "status": "stable",
+        "provenance": "initial-memory"
+      },
+      "parents": [
+        "concept.memoryai"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "surface.grounding.bootstrap.zh.self",
+      "content": "Initial Chinese Surface grounding carried by Memory and replaceable by later evidence.",
+      "tags": [
+        "memory",
+        "cog.surface.grounding.stable",
+        "cog.surface.grounding.stable.hash.b70bb4acc0484cf040de4c07c60f9db722283da2c4a672c39291de621e92c33f",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "surface": "我",
+        "surface_hash": "b70bb4acc0484cf040de4c07c60f9db722283da2c4a672c39291de621e92c33f",
+        "concept_id": "concept.self",
+        "status": "stable",
+        "provenance": "initial-memory"
+      },
+      "parents": [
+        "concept.self"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "surface.grounding.bootstrap.zh.who",
+      "content": "Initial Chinese Surface grounding carried by Memory and replaceable by later evidence.",
+      "tags": [
+        "memory",
+        "cog.surface.grounding.stable",
+        "cog.surface.grounding.stable.hash.056b9c626275cd545ba70d32c6dad139b0f99296e8a2bc23c210e9c533c68ff3",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "surface": "谁",
+        "surface_hash": "056b9c626275cd545ba70d32c6dad139b0f99296e8a2bc23c210e9c533c68ff3",
+        "concept_id": "concept.query.identity",
+        "status": "stable",
+        "provenance": "initial-memory"
+      },
+      "parents": [
+        "concept.query.identity"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "surface.grounding.bootstrap.zh.who-are-you",
+      "content": "Initial Chinese Surface grounding carried by Memory and replaceable by later evidence.",
+      "tags": [
+        "memory",
+        "cog.surface.grounding.stable",
+        "cog.surface.grounding.stable.hash.daa423a1ea94e73a7a1f83f7b42409510109c6202116f13dcbd32d5a5c6f5423",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "surface": "你是谁",
+        "surface_hash": "daa423a1ea94e73a7a1f83f7b42409510109c6202116f13dcbd32d5a5c6f5423",
+        "concept_id": "concept.query.identity",
+        "status": "stable",
+        "provenance": "initial-memory"
+      },
+      "parents": [
+        "concept.query.identity"
+      ]
+    },
+    {
+      "layer": "emergent",
+      "generation": 35,
+      "revision": 1,
+      "id": "surface.grounding.bootstrap.zh.you",
+      "content": "Initial Chinese Surface grounding carried by Memory and replaceable by later evidence.",
+      "tags": [
+        "memory",
+        "cog.surface.grounding.stable",
+        "cog.surface.grounding.stable.hash.a0c7716669b5ded0d8051abfc232b828d489f7d889b2928eefcf43f0b8f495d6",
+        "cog.bootstrap.zh"
+      ],
+      "state": {
+        "surface": "你",
+        "surface_hash": "a0c7716669b5ded0d8051abfc232b828d489f7d889b2928eefcf43f0b8f495d6",
+        "concept_id": "concept.addressee",
+        "status": "stable",
+        "provenance": "initial-memory"
+      },
+      "parents": [
+        "concept.addressee"
       ]
     },
     {

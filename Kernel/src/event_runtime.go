@@ -271,6 +271,10 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 	if e.speculative || f.Vars["__txn_canonical"] == "1" || physicalConcurrency(0) <= 1 || len(matched) == 1 {
 		var errs []error
 		for _, id := range matched {
+			// A sibling Memory must always observe the physical event that selected it.
+			// Nested emitted events may reuse the same Frame, so restore the parent
+			// event metadata before every serial handler without interpreting payload.
+			applyPhysicalEventFrame(f, ev)
 			atomic.AddUint64(&root.eventStats.handlerRuns, 1)
 			atomic.AddUint64(&physicalEventHandlerRuns, 1)
 			var runErr error
@@ -341,6 +345,19 @@ func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {
 	if f == nil {
 		return fmt.Errorf("physical event frame required")
 	}
+	// Physical event metadata is stack-scoped. Memory handlers share an
+	// ephemeral Frame, but a nested event must not replace its caller's
+	// __event/__subject namespace after returning. Cognitive payload/output
+	// variables remain untouched; only transport metadata is restored.
+	parentEventMeta := map[string]string{}
+	hadParentEvent := f.Vars["__event"] != "" || f.Vars["__event_id"] != ""
+	if hadParentEvent {
+		for k, v := range f.Vars {
+			if k == "__event" || k == "__event_id" || k == "__subject" || strings.HasPrefix(k, "__event.") {
+				parentEventMeta[k] = v
+			}
+		}
+	}
 	if parentDepth := f.Vars["__event_depth"]; parentDepth != "" {
 		var d int
 		_, _ = fmt.Sscan(parentDepth, &d)
@@ -357,6 +374,22 @@ func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {
 		delete(f.Vars, "__event_depth")
 	} else {
 		f.Vars["__event_depth"] = oldDepth
+	}
+	if hadParentEvent {
+		for k := range f.Vars {
+			if k == "__event" || k == "__event_id" || k == "__subject" || strings.HasPrefix(k, "__event.") {
+				delete(f.Vars, k)
+			}
+		}
+		for k, v := range parentEventMeta {
+			f.Vars[k] = v
+			if strings.HasPrefix(k, "__event.") {
+				f.Vars[strings.TrimPrefix(k, "__event.")] = v
+			}
+		}
+	} else {
+		// Keep the top-level physical event as the visible transport context.
+		applyPhysicalEventFrame(f, ev)
 	}
 	return err
 }

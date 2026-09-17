@@ -63,3 +63,30 @@ func TestEventDispatchRunsIndependentHandlersConcurrently(t *testing.T) {
 		t.Fatalf("event handlers remained serial: speculative peak=%d", peak)
 	}
 }
+
+func TestNestedEventDoesNotLeakContextToSiblingHandler(t *testing.T) {
+	oldConcurrency := physicalConcurrency(0)
+	setPhysicalExecutionConcurrency(1)
+	defer setPhysicalExecutionConcurrency(oldConcurrency)
+
+	parent := &Memory{ID: "subject.parent", Layer: "emergent", Tags: []string{"memory", "test.parent"}, State: map[string]any{}, Revision: 1}
+	child := &Memory{ID: "subject.child", Layer: "emergent", Tags: []string{"memory", "test.child"}, State: map[string]any{}, Revision: 1}
+	nester := &Memory{
+		ID: "a.nested.emitter", Layer: "emergent", Tags: []string{"memory"}, Trigger: []string{"event:parent-event", "subject_tag:test.parent"},
+		Capabilities: []string{"event.emit"}, State: map[string]any{}, Revision: 1,
+		Program: []Op{{Code: "emit_event", A: "child-event", B: "subject.child"}},
+	}
+	observer := &Memory{
+		ID: "z.parent.observer", Layer: "emergent", Tags: []string{"memory"}, Trigger: []string{"event:parent-event", "subject_tag:test.parent"},
+		State: map[string]any{}, Revision: 1,
+		Program: []Op{{Code: "copy", A: "seen_subject", B: "__subject"}},
+	}
+	e := loadFabricWriteTestEngine(t, []*Memory{parent, child, nester, observer})
+	f := newFrame()
+	if err := e.fireEvent("parent-event", parent.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Vars["seen_subject"]; got != parent.ID {
+		t.Fatalf("nested event context leaked to sibling: got=%q want=%q", got, parent.ID)
+	}
+}
