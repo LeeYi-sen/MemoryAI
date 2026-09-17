@@ -22,15 +22,11 @@ jobs:
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
 
-      - name: Verify immutable bootstrap and current Memory seed chain
-        run: python3 tools/restore_source.py --check
+      - name: Verify direct source and Memory body repository layout
+        run: python3 tools/test_repository_source_layout.py
 
-      - name: Restore generated Kernel and current Memory seed
-        run: python3 tools/restore_source.py
-
-      - name: Compile Python build and migration tools
-        run: |
-          python3 -m py_compile tools/*.py tools/migrations/*.py
+      - name: Verify tracked current Memory seed
+        run: python3 tools/test_memory_seed_chain.py
 
       - name: Enforce frozen architecture ownership
         run: python3 tools/architecture_audit.py
@@ -43,11 +39,6 @@ jobs:
             echo "$UNFORMATTED"
             exit 1
           fi
-
-      - name: Vet Kernel package
-        env:
-          GO111MODULE: "off"
-        run: go vet ./Kernel/src
 
       - name: Compile and test Kernel package
         env:

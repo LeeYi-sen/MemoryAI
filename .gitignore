@@ -3,12 +3,29 @@ var/
 *.log
 *.pid
 
-# Large/generated runtime artifacts
-data/Memory.mem
+# Generated release/build directories
+dist/
 Kernel/Linux/*/Kernel
 Kernel/macOS/*/Kernel
 Gateway/Linux/*/Gateway
 Gateway/macOS/*/Gateway
+
+# Packaged/binary artifacts are never source
+*.zip
+*.tar
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+*.part*
 
 # Local build/cache
 .DS_Store

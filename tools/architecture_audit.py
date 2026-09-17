@@ -98,19 +98,8 @@ def audit() -> dict[str, object]:
     require(remote, ["physicalMemoryWithJournal", "readMutationJournal", "persistEngineIncremental(dst)", "persistEngineIncremental(owner)"], "remote durability")
     forbid(remote, ["persistEngineIfDirty(dst)", "persistEngineIfDirty(owner)"], "remote durability")
 
-    mutation_overlay = read("tools/kernel_mutation_journal_overlay.py")
-    remote_overlay = read("tools/kernel_remote_durability_overlay.py")
-    forbid(mutation_overlay + remote_overlay, ["expected two remote full-durability barriers"], "generated remote durability")
-    require(remote_overlay, ["persistEngineIncremental(sp)", "historical unsafe path remained", "remote node handler"], "generated remote durability")
-    require(
-        mutation_overlay,
-        [
-            "the only remaining mounted full-body helper is the local unmount",
-            "unexpected mounted full-body persistence remained",
-            "persistEngineIncremental(sp)",
-        ],
-        "mutation journal generation",
-    )
+    # Direct-source repository: production durability is audited in the Go runtime
+    # itself. Historical source-reconstruction overlays are intentionally absent.
 
     parallel = read("Kernel/src/parallel_runtime.go")
     gpu_linux = read("Kernel/src/physical_gpu_opencl_linux.go")
@@ -118,11 +107,16 @@ def audit() -> dict[str, object]:
     require(gpu_linux, ["libOpenCL.so.1", "dlopen", "memai_opencl_dot", "semantic"], "OpenCL physical backend")
     forbid(parallel + gpu_linux, ["semantic score", "fixed_semantic_lanes", "cognitive_selection"], "GPU runtime")
 
-    restore = read("tools/restore_source.py")
-    builder = read("tools/build_current_memory_seed.py")
+    kernel_source = ROOT / "Kernel/src/kernel.go"
+    memory_seed = ROOT / "Kernel/current-required-structures.json"
+    if not kernel_source.is_file():
+        raise RuntimeError("direct Kernel source missing: Kernel/src/kernel.go")
+    if not memory_seed.is_file():
+        raise RuntimeError("direct Memory seed missing: Kernel/current-required-structures.json")
+    packed = [p for p in ROOT.rglob("*") if p.is_file() and (".gz.b64.part" in p.name or p.name.endswith(".bootstrap.json"))]
+    if packed:
+        raise RuntimeError(f"packaged bootstrap payloads remain in direct-source repository: {packed}")
     v29 = read("tools/migrations/v29_runtime_ownership.py")
-    require(restore, ["build_current_seed", "current-required-structures.json"], "source restore")
-    require(builder, ["v28_language_semantics.py", "v29_runtime_ownership.py", "9223866b6921c4eefa486e3b34597fabe0b8c823eb79a04a465e441b50128b80"], "current Memory seed builder")
     require(v29, ["memory.lifecycle.dispatch.parent", '"event:memory.activity"', "DRIVE_FACTORS"], "v29 Memory ownership")
     if '"prediction_error", "w_prediction_error"' in v29:
         raise RuntimeError("v29 Drive still declares prediction_error as a factor")
@@ -166,18 +160,11 @@ def audit() -> dict[str, object]:
     )
 
     body_builder = read("tools/build_memory_body.py")
-    release_builder = read("tools/build_release.py")
     require(
         body_builder,
         ["memoryai-body-v2", "memoryai.phys.v1:", "JOURNAL_COMMENT_SIZE = 65535", "verify_body"],
         "Memory body builder",
     )
-    require(
-        release_builder,
-        ["full_gate()", 'go", "test", "-race"', "daemon_smoke", "CHECKSUMS.sha256", "RELEASE-MANIFEST.json"],
-        "release builder",
-    )
-    forbid(release_builder, ["--skip-race"], "release builder")
 
     allowed_sidecar_file = "legacy_runtime_migration.go"
     forbidden_suffixes = (".wal", ".delta.json", "Memory.mesh-journal.", "Memory.mesh-proposal-replay.")

@@ -10,15 +10,15 @@ Required workflow:
 
 1. Read/sync latest `main` HEAD.
 2. Create the code change from that HEAD only.
-3. Build and run the relevant architecture/runtime gates.
+3. Run direct source/runtime tests and architecture gates; development does not build release binaries.
 4. Commit the tested source change back to GitHub.
 5. Use the resulting new HEAD as the next development baseline.
 
-## Runtime artifact policy
+## Repository artifact policy
 
-`data/Memory.mem` is a large mutable runtime body and compiled Kernel/Gateway binaries are generated artifacts. They are not normal source files in Git.
+The repository directly tracks canonical source plus `data/Memory.mem`. Compiled Kernel/Gateway binaries, archives, compressed bootstrap payloads, base64 chunks and release packages are generated artifacts and must not be committed.
 
-Each release must bind generated artifacts to source through SHA-256 manifests and acceptance reports. A release is not considered frozen unless the exact Kernel hash, Memory.mem hash, ABI, test matrix and source commit SHA are recorded together.
+`Kernel/src/kernel.go` and `Kernel/current-required-structures.json` are canonical Git source inputs. The historical gzip/base64 bootstrap reconstruction pipeline is retired. Release binary packaging is outside the current development phase. Development commits canonical source plus the tracked `data/Memory.mem` only.
 
 ## Recovered pre-GitHub baseline
 

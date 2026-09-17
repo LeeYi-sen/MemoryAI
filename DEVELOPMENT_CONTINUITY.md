@@ -24,6 +24,28 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Do not report a later full release Gate unless that complete chain is executed again after the later change.
 - Focused local harnesses may validate a narrow physical boundary, but their scope must be stated explicitly and never be reported as a full repository/release Gate.
 
+## Current development mode after Entry 028
+- Development repository directly tracks canonical source + `Kernel/current-required-structures.json` + `data/Memory.mem`.
+- Do not run `go build`, produce Kernel binaries or run release packaging during the current development phase unless the user explicitly re-enables release work.
+- Direct runtime tests (`go test`, including targeted race tests when useful), architecture audits, source-format checks and `Memory.mem` verification remain required.
+
+## Confirmed architecture drift / unfinished work from Entry 029 audit
+1. Daemon has no autonomous idle ticker; Memory-owned curiosity/frontier/expansion/lifecycle/mesh/deadline programs only run when an idle event is explicitly fired.
+2. External evidence/action requests are created as `io.external.request.pending`, but no production physical executor consumes them, calls the configured Source adapter, marks them done and emits `external.response` / `action.response`.
+3. SELF_ONLY exists structurally, but ASSISTED_LEARNING is only implicit policy; there is no explicit mode Memory and no working autonomous Ollama/external-source request loop.
+4. Current Memory seed calls three missing/obsolete Kernel opcodes: `cognition_concurrency_set`, `cognition_stats`, `mesh_route_cognition`; current physical replacements are not migrated into Memory yet.
+5. v31 semantic Memories are disconnected from the live event graph (`experience.raw`, `semantic.ground.observed`, `semantic.relation.observed`, `interaction.raw`, `semantic.answer.request` have no internal producer).
+6. Four semantic Memories call `emit_event` without declaring `event.emit`, so Kernel capability checks would reject them even if activated.
+7. Natural-language reply path is incomplete: daemon input returns a Frame and the semantic expression path has no live request producer/presentation renderer.
+8. Initial current Memory seed contains no CJK grounding/example content, so the prior requirement that initial Memory recognize Chinese is not yet satisfied.
+9. Memory-owned executable mutation exists, but executable Structure recombination/fission is absent from current Memory and remains only in excluded `legacy/cognitive` Go history.
+10. Physical `space_merge` exists, but no Memory-owned body-fusion decision/execution structure uses it.
+11. Mesh global sync only observes shared-directory visibility; it does not fetch transient remote Memory and emit `mesh.memory.integrated`, so global cognitive integration is not closed.
+12. Mesh digest conflict can return status `conflict`, but no physical path emits `mesh.version.conflict` into the Memory-owned reconciliation frontier.
+13. Proposal replay receipts still have no ACK/GC lifecycle; completed receipts accumulate until the bounded replay ledger applies backpressure.
+14. Executable Memory has Trigger/State/Budget/Program/Revision/Parents, but input pattern/output effect/success history/mutation variants are not yet standardized first-class structure fields.
+15. Activation callers still use local variable name `topK` even though the runtime ABI is physical `pageCap`; this is vocabulary drift, not current ranking behavior.
+
 ## Open physical-kernel work after Entry 028
 1. Replay-receipt ACK/GC remains intentionally bounded/backpressured. Add GC only if a proof/test shows restart replay fencing cannot be weakened.
 2. Add a separate transfer-outcome reconciliation Memory only if a real ambiguous post-rename case remains after journal-aware verification; do not invent a second journal pre-emptively.
@@ -79,3 +101,12 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - **Regression Gate:** new `activation_boundary_test.go` locks the score-free JSON wire shape, physical page-cap metadata and non-effect of the legacy Top-K environment variable. `tools/architecture_audit.py` scans every production `activation*.go` and rejects `Score`, `topK`, old env/key names and old qualification symbols.
 - **Local sandbox validation:** exact touched production sources were compiled with Go 1.23.2 Linux AMD64 in an isolated physical-Fabric harness; `go vet` PASS; `go test -race -count=30` PASS; architecture-audit Python syntax PASS; positive activation-boundary audit PASS; an injected `Score` negative probe was rejected as expected.
 - **Validation scope:** this turn does not claim a new full repository/release Gate because the ChatGPT sandbox could not directly clone GitHub. The last complete release Gate remains Entry 027. Entry 028 changes only the Activation physical ABI/qualification/audit boundary; real OpenCL hardware acceptance remains outstanding.
+
+### Entry 029 — direct-source development baseline and architecture drift audit
+- Base HEAD: `dc2c3d64b75c3f7a3330a0cc52e02e19fe9bca6d` (`Entry 028: remove cognitive-shaped Activation ABI`).
+- Repository switched from gzip/base64 bootstrap reconstruction to direct canonical Git source: tracked `Kernel/src/kernel.go`, tracked current 99-Memory seed `Kernel/current-required-structures.json`, and tracked `data/Memory.mem`.
+- Removed v27 `.gz.b64.part*` payloads, bootstrap manifests, source reconstruction/overlay scripts, obsolete overlay tests, and the development release builder. `.gitignore` now rejects archives, split payloads and compiled binaries while permitting `data/Memory.mem`.
+- Current Memory body SHA-256 remains `e75e466dc26e6e0d3e89eaec4b95b8353b05763d79f2083ee09181e21d5487e7`; current seed SHA-256 remains `49c002cdfb99a6ae49213634be348fe83de126ad31b2a75fdcdeaa5245fa29b2` with 99 Memories.
+- Development workflow explicitly changed to direct tests/no release compilation: no `go build`, no Kernel binary generation, no release packaging. CI retains direct `go test` / targeted race tests and architecture/source/Memory validation.
+- Fresh direct validation during this entry: repository-layout tests PASS; direct seed contract PASS; `Memory.mem --verify-only` PASS; architecture audit PASS; gofmt clean; full `GO111MODULE=off go test ./Kernel/src` PASS. No new release Gate is claimed.
+- Architecture audit identified the open drift list recorded above; these findings are not silently treated as fixed. Subsequent development must close them from current Git `main`, with Memory-owned cognition preserved.

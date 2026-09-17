@@ -21,8 +21,8 @@ jobs:
           git remote add origin "https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
-      - name: Restore source
-        run: python3 tools/restore_source.py
+      - name: Verify direct source layout
+        run: python3 tools/test_repository_source_layout.py
       - name: Reject active Mesh sidecars
         run: |
           python3 tools/architecture_audit.py
