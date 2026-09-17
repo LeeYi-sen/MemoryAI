@@ -42,6 +42,9 @@ func daemonIdleInterval() time.Duration {
 }
 
 func (e *Engine) runPhysicalIdleTicker(stop <-chan struct{}) {
+	// Resume any durable response-ready physical I/O before waiting for the
+	// first clock tick. This never chooses a cognitive goal or source.
+	_ = e.processExternalIORequests()
 	ticker := time.NewTicker(daemonIdleInterval())
 	defer ticker.Stop()
 	for {
@@ -50,6 +53,9 @@ func (e *Engine) runPhysicalIdleTicker(stop <-chan struct{}) {
 			// The ticker is a physical clock only. What idle means and which
 			// cognition runs are entirely selected by executable Memory triggers.
 			_ = e.fireEvent("idle", "", newFrame())
+			// Memory may have created opaque physical I/O request envelopes while
+			// handling idle. Execute only those envelopes; source choice is Memory-owned.
+			_ = e.processExternalIORequests()
 		case <-stop:
 			return
 		}

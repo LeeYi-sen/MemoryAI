@@ -17,8 +17,8 @@
 |---|---|---|---|---|---|---|---|
 | AR-001 | P0 | DONE | Daemon lacks autonomous idle heartbeat | `Kernel/src/daemon_runtime.go` | Add physical idle ticker that only emits idle; cadence is physical/configurable, cognition remains Memory-owned. | Entry 033 | autonomous idle test PASS; focused race PASS; full go test PASS |
 | AR-002 | P0 | DONE | Memory seed uses obsolete opcodes | `Kernel/current-required-structures.json; Kernel/src/*` | Migrate cognition_concurrency_set, cognition_stats, mesh_route_cognition to current physical ABI without moving policy into Kernel. | Entry 032 | architecture audit PASS; full go test PASS; focused race PASS |
-| AR-003 | P0 | OPEN | Pending external requests have no physical executor | `Kernel/src/source_adapter_runtime.go; daemon/event runtime` | Consume io.external.request.pending, execute adapter, persist done state, emit external.response/action.response. | - | - |
-| AR-004 | P0 | OPEN | Source adapter tags do not match Memory selectors | `Kernel/src/source_adapter_runtime.go; current seed` | Align generic physical adapter metadata with Memory-owned enabled/action selection. | - | - |
+| AR-003 | P0 | DONE | Pending external requests have no physical executor | `Kernel/src/source_adapter_runtime.go; daemon/event runtime` | Consume io.external.request.pending, execute adapter, persist done state, emit external.response/action.response. | Entry 034 | HTTP executor lifecycle PASS; restart no-replay PASS; focused race PASS |
+| AR-004 | P0 | DONE | Source adapter tags do not match Memory selectors | `Kernel/src/source_adapter_runtime.go; current seed` | Align generic physical adapter metadata with Memory-owned enabled/action selection. | Entry 034 | source selector tag regression PASS |
 | AR-005 | P0 | DONE | Event cognition handlers are serialized/fail-fast | `Kernel/src/event_runtime.go; scheduler runtime` | Run independent handlers concurrently where physically safe and isolate one handler failure from unrelated cognition chains. | Entry 033 | failure isolation + parallel peak tests PASS; focused race PASS; full go test PASS |
 | AR-006 | P1 | OPEN | v31 semantic event graph is disconnected | `Kernel/current-required-structures.json` | Connect live Experience/semantic events without hard-coded language semantics in Kernel. | - | - |
 | AR-007 | P0 | DONE | Semantic Memories miss event.emit capability | `Kernel/current-required-structures.json` | Add required capabilities and permanent capability audit. | Entry 032 | 99-Memory capability audit PASS |
@@ -41,6 +41,8 @@
 | AR-024 | P0 | DONE | Architecture audit does not validate capability requirements | `tools/architecture_audit.py` | Fail on privileged opcode without declared capability; lock semantic regression. | Entry 031 | synthetic missing-capability regression PASS |
 | AR-025 | P2 | OPEN | memory_copy can retain stale CapabilitySig | `Kernel/src/kernel.go; security tests` | Clear or regenerate signature after structural identity/program mutation. | - | - |
 | AR-026 | P2 | OPEN | Structural digest includes CapabilitySig | `Kernel/src/structure_runtime.go` | Exclude physical security signature from structural Memory identity digest. | - | - |
+| AR-027 | P0 | DONE | SELF_ONLY / ASSISTED_LEARNING mode is only implicit | `Kernel/current-required-structures.json` | Add explicit Memory-owned learning mode; default SELF_ONLY and gate external research on ASSISTED_LEARNING. | Entry 034 | learning mode contract PASS; default SELF_ONLY locked |
+| AR-028 | P0 | DONE | Event payload vars are not exposed under `__event.*` contract used by Memory | `Kernel/src/event_runtime.go` | Mirror opaque event vars into `__event.<key>` without semantic interpretation. | Entry 034 | namespaced event variable regression PASS |
 
 ## Repair order / implementation batches
 
@@ -51,7 +53,7 @@ AR-023 -> AR-024 -> AR-002 -> AR-007 -> AR-013 -> AR-022. This batch prevents th
 AR-001 -> AR-005 -> lifecycle physical-health input required by AR-002. This makes Memory-owned idle cognition actually run continuously without one handler aborting unrelated chains.
 
 ### Batch C — external evidence and assisted learning
-AR-004 -> AR-003 -> explicit SELF_ONLY/ASSISTED_LEARNING Memory mode -> external response ingestion. Ollama remains an optional external evidence source, never the AI.
+AR-004 -> AR-003 -> AR-028 -> AR-027 -> external response ingestion. Ollama remains an optional external evidence source, never the AI.
 
 ### Batch D — semantic / natural-language loop
 AR-006 -> AR-008 -> AR-009. Connect existing Memory semantic structures to the live graph, then produce learned natural-language output and seed Chinese grounding in Memory.
@@ -72,3 +74,5 @@ AR-020 -> AR-021. Remove remaining cognition-shaped namespace/policy leakage fro
 - 2026-09-17 / Entry 032: AR-002, AR-007, AR-013 and AR-022 DONE. Current seed uses only supported physical opcodes, semantic emitters declare `event.emit`, executable contract fields round-trip through Kernel Memory schema, lifecycle reads generic physical handler counters, and activation caller vocabulary is pageCap-only.
 
 - 2026-09-17 / Entry 033: AR-001 and AR-005 DONE. Daemon now emits configurable physical idle ticks autonomously; top-level independent Event handlers run concurrently through the physical speculative scheduler, handler errors are aggregated after unrelated handlers finish, and nested canonical/speculative dispatch remains serial for physical safety.
+
+- 2026-09-17 / Entry 034: AR-003, AR-004, AR-027 and AR-028 DONE. Source adapters expose operational selector tags, Memory-owned learning mode defaults to SELF_ONLY and gates external research, physical I/O requests persist executing/response-ready/done state inside Memory.mem, completed requests are not replayed after restart, and opaque event vars are mirrored into the `__event.*` namespace used by executable Memory.

@@ -195,6 +195,7 @@ func applyPhysicalEventFrame(f *Frame, ev PhysicalEvent) {
 	for k, v := range ev.Vars {
 		if !strings.HasPrefix(k, "__") {
 			f.Vars[k] = v
+			f.Vars["__event."+k] = v
 		}
 	}
 }

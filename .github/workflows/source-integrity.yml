@@ -28,6 +28,9 @@ jobs:
       - name: Verify tracked current Memory seed
         run: python3 tools/test_memory_seed_chain.py
 
+      - name: Verify Memory-owned learning mode contract
+        run: python3 tools/test_learning_mode_contract.py
+
       - name: Enforce frozen architecture ownership
         run: python3 tools/architecture_audit.py
 

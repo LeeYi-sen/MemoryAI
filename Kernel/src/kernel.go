@@ -110,6 +110,7 @@ type Engine struct {
 	tagAdded           map[string]map[string]bool
 	tagRemoved         map[string]map[string]bool
 	eventStats         eventRuntimeStats
+	externalIOMu       sync.Mutex
 }
 
 type Frame struct {
