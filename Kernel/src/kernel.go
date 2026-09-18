@@ -124,6 +124,7 @@ type Frame struct {
 	opCount       int
 	memoryWrites  int
 	eventCount    int
+	resourceScope *frameResourceScope
 	resourceStart resourceSample
 }
 
@@ -1017,19 +1018,23 @@ func (e *Engine) run(idOrTag string, f *Frame) error {
 		}
 	}
 	budgetStart := sampleResources()
-	startWrites, startEvents := f.memoryWrites, f.eventCount
+	_, restoreResourceScope := enterFrameResourceScope(f, m.Budget)
+	defer restoreResourceScope()
 	opsExecuted := 0
 	for pc := 0; pc < len(program); pc++ {
 		op := program[pc]
 		if err := checkPrimitiveCapability(m, op.Code); err != nil {
 			return fmt.Errorf("%s pc=%d %s: %w", m.ID, pc, op.Code, err)
 		}
+		if err := checkResourceBudgetBeforePrimitive(m.Budget, budgetStart, opsExecuted, f, op.Code); err != nil {
+			return fmt.Errorf("%s: %w", m.ID, err)
+		}
 		next, err := e.execPrimitive(m, op, f, pc, labels)
 		opsExecuted++
 		if err != nil {
 			return fmt.Errorf("%s pc=%d %s: %w", m.ID, pc, op.Code, err)
 		}
-		if err := checkResourceBudget(m.Budget, budgetStart, opsExecuted, f.memoryWrites-startWrites, f.eventCount-startEvents); err != nil {
+		if err := checkResourceBudget(m.Budget, budgetStart, opsExecuted); err != nil {
 			return fmt.Errorf("%s: %w", m.ID, err)
 		}
 		if next >= 0 {
@@ -2124,6 +2129,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		id, status, er := e.importMemoryJSON(x(op.A), truth(x(op.Args["remote"])))
 		if er != nil {
 			return -1, er
+		}
+		if status == "imported" {
+			f.memoryWrites++
 		}
 		if op.B != "" {
 			f.Vars[op.B] = id

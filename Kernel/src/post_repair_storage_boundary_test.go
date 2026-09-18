@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1010,5 +1012,261 @@ func TestV2IndexedStoreLazilyRejectsCorruptRecordDigest(t *testing.T) {
 	}
 	if _, err := store.readRecord(entry); err == nil || !strings.Contains(strings.ToLower(err.Error()), "digest mismatch") {
 		t.Fatalf("corrupt record passed lazy digest verification: %v", err)
+	}
+}
+
+func TestCanonicalMemoryWriteBudgetRejectsBeforeSecondMutation(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	m := &Memory{
+		ID: "budget.write.guard", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, State: map[string]any{},
+		Capabilities: []string{"memory.write"},
+		Budget:       ResourceBudget{MaxMemoryWrites: 1},
+		Program: []Op{
+			{Code: "state_set", A: "budget.write.guard", B: "first", C: "1"},
+			{Code: "state_set", A: "budget.write.guard", B: "second", C: "2"},
+		},
+	}
+	e.addRuntimeMemory(m)
+	f := newFrame()
+	err := e.run(m.ID, f)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "memory_writes") {
+		t.Fatalf("expected memory-write budget error, got %v", err)
+	}
+	got, err := e.resolveIDLocal(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got.State["first"]) != "1" {
+		t.Fatalf("first allowed mutation missing: %#v", got.State)
+	}
+	if _, exists := got.State["second"]; exists {
+		t.Fatalf("budget-exceeding second mutation was applied before rejection: %#v", got.State)
+	}
+}
+
+func TestNestedCallUsesCalleeResourceBudget(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	child := &Memory{
+		ID: "budget.child.writer", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, State: map[string]any{},
+		Capabilities: []string{"memory.write"},
+		Budget:       ResourceBudget{MaxMemoryWrites: 1},
+		Program: []Op{
+			{Code: "state_set", A: "budget.child.writer", B: "first", C: "1"},
+			{Code: "state_set", A: "budget.child.writer", B: "second", C: "2"},
+		},
+	}
+	parent := &Memory{
+		ID: "budget.parent.caller", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, Program: []Op{{Code: "call", A: child.ID}},
+	}
+	e.addRuntimeMemory(child)
+	e.addRuntimeMemory(parent)
+	err := e.run(parent.ID, newFrame())
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "memory_writes") {
+		t.Fatalf("callee write budget was not enforced: %v", err)
+	}
+	got, err := e.resolveIDLocal(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got.State["first"]) != "1" {
+		t.Fatalf("first callee mutation missing: %#v", got.State)
+	}
+	if _, exists := got.State["second"]; exists {
+		t.Fatalf("callee exceeded its own write budget before rejection: %#v", got.State)
+	}
+}
+
+func TestCallerResourceBudgetDoesNotLeakIntoCallee(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	child := &Memory{
+		ID: "budget.child.independent", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, State: map[string]any{},
+		Capabilities: []string{"memory.write"},
+		Program: []Op{
+			{Code: "state_set", A: "budget.child.independent", B: "first", C: "1"},
+			{Code: "state_set", A: "budget.child.independent", B: "second", C: "2"},
+		},
+	}
+	parent := &Memory{
+		ID: "budget.parent.independent", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, Budget: ResourceBudget{MaxMemoryWrites: 1},
+		Program: []Op{{Code: "call", A: child.ID}},
+	}
+	e.addRuntimeMemory(child)
+	e.addRuntimeMemory(parent)
+	if err := e.run(parent.ID, newFrame()); err != nil {
+		t.Fatalf("caller write budget leaked into callee execution: %v", err)
+	}
+	got, err := e.resolveIDLocal(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got.State["first"]) != "1" || fmt.Sprint(got.State["second"]) != "2" {
+		t.Fatalf("callee did not execute under its own budget: %#v", got.State)
+	}
+}
+
+func TestEventBudgetRejectsBeforeSecondEmit(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	m := &Memory{
+		ID: "budget.event.guard", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, Capabilities: []string{"event.emit"},
+		Budget: ResourceBudget{MaxEvents: 1},
+		Program: []Op{
+			{Code: "emit_event", A: "test.budget.event.one"},
+			{Code: "emit_event", A: "test.budget.event.two"},
+		},
+	}
+	e.addRuntimeMemory(m)
+	f := newFrame()
+	err := e.run(m.ID, f)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "events") {
+		t.Fatalf("expected event budget error, got %v", err)
+	}
+	if f.eventCount != 1 || len(f.Events) != 1 {
+		t.Fatalf("second event was emitted before budget rejection: count=%d events=%d", f.eventCount, len(f.Events))
+	}
+}
+
+func TestDaemonConnectionRejectsOversizedRequest(t *testing.T) {
+	t.Setenv("MEMORYAI_DAEMON_MAX_BYTES", "256")
+	t.Setenv("MEMORYAI_DAEMON_TIMEOUT_MS", "1000")
+	e := loadCurrentBodyForGrowthTest(t)
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		e.serveDaemonConn(server)
+		close(done)
+	}()
+	go func() {
+		payload, _ := json.Marshal(daemonRequest{Args: []string{"health", strings.Repeat("x", 1024)}})
+		_, _ = client.Write(append(payload, '\n'))
+	}()
+	response, err := readAllPhysicalBounded(client, 1024, "daemon test response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	var res daemonResponse
+	if err := json.Unmarshal(response, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.OK {
+		t.Fatalf("oversized daemon request was accepted: %#v", res)
+	}
+}
+
+func TestMeshHTTPRejectsOversizedRequestBeforeAuthentication(t *testing.T) {
+	t.Setenv("MEMORYAI_MESH_MAX_BYTES", "256")
+	req := httptest.NewRequest(http.MethodPost, meshRPCPath, strings.NewReader(strings.Repeat("x", 1024)))
+	rec := httptest.NewRecorder()
+	m := &meshRuntime{}
+	m.handleHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized Mesh request status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "physical byte ceiling") {
+		t.Fatalf("oversized Mesh request did not report physical ceiling: %s", rec.Body.String())
+	}
+}
+
+func TestCanonicalEventBudgetRejectsBeforeSecondEmit(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	m := &Memory{
+		ID: "budget.event.guard", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, Capabilities: []string{"event.emit"},
+		Budget: ResourceBudget{MaxEvents: 1},
+		Program: []Op{
+			{Code: "emit_event", A: "budget.test.one"},
+			{Code: "emit_event", A: "budget.test.two"},
+		},
+	}
+	e.addRuntimeMemory(m)
+	f := newFrame()
+	err := e.run(m.ID, f)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "events") {
+		t.Fatalf("expected event budget error, got %v", err)
+	}
+	if len(f.Events) != 1 || f.Events[0].Name != "budget.test.one" {
+		t.Fatalf("budget-exceeding event was emitted before rejection: %#v", f.Events)
+	}
+}
+
+func TestCanonicalOpBudgetRejectsBeforeNextPrimitive(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	m := &Memory{
+		ID: "budget.ops.guard", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, Budget: ResourceBudget{MaxOps: 1},
+		Program: []Op{
+			{Code: "set", A: "first", B: "1"},
+			{Code: "set", A: "second", B: "2"},
+		},
+	}
+	e.addRuntimeMemory(m)
+	f := newFrame()
+	err := e.run(m.ID, f)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ops") {
+		t.Fatalf("expected op budget error, got %v", err)
+	}
+	if f.Vars["first"] != "1" || f.Vars["second"] != "" {
+		t.Fatalf("budget-exceeding primitive executed: %#v", f.Vars)
+	}
+}
+
+func TestDaemonResponseWriterEnforcesPhysicalCeiling(t *testing.T) {
+	t.Setenv("MEMORYAI_DAEMON_MAX_BYTES", "256")
+	var buf bytes.Buffer
+	err := writeDaemonResponseBounded(&buf, daemonResponse{
+		OK:   true,
+		Data: map[string]any{"payload": strings.Repeat("x", 4096)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(buf.Len()) > daemonTransportMaxBytes() {
+		t.Fatalf("daemon response exceeded physical ceiling: size=%d max=%d", buf.Len(), daemonTransportMaxBytes())
+	}
+	var res daemonResponse
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || !strings.Contains(strings.ToLower(res.Error), "physical byte ceiling") {
+		t.Fatalf("oversized daemon response was not converted to bounded failure: %#v", res)
+	}
+}
+
+func TestMeshResponseWriterEnforcesPhysicalCeiling(t *testing.T) {
+	t.Setenv("MEMORYAI_MESH_MAX_BYTES", "256")
+	rec := httptest.NewRecorder()
+	writeMeshResponseBounded(rec, http.StatusOK, MeshResponse{
+		OK:    true,
+		Frame: &Frame{Vars: map[string]string{"payload": strings.Repeat("x", 4096)}},
+	})
+	if int64(rec.Body.Len()) > meshTransportMaxBytes() {
+		t.Fatalf("Mesh response exceeded physical ceiling: size=%d max=%d", rec.Body.Len(), meshTransportMaxBytes())
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized Mesh response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var res MeshResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || !strings.Contains(strings.ToLower(res.Error), "physical byte ceiling") {
+		t.Fatalf("oversized Mesh response was not converted to bounded failure: %#v", res)
+	}
+}
+
+func TestMeshHTTPServerCarriesPhysicalTimeouts(t *testing.T) {
+	server := newMeshHTTPServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	if server.ReadHeaderTimeout != meshHTTPReadHeaderTimeout ||
+		server.ReadTimeout != meshHTTPReadTimeout ||
+		server.WriteTimeout != meshHTTPWriteTimeout ||
+		server.IdleTimeout != meshHTTPIdleTimeout ||
+		server.MaxHeaderBytes != meshHTTPMaxHeaderBytes {
+		t.Fatalf("Mesh HTTP server physical limits missing: %#v", server)
 	}
 }

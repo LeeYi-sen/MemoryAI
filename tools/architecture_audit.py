@@ -148,9 +148,15 @@ def audit() -> dict[str, object]:
         [
             "hardPhysicalExchangeMaxBytes",
             "hardArtifactMaxBytes",
+            "hardDaemonTransportMaxBytes",
+            "hardMeshTransportMaxBytes",
             "MEMORYAI_PHYSICAL_EXCHANGE_MAX_BYTES",
             "MEMORYAI_ARTIFACT_MAX_BYTES",
+            "MEMORYAI_DAEMON_MAX_BYTES",
+            "MEMORYAI_MESH_MAX_BYTES",
             "io.LimitReader(r, maxBytes+1)",
+            "encodeJSONPhysicalBounded",
+            "encoded payload exceeds physical byte ceiling",
             "response exceeds physical byte ceiling",
         ],
         "physical byte ceilings",
@@ -247,8 +253,66 @@ def audit() -> dict[str, object]:
         "Sovereign node identity binding",
     )
 
+    resource_runtime = read("Kernel/src/resource_runtime.go")
+    require(
+        resource_runtime + kernel_source_text,
+        [
+            "enterFrameResourceScope",
+            "reservePrimitiveResourceBudget",
+            "primitiveMayMemoryWrite",
+            "primitiveMayEmitEvent",
+            "checkResourceBudgetBeforePrimitive",
+            "execPrimitive(m, op, f, pc, labels)",
+        ],
+        "pre-side-effect resource budget",
+    )
+    budget_check = kernel_source_text.find("checkResourceBudgetBeforePrimitive")
+    primitive_exec = kernel_source_text.find("execPrimitive(m, op, f, pc, labels)")
+    if budget_check < 0 or primitive_exec < 0 or budget_check > primitive_exec:
+        raise RuntimeError("resource budget check must precede primitive execution")
+    forbid(
+        kernel_source_text + resource_runtime,
+        ["memoryWriteCeiling", "eventCeiling", "enterFrameResourceCeilings"],
+        "pre-side-effect resource budget",
+    )
+
     daemon = read("Kernel/src/daemon_runtime.go")
     require(daemon, ["event:memory.activity" if False else 'fireEvent("memory.activity"', 'fireEvent("memory.run.resolve"'], "daemon")
+    require(
+        daemon + physical_limits,
+        [
+            "daemonConnectionTimeout",
+            "daemonMaxConcurrent",
+            "SetDeadline",
+            "io.LimitedReader{R: conn, N: maxBytes + 1}",
+            "writeDaemonResponseBounded",
+            "encodeJSONPhysicalBounded",
+            "daemon physical concurrency limit reached",
+        ],
+        "daemon transport boundary",
+    )
+    require(
+        mesh_runtime + physical_limits,
+        [
+            "meshTransportMaxBytes",
+            "mesh request exceeds physical byte ceiling",
+            'readAllPhysicalBounded(resp.Body, maxBytes, "mesh response")',
+            'readAllPhysicalBounded(r.Body, meshTransportMaxBytes(), "mesh request")',
+            "writeMeshResponseBounded",
+            "newMeshHTTPServer",
+            "ReadHeaderTimeout: meshHTTPReadHeaderTimeout",
+            "ReadTimeout:       meshHTTPReadTimeout",
+            "WriteTimeout:      meshHTTPWriteTimeout",
+            "IdleTimeout:       meshHTTPIdleTimeout",
+            "MaxHeaderBytes:    meshHTTPMaxHeaderBytes",
+        ],
+        "Mesh HTTP transport boundary",
+    )
+    forbid(
+        mesh_runtime,
+        ['io.LimitReader(resp.Body, 2<<20)', 'io.LimitReader(r.Body, 2<<20)'],
+        "Mesh HTTP transport boundary",
+    )
     forbid(
         daemon,
         [

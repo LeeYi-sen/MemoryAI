@@ -65,3 +65,20 @@
 - Canonical cognitive seed is unchanged: 129 Memories, seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`.
 - Canonical physical body is now version `28.9.0-memory-fabric-sovereign`, SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 30/30 PASS; live architecture audit PASS; Python suite 47/47 PASS; `go vet` PASS; full direct Go suite PASS; focused post-repair `go test -race -count=20` PASS; `git diff --check` PASS; Memory.mem verify PASS. No `go build` or release packaging executed.
+
+## Continued audit after Entry 040
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-026 | P0 | DONE | Canonical `run()` checks write/event/op budgets only after a primitive executes; a budget-exceeding Memory mutation can remain applied even though execution returns an error | Install run-scoped physical ceilings and reject the next potentially mutating/event primitive before execution once the ceiling is exhausted; keep post-sampling as a backstop for CPU/allocation telemetry |
+| PR-027 | P0 | DONE | Daemon Unix-socket JSON accepts unbounded input with no per-connection deadline or concurrency cap | Bound daemon request/response bytes, set physical connection deadlines, and cap concurrent daemon handlers |
+| PR-028 | P0 | DONE | Mesh HTTP request/response uses truncating `LimitReader(2 MiB)` and the server has no read/write/header/idle deadlines | Reject oversized Mesh payloads explicitly before auth/JSON, bound outbound requests/responses, and configure HTTP server transport timeouts/header ceiling |
+
+## Entry 041 closure evidence
+
+- PR-026 through PR-028 are DONE.
+- Memory write/event/op quotas now fail closed before the budget-exceeding primitive creates its side effect. Nested calls execute under the callee resource scope and restore the caller scope on return.
+- Daemon Unix-socket requests/responses are byte-bounded; connections have deadlines; handler concurrency is hard-capped.
+- Mesh HTTP requests/responses use overflow-detecting byte ceilings instead of truncating readers, and the HTTP server has read-header/read/write/idle timeouts plus a header-size ceiling.
+- Bounded JSON response encoding is streaming and stops once the physical ceiling is reached instead of first materializing an unbounded JSON payload.
+- Final architecture regression suite for this entry is 33/33 PASS.

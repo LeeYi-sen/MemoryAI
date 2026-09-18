@@ -463,5 +463,51 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_requires_resource_budget_before_primitive_execution(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "checkResourceBudgetBeforePrimitive(m.Budget, budgetStart, opsExecuted, f, op.Code)",
+                "checkResourceBudgetAfterPrimitive(m.Budget, budgetStart, opsExecuted, f, op.Code)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "resource budget"):
+            self.run_audit(repo)
+
+    def test_requires_daemon_transport_concurrency_boundary(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        daemon = repo / "Kernel/src/daemon_runtime.go"
+        daemon.write_text(
+            daemon.read_text(encoding="utf-8").replace(
+                "daemon physical concurrency limit reached",
+                "daemon concurrency unchecked",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "daemon transport boundary"):
+            self.run_audit(repo)
+
+    def test_requires_mesh_http_server_timeouts(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        mesh = repo / "Kernel/src/mesh_runtime.go"
+        mesh.write_text(
+            mesh.read_text(encoding="utf-8").replace(
+                "ReadHeaderTimeout: meshHTTPReadHeaderTimeout",
+                "ReadHeaderTimeout: 0",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Mesh HTTP transport boundary"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()

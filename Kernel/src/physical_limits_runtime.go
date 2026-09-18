@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +15,10 @@ const (
 	hardPhysicalExchangeMaxBytes    int64 = 16 << 20
 	defaultArtifactMaxBytes         int64 = 4 << 20
 	hardArtifactMaxBytes            int64 = 64 << 20
+	defaultDaemonTransportMaxBytes  int64 = 1 << 20
+	hardDaemonTransportMaxBytes     int64 = 8 << 20
+	defaultMeshTransportMaxBytes    int64 = 2 << 20
+	hardMeshTransportMaxBytes       int64 = 16 << 20
 )
 
 func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
@@ -72,4 +78,46 @@ func ensureArtifactSizeWithinLimit(path string, maxBytes int64) error {
 		return fmt.Errorf("artifact exceeds physical byte ceiling: size=%d max=%d", info.Size(), maxBytes)
 	}
 	return nil
+}
+
+func daemonTransportMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_DAEMON_MAX_BYTES",
+		defaultDaemonTransportMaxBytes,
+		hardDaemonTransportMaxBytes,
+	)
+}
+
+func meshTransportMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_MESH_MAX_BYTES",
+		defaultMeshTransportMaxBytes,
+		hardMeshTransportMaxBytes,
+	)
+}
+
+type physicalByteCeilingBuffer struct {
+	buf bytes.Buffer
+	max int64
+}
+
+func (w *physicalByteCeilingBuffer) Write(p []byte) (int, error) {
+	if w == nil || w.max < 1 {
+		return 0, fmt.Errorf("physical byte ceiling writer unavailable")
+	}
+	if int64(w.buf.Len())+int64(len(p)) > w.max {
+		return 0, fmt.Errorf("encoded payload exceeds physical byte ceiling: max=%d", w.max)
+	}
+	return w.buf.Write(p)
+}
+
+func encodeJSONPhysicalBounded(v any, maxBytes int64, label string) ([]byte, error) {
+	if maxBytes < 1 {
+		return nil, fmt.Errorf("%s physical byte ceiling invalid: %d", label, maxBytes)
+	}
+	w := &physicalByteCeilingBuffer{max: maxBytes}
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	return append([]byte(nil), w.buf.Bytes()...), nil
 }

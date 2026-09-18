@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +17,14 @@ import (
 )
 
 const meshRPCPath = "/memoryai/mesh/v1"
+
+const (
+	meshHTTPReadHeaderTimeout = 5 * time.Second
+	meshHTTPReadTimeout       = 10 * time.Second
+	meshHTTPWriteTimeout      = 10 * time.Second
+	meshHTTPIdleTimeout       = 30 * time.Second
+	meshHTTPMaxHeaderBytes    = 32 << 10
+)
 
 type MeshNode struct {
 	ID        string `json:"id"`
@@ -217,6 +225,10 @@ func (m *meshRuntime) rpc(endpoint string, req MeshRequest) (MeshResponse, error
 	if err != nil {
 		return out, err
 	}
+	maxBytes := meshTransportMaxBytes()
+	if int64(len(body)) > maxBytes {
+		return out, fmt.Errorf("mesh request exceeds physical byte ceiling: size=%d max=%d", len(body), maxBytes)
+	}
 	nodeID, nodeSignature, err := signMeshNodeRequest(m, body)
 	if err != nil {
 		return out, err
@@ -234,7 +246,7 @@ func (m *meshRuntime) rpc(endpoint string, req MeshRequest) (MeshResponse, error
 		return out, err
 	}
 	defer resp.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	payload, err := readAllPhysicalBounded(resp.Body, maxBytes, "mesh response")
 	if err != nil {
 		return out, err
 	}
@@ -259,7 +271,7 @@ func (m *meshRuntime) startHTTPServer(addr string) error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Handler: http.HandlerFunc(m.handleHTTP)}
+	server := newMeshHTTPServer(http.HandlerFunc(m.handleHTTP))
 	m.mu.Lock()
 	if m.server != nil {
 		m.mu.Unlock()
@@ -288,35 +300,62 @@ func (m *meshRuntime) startHTTPServer(addr string) error {
 func (m *meshRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost || r.URL.Path != meshRPCPath {
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "mesh endpoint not found"})
+		writeMeshResponseBounded(w, http.StatusNotFound, MeshResponse{OK: false, Error: "mesh endpoint not found"})
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	body, err := readAllPhysicalBounded(r.Body, meshTransportMaxBytes(), "mesh request")
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: err.Error()})
+		writeMeshResponseBounded(w, http.StatusRequestEntityTooLarge, MeshResponse{OK: false, Error: err.Error()})
 		return
 	}
 	if !meshVerifyBytes(meshTransportKey(), body, r.Header.Get("X-MemoryAI-Mesh-Signature")) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "mesh transport signature denied"})
+		writeMeshResponseBounded(w, http.StatusUnauthorized, MeshResponse{OK: false, Error: "mesh transport signature denied"})
 		return
 	}
 	var req MeshRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: err.Error()})
+		writeMeshResponseBounded(w, http.StatusBadRequest, MeshResponse{OK: false, Error: err.Error()})
 		return
 	}
 	if err := m.authenticateMeshHTTPRequest(&req, body, r.Header.Get(meshNodeIDHeader), r.Header.Get(meshNodeSignatureHeader)); err != nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "mesh node identity denied: " + err.Error()})
+		writeMeshResponseBounded(w, http.StatusUnauthorized, MeshResponse{OK: false, Error: "mesh node identity denied: " + err.Error()})
 		return
 	}
 	res := m.handleRPC(req)
+	status := http.StatusOK
 	if !res.OK {
-		w.WriteHeader(http.StatusConflict)
+		status = http.StatusConflict
 	}
-	_ = json.NewEncoder(w).Encode(res)
+	writeMeshResponseBounded(w, status, res)
+}
+
+func writeMeshResponseBounded(w http.ResponseWriter, status int, res MeshResponse) {
+	if w == nil {
+		return
+	}
+	maxBytes := meshTransportMaxBytes()
+	payload, err := encodeJSONPhysicalBounded(res, maxBytes, "mesh response")
+	if err != nil {
+		status = http.StatusRequestEntityTooLarge
+		payload, err = encodeJSONPhysicalBounded(MeshResponse{
+			OK: false, Error: fmt.Sprintf("mesh response exceeds physical byte ceiling: max=%d", maxBytes),
+		}, maxBytes, "mesh error response")
+		if err != nil {
+			http.Error(w, "mesh response encoding failed", http.StatusInternalServerError)
+			return
+		}
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
+}
+
+func newMeshHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: meshHTTPReadHeaderTimeout,
+		ReadTimeout:       meshHTTPReadTimeout,
+		WriteTimeout:      meshHTTPWriteTimeout,
+		IdleTimeout:       meshHTTPIdleTimeout,
+		MaxHeaderBytes:    meshHTTPMaxHeaderBytes,
+	}
 }

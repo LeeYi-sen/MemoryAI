@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -28,6 +28,87 @@ type daemonResponse struct {
 var daemonConnections uint64
 
 const defaultDaemonIdleInterval = time.Second
+
+const (
+	defaultDaemonConnectionTimeout = 15 * time.Second
+	hardDaemonConnectionTimeout    = 60 * time.Second
+	defaultDaemonMaxConcurrent     = 32
+	hardDaemonMaxConcurrent        = 256
+)
+
+func daemonConnectionTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_DAEMON_TIMEOUT_MS"))
+	if raw == "" {
+		return defaultDaemonConnectionTimeout
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 1 {
+		return defaultDaemonConnectionTimeout
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d > hardDaemonConnectionTimeout {
+		return hardDaemonConnectionTimeout
+	}
+	return d
+}
+
+func daemonMaxConcurrent() int {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_DAEMON_MAX_CONCURRENT"))
+	if raw == "" {
+		return defaultDaemonMaxConcurrent
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultDaemonMaxConcurrent
+	}
+	if n > hardDaemonMaxConcurrent {
+		return hardDaemonMaxConcurrent
+	}
+	return n
+}
+
+func writeDaemonResponseBounded(w io.Writer, res daemonResponse) error {
+	maxBytes := daemonTransportMaxBytes()
+	payload, err := encodeJSONPhysicalBounded(res, maxBytes, "daemon response")
+	if err != nil {
+		payload, err = encodeJSONPhysicalBounded(daemonResponse{
+			OK:    false,
+			Error: fmt.Sprintf("daemon response exceeds physical byte ceiling: max=%d", maxBytes),
+		}, maxBytes, "daemon error response")
+		if err != nil {
+			return err
+		}
+	}
+	_, err = w.Write(payload)
+	return err
+}
+
+func (e *Engine) serveDaemonConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(daemonConnectionTimeout()))
+
+	maxBytes := daemonTransportMaxBytes()
+	limited := &io.LimitedReader{R: conn, N: maxBytes + 1}
+	dec := json.NewDecoder(limited)
+	var req daemonRequest
+	decodeErr := dec.Decode(&req)
+	consumed := maxBytes + 1 - limited.N
+	if consumed > maxBytes {
+		_ = writeDaemonResponseBounded(conn, daemonResponse{
+			OK:    false,
+			Error: fmt.Sprintf("daemon request exceeds physical byte ceiling: max=%d", maxBytes),
+		})
+		return
+	}
+	if decodeErr != nil {
+		_ = writeDaemonResponseBounded(conn, daemonResponse{OK: false, Error: decodeErr.Error()})
+		return
+	}
+	_ = writeDaemonResponseBounded(conn, e.handleDaemonRequest(req))
+}
 
 func daemonIdleInterval() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("MEMORYAI_IDLE_INTERVAL_MS"))
@@ -71,11 +152,26 @@ func runDaemonClient(socket string, args []string) error {
 		return err
 	}
 	defer c.Close()
-	if err := json.NewEncoder(c).Encode(daemonRequest{Args: args}); err != nil {
+	_ = c.SetDeadline(time.Now().Add(daemonConnectionTimeout()))
+
+	payload, err := json.Marshal(daemonRequest{Args: args})
+	if err != nil {
+		return err
+	}
+	maxBytes := daemonTransportMaxBytes()
+	if int64(len(payload)) > maxBytes {
+		return fmt.Errorf("daemon request exceeds physical byte ceiling: size=%d max=%d", len(payload), maxBytes)
+	}
+	payload = append(payload, '\n')
+	if _, err := c.Write(payload); err != nil {
+		return err
+	}
+	response, err := readAllPhysicalBounded(c, maxBytes, "daemon response")
+	if err != nil {
 		return err
 	}
 	var res daemonResponse
-	if err := json.NewDecoder(c).Decode(&res); err != nil {
+	if err := json.Unmarshal(response, &res); err != nil {
 		return err
 	}
 	b, _ := json.MarshalIndent(res, "", "  ")
@@ -271,22 +367,25 @@ func (e *Engine) runDaemon(socket string) error {
 	go e.runPhysicalIdleTicker(idleStop)
 	defer close(idleStop)
 
+	concurrency := make(chan struct{}, daemonMaxConcurrent())
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return err
 		}
 		atomic.AddUint64(&daemonConnections, 1)
-		go func(conn net.Conn) {
-			defer conn.Close()
-			dec := json.NewDecoder(bufio.NewReader(conn))
-			enc := json.NewEncoder(conn)
-			var req daemonRequest
-			if err := dec.Decode(&req); err != nil {
-				_ = enc.Encode(daemonResponse{OK: false, Error: err.Error()})
-				return
-			}
-			_ = enc.Encode(e.handleDaemonRequest(req))
-		}(c)
+		select {
+		case concurrency <- struct{}{}:
+			go func(conn net.Conn) {
+				defer func() { <-concurrency }()
+				e.serveDaemonConn(conn)
+			}(c)
+		default:
+			_ = c.SetDeadline(time.Now().Add(time.Second))
+			_ = writeDaemonResponseBounded(c, daemonResponse{
+				OK: false, Error: "daemon physical concurrency limit reached",
+			})
+			_ = c.Close()
+		}
 	}
 }

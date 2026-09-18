@@ -226,3 +226,19 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - New security/integrity documentation: `docs/MESH_SECURITY.md` and `docs/MEMORY_BODY_INTEGRITY.md`. Remote storage transport constraints remain documented in `docs/REMOTE_STORAGE_SECURITY.md`.
 - Final validation before commit: architecture regression suite 30/30 PASS; live architecture audit PASS; Python suite 47/47 PASS; `go vet` PASS; full direct Go suite PASS; focused post-repair `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 041 — pre-side-effect budgets and bounded daemon/Mesh transport
+- Base HEAD: `7e4074f422d039c2af2a4358b4db5eef875b5531` (`Entry 040: harden physical identity and Memory integrity`).
+- Continued post-repair audit closed PR-026 through PR-028; `docs/POST_REPAIR_AUDIT_TRACKER.md` now has 28 DONE / 0 OPEN findings.
+- ResourceBudget side-effect ordering was corrected. `MaxOps` is checked before the next primitive executes. Potential Memory-write primitives reserve a `MaxMemoryWrites` slot before mutation, and `emit_event` reserves a `MaxEvents` slot before append/dispatch. A primitive/event beyond the quota never performs the side effect and then reports failure afterward.
+- Resource scope is per executing Memory. Nested `call` enters the callee budget scope and restores the caller scope on return; caller/callee physical quotas do not leak into each other or become cognitive selection policy.
+- CPU, total-allocation and heap-growth fields remain physical runtime sampling gates only. They are not interpreted as reward, fitness, confidence, relevance or goal priority.
+- Daemon Unix-socket transport is physically bounded: `MEMORYAI_DAEMON_MAX_BYTES` defaults to 1 MiB with 8 MiB hard max; `MEMORYAI_DAEMON_TIMEOUT_MS` defaults to 15 s with 60 s hard max; `MEMORYAI_DAEMON_MAX_CONCURRENT` defaults to 32 with 256 hard max. Oversized requests fail closed and handler concurrency is capped.
+- Daemon responses use a bounded streaming JSON encoder. Oversized response objects are converted to a bounded failure response instead of first materializing/transmitting an unbounded JSON payload.
+- Mesh HTTP transport is physically bounded by `MEMORYAI_MESH_MAX_BYTES` (2 MiB default, 16 MiB hard max). Inbound and outbound bodies use overflow-detecting ceilings instead of truncating `LimitReader(2 MiB)` behavior.
+- Mesh HTTP server now enforces 5 s read-header timeout, 10 s read timeout, 10 s write timeout, 30 s idle timeout and 32 KiB maximum header bytes. Existing TLS, HMAC membership and Ed25519 node-identity boundaries remain unchanged.
+- New documentation: `docs/RUNTIME_RESOURCE_BOUNDARIES.md`.
+- Canonical cognitive seed remains 129 Memories with SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`.
+- Canonical `data/Memory.mem` remains unchanged from Entry 040 with SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`; image version remains `28.9.0-memory-fabric-sovereign`; Memory ABI remains `memoryai-memory-abi-v1`.
+- Final validation: architecture regression suite 33/33 PASS; live architecture audit PASS; Python suite 50/50 PASS; `go vet` PASS; full direct Go suite PASS; focused resource/transport `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation is permitted for this development entry.
