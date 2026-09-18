@@ -2000,3 +2000,19 @@ func TestMeshLocalExecutionRejectsOversizedInputFrame(t *testing.T) {
 		t.Fatalf("Mesh local execution returned wrong overflow error: %q", res.Error)
 	}
 }
+
+func TestSchedulerRejectsOversizedSpeculativeFrameBeforeCommit(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	executable := &Memory{
+		ID: "scheduler.frame.bound", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1,
+		Program: []Op{{Code: "set", A: "a", B: "1"}, {Code: "set", A: "b", B: "2"}, {Code: "halt"}},
+	}
+	e := loadFabricWriteTestEngine(t, []*Memory{executable})
+	f := newFrame()
+	if err := globalTxnScheduler.run(e, executable.ID, f); err == nil {
+		t.Fatal("transaction scheduler committed an oversized speculative Frame")
+	}
+	if len(f.Vars) != 0 {
+		t.Fatalf("oversized speculative Frame partially replaced caller Frame: %#v", f.Vars)
+	}
+}

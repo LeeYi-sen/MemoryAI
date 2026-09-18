@@ -391,3 +391,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 53/53 PASS; live architecture audit PASS; Python suite 70/70 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-042 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 054 — bound CLI and speculative Frame commit
+- Base HEAD: `55967616cf1dbd0514748c5d855b53fd5780b475` (`Entry 053: make bulk Frame variable merges atomic`).
+- Continued post-repair audit closed PR-043; tracker now has 43 DONE / 0 OPEN findings.
+- CLI `run` / `run-debug` Frame arguments now use bounded incremental insertion and reject overflow before execution.
+- Speculative transaction Frames are checked against the full Frame-variable envelope before Fabric snapshot diff commit.
+- Final caller-Frame replacement uses `assignFrameBounded` as a second physical guard.
+- Overflow leaves caller Frame state unchanged and prevents the speculative Fabric diff from committing.
+- The boundary is physical-only: Kernel does not truncate, rank, filter, evict, or reinterpret variables.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 54/54 PASS; live architecture audit PASS; Python suite 71/71 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-043 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

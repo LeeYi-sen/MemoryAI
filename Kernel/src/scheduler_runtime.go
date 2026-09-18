@@ -100,6 +100,10 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 		return err
 	}
 
+	if err := ensureFrameVarsWithinPhysicalLimit(cf.Vars, "transaction Frame commit"); err != nil {
+		return err
+	}
+
 	diff := diffSnapshot(base, ce)
 	// The read-set and owner map are complete once diff is formed. Keep that
 	// logical context, but stop pinning the primary IndexedStore before commit.
@@ -111,7 +115,9 @@ func (s *txnScheduler) run(e *Engine, id string, f *Frame) error {
 		atomic.AddUint64(&speculativeConflicted, 1)
 		return s.canonical(e, id, f)
 	}
-	assignFrame(f, cf)
+	if err := assignFrameBounded(f, cf); err != nil {
+		return err
+	}
 	atomic.AddUint64(&speculativeCommitted, 1)
 	return nil
 }

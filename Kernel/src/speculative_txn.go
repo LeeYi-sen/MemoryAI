@@ -64,16 +64,25 @@ func cloneFrame(f *Frame) *Frame {
 	return q
 }
 
-func assignFrame(dst, src *Frame) {
-	dst.Vars = map[string]string{}
-	dst.Lists = map[string][]string{}
+func assignFrameBounded(dst, src *Frame) error {
+	if dst == nil || src == nil {
+		return fmt.Errorf("transaction Frame assign requires source and destination")
+	}
+	if err := ensureFrameVarsWithinPhysicalLimit(src.Vars, "transaction Frame assign"); err != nil {
+		return err
+	}
+	vars := make(map[string]string, len(src.Vars))
 	for k, v := range src.Vars {
-		dst.Vars[k] = v
+		vars[k] = v
 	}
+	lists := map[string][]string{}
 	for k, vs := range src.Lists {
-		dst.Lists[k] = append([]string(nil), vs...)
+		lists[k] = append([]string(nil), vs...)
 	}
+	dst.Vars = vars
+	dst.Lists = lists
 	dst.Output = append([]string(nil), src.Output...)
+	return nil
 }
 
 func (e *Engine) snapshotForSpeculation(maxMem int) (*Engine, *memorySnapshot, error) {

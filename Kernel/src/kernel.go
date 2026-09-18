@@ -206,8 +206,11 @@ func main() {
 		if len(args) < 2 {
 			err = errors.New("run requires Memory id/tag")
 		} else {
-			f := frameFromArgs(args[2:])
-			err = e.run(args[1], f)
+			var f *Frame
+			f, err = frameFromArgs(args[2:])
+			if err == nil {
+				err = e.run(args[1], f)
+			}
 			if err == nil {
 				printFrame(f)
 			}
@@ -216,8 +219,11 @@ func main() {
 		if len(args) < 2 {
 			err = errors.New("run-debug requires Memory id/tag")
 		} else {
-			f := frameFromArgs(args[2:])
-			err = e.run(args[1], f)
+			var f *Frame
+			f, err = frameFromArgs(args[2:])
+			if err == nil {
+				err = e.run(args[1], f)
+			}
 			if err == nil {
 				b, _ := json.MarshalIndent(map[string]any{"frame": f, "page_ins": e.pageIns, "hot_cache": len(e.cache), "trace": e.trace}, "", "  ")
 				fmt.Println(string(b))
@@ -427,14 +433,16 @@ func main() {
 }
 func die(err error)    { fmt.Fprintln(os.Stderr, "MEMORY ERROR:", err); os.Exit(1) }
 func newFrame() *Frame { return &Frame{Vars: map[string]string{}, Lists: map[string][]string{}} }
-func frameFromArgs(xs []string) *Frame {
+func frameFromArgs(xs []string) (*Frame, error) {
 	f := newFrame()
 	for _, x := range xs {
 		if i := strings.IndexByte(x, '='); i > 0 {
-			f.Vars[x[:i]] = x[i+1:]
+			if err := setFrameVarBounded(f, x[:i], x[i+1:], "CLI frame args"); err != nil {
+				return nil, err
+			}
 		}
 	}
-	return f
+	return f, nil
 }
 func printFrame(f *Frame) {
 	if len(f.Output) > 0 {

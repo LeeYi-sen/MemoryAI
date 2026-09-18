@@ -355,6 +355,17 @@ def audit() -> dict[str, object]:
         "atomic bulk Frame variable merge",
     )
 
+    scheduler_frame_runtime = read("Kernel/src/scheduler_runtime.go")
+    require(
+        kernel_source_text + scheduler_frame_runtime,
+        [
+            'setFrameVarBounded(f, x[:i], x[i+1:], "CLI frame args")',
+            'ensureFrameVarsWithinPhysicalLimit(cf.Vars, "transaction Frame commit")',
+            'assignFrameBounded(f, cf)',
+        ],
+        "bounded CLI and speculative Frame commit",
+    )
+
     structure_creation = read("Kernel/src/structure_runtime.go")
     fabric_write_creation = read("Kernel/src/fabric_write_runtime.go")
     shard_creation = read("Kernel/src/shard_runtime.go")

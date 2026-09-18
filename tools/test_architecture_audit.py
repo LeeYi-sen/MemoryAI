@@ -822,5 +822,21 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_requires_bounded_cli_and_speculative_frame_commit(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        scheduler = repo / "Kernel/src/scheduler_runtime.go"
+        scheduler.write_text(
+            scheduler.read_text(encoding="utf-8").replace(
+                'if err := ensureFrameVarsWithinPhysicalLimit(cf.Vars, "transaction Frame commit"); err != nil {',
+                'if err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded CLI and speculative Frame commit"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()

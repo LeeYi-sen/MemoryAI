@@ -282,3 +282,19 @@
 - Daemon `run` / `event` key/value arguments are parsed incrementally through `setFrameVarBounded`, preventing an oversized argument map from being materialized as Frame state.
 - No variable truncation, semantic filtering, priority selection, or eviction is introduced.
 - Final validation: architecture regression suite 53/53 PASS; live architecture audit PASS; Python suite 70/70 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-042 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 053
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-043 | P0 | DONE | CLI `run/run-debug` frame arguments bypass bounded insertion, and speculative transaction execution can build an oversized Frame then commit Fabric diffs and replace the caller Frame without a final Frame-variable envelope check | Parse CLI Frame args incrementally through the bounded setter; validate speculative Frame Vars before Fabric diff commit and use a bounded final Frame assignment backstop so overflow cannot commit Memory changes or caller Frame state |
+
+## Entry 054 closure evidence
+
+- PR-043 is DONE.
+- CLI `run` / `run-debug` `key=value` arguments are inserted incrementally through `setFrameVarBounded`; overflow is returned before Memory execution.
+- Speculative execution validates `cf.Vars` against the complete Frame envelope before computing/committing its Fabric snapshot diff.
+- `assignFrameBounded` is a final Frame-replacement backstop and only replaces caller Vars after successful validation.
+- An oversized speculative Frame leaves the caller Frame unchanged and does not commit the speculative Memory/Fabric diff.
+- No variable truncation, semantic ranking, filtering, or eviction is introduced.
+- Final validation: architecture regression suite 54/54 PASS; live architecture audit PASS; Python suite 71/71 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-043 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
