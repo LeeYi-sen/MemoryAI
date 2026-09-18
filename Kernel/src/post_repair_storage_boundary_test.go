@@ -1468,3 +1468,31 @@ func TestStorageOversizedReplyFallsBackToBoundedSignedError(t *testing.T) {
 		t.Fatalf("oversized storage response did not become bounded failure: %#v", reply)
 	}
 }
+
+func TestRemoteStorageTimeoutParserHardCapsMemoryValue(t *testing.T) {
+	got := parseTimeout("999999999")
+	if got > 120*time.Second {
+		t.Fatalf("remote storage timeout escaped physical hard cap: %v", got)
+	}
+}
+
+func TestSourceAdapterTimeoutParserHardCapsMemoryValue(t *testing.T) {
+	got := sourceParseTimeout("999999h")
+	if got > 120*time.Second {
+		t.Fatalf("source adapter timeout escaped physical hard cap: %v", got)
+	}
+}
+
+func TestPhysicalExchangeTimeoutParserHardCapsMemoryValue(t *testing.T) {
+	got := parsePhysicalExchangeTimeoutMS("999999999")
+	if got != hardPhysicalExchangeTimeout {
+		t.Fatalf("raw exchange timeout escaped physical hard cap: %v", got)
+	}
+}
+
+func TestRemoteStorageDirectTimeoutClamp(t *testing.T) {
+	got := storageRequestTimeout(24 * time.Hour)
+	if got != hardStorageConnectionTimeout {
+		t.Fatalf("direct remote storage timeout escaped physical hard cap: %v", got)
+	}
+}

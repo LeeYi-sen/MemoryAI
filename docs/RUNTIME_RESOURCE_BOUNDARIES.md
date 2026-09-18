@@ -57,3 +57,15 @@ The event batch hard ceiling is 256 handlers; the normal batch size is derived f
 `call_parallel` has a separate physical cardinality ceiling. `MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS` defaults to 1024 and is hard-capped by the Kernel at 65536 targets.
 
 If a Memory requests a larger fan-out, execution fails before copying the target list, allocating result/status arrays, or running child Memories. Memory may explicitly batch larger work itself.
+
+## External I/O timeout ceilings
+
+Memory-provided timeout values are physical execution parameters only and are hard-capped before blocking I/O begins.
+
+- Raw `physical_exchange`: 5 s default, 60 s hard maximum.
+- Remote-storage client requests: 5 s default, 120 s hard maximum.
+- Source adapters: 15 s default, 120 s hard maximum.
+
+Raw exchange and remote-storage requests clamp again at the actual I/O function boundary, so a direct internal caller cannot bypass parser-level limits. Oversized integer values are capped before `time.Duration` multiplication to avoid overflow.
+
+Timeout ceilings never rank Memory, infer utility, choose targets, or alter cognitive policy.

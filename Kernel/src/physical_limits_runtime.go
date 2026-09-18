@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 	hardMeshTransportMaxBytes       int64 = 16 << 20
 	defaultStorageTransportMaxBytes int64 = 20 << 20
 	hardStorageTransportMaxBytes    int64 = 32 << 20
+	defaultPhysicalExchangeTimeout        = 5 * time.Second
+	hardPhysicalExchangeTimeout           = 60 * time.Second
 )
 
 func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
@@ -44,6 +47,35 @@ func physicalExchangeMaxBytes() int64 {
 		defaultPhysicalExchangeMaxBytes,
 		hardPhysicalExchangeMaxBytes,
 	)
+}
+
+func clampPhysicalTimeout(requested, fallback, hardMax time.Duration) time.Duration {
+	if fallback <= 0 || hardMax <= 0 || fallback > hardMax {
+		return 0
+	}
+	if requested <= 0 {
+		return fallback
+	}
+	if requested > hardMax {
+		return hardMax
+	}
+	return requested
+}
+
+func physicalExchangeTimeout(requested time.Duration) time.Duration {
+	return clampPhysicalTimeout(requested, defaultPhysicalExchangeTimeout, hardPhysicalExchangeTimeout)
+}
+
+func parsePhysicalExchangeTimeoutMS(raw string) time.Duration {
+	ms, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || ms <= 0 {
+		return defaultPhysicalExchangeTimeout
+	}
+	maxMS := int64(hardPhysicalExchangeTimeout / time.Millisecond)
+	if ms > maxMS {
+		return hardPhysicalExchangeTimeout
+	}
+	return physicalExchangeTimeout(time.Duration(ms) * time.Millisecond)
 }
 
 func artifactMaxBytes() int64 {

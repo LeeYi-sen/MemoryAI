@@ -582,6 +582,51 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "remote storage transport boundary"):
             self.run_audit(repo)
 
+    def test_requires_raw_exchange_timeout_clamp_at_io_boundary(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "timeout = physicalExchangeTimeout(timeout)",
+                "timeout = timeout",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "external I/O timeout boundary"):
+            self.run_audit(repo)
+
+    def test_requires_remote_storage_timeout_clamp_at_io_boundary(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "timeout = storageRequestTimeout(timeout)",
+                "timeout = timeout",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "external I/O timeout boundary"):
+            self.run_audit(repo)
+
+    def test_requires_source_adapter_timeout_hard_cap(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        source = repo / "Kernel/src/source_adapter_runtime.go"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                "clampPhysicalTimeout(d, defaultSourceAdapterTimeout, hardSourceAdapterTimeout)",
+                "d",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "external I/O timeout boundary"):
+            self.run_audit(repo)
+
 
 if __name__ == "__main__":
     unittest.main()

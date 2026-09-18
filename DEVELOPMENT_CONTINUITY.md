@@ -259,3 +259,17 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical `data/Memory.mem` remains unchanged from Entry 040/041 with SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`; image version remains `28.9.0-memory-fabric-sovereign`; Memory ABI remains `memoryai-memory-abi-v1`.
 - Final validation: architecture regression suite 38/38 PASS; live architecture audit PASS; Python suite 55/55 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-029..031 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 043 — hard external I/O timeout ceilings
+- Base HEAD: `3bf6825c6f6e73e9eb8ace21bf79552caeb435b2` (`Entry 042: bound fanout and remote storage transport`).
+- Continued post-repair audit closed PR-032; `docs/POST_REPAIR_AUDIT_TRACKER.md` now has 32 DONE / 0 OPEN findings.
+- Memory-controlled blocking I/O timeouts are now hard-capped before blocking system calls begin. Raw `physical_exchange` uses a 5 s default and 60 s hard Kernel maximum.
+- Raw exchange timeout parsing uses overflow-safe `ParseInt` before duration multiplication, and `physicalExchange()` clamps again internally so direct callers cannot bypass the parser-level ceiling.
+- Remote-storage client timeout parsing is overflow-safe, defaults to 5 s and is hard-capped by the existing 120 s storage maximum. `remoteSpaceRequest()` clamps direct duration callers again at the I/O boundary.
+- Source adapters now use a 15 s default and 120 s hard maximum for both Go duration strings and integer-second timeout inputs. Oversized integers are capped before `time.Duration` multiplication.
+- Architecture audit permanently requires the raw-exchange and remote-storage I/O-boundary clamps plus source-adapter hard cap; regression suite is 41/41 PASS.
+- These timeout ceilings remain physical execution safety only. They do not rank Memory, infer utility, alter confidence, choose targets or become cognitive scheduling policy.
+- Canonical cognitive seed remains unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`.
+- Canonical `data/Memory.mem` remains unchanged with SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`; image version remains `28.9.0-memory-fabric-sovereign`; Memory ABI remains `memoryai-memory-abi-v1`.
+- Final validation: architecture regression suite 41/41 PASS; live architecture audit PASS; Python suite 58/58 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-032 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

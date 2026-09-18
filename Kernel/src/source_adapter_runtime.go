@@ -56,18 +56,27 @@ func sourceAdapterFromVars(v map[string]string) sourceAdapter {
 	return sourceAdapter{ID: strings.TrimSpace(v["id"]), Config: cfg}
 }
 
+const (
+	defaultSourceAdapterTimeout = 15 * time.Second
+	hardSourceAdapterTimeout    = 120 * time.Second
+)
+
 func sourceParseTimeout(raw string) time.Duration {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return 15 * time.Second
+		return defaultSourceAdapterTimeout
 	}
 	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
-		return d
+		return clampPhysicalTimeout(d, defaultSourceAdapterTimeout, hardSourceAdapterTimeout)
 	}
-	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+		maxSeconds := int64(hardSourceAdapterTimeout / time.Second)
+		if n > maxSeconds {
+			return hardSourceAdapterTimeout
+		}
+		return clampPhysicalTimeout(time.Duration(n)*time.Second, defaultSourceAdapterTimeout, hardSourceAdapterTimeout)
 	}
-	return 15 * time.Second
+	return defaultSourceAdapterTimeout
 }
 
 func sourceConfigEnabled(cfg map[string]string) bool {

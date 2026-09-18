@@ -2736,11 +2736,8 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		host := x(op.Args["host"])
 		port := x(op.Args["port"])
 		request := x(op.Args["request"])
-		timeoutMS, _ := strconv.Atoi(x(op.Args["timeout_ms"]))
-		if timeoutMS <= 0 {
-			timeoutMS = 5000
-		}
-		resp, err := physicalExchange(transport, host, port, request, time.Duration(timeoutMS)*time.Millisecond)
+		timeout := parsePhysicalExchangeTimeoutMS(x(op.Args["timeout_ms"]))
+		resp, err := physicalExchange(transport, host, port, request, timeout)
 		if err != nil {
 			return -1, err
 		}
@@ -3370,13 +3367,18 @@ func (e *Engine) fsckMounted() (map[string]any, error) {
 }
 
 func parseTimeout(s string) time.Duration {
-	n, _ := strconv.Atoi(s)
-	if n <= 0 {
-		n = 5000
+	ms, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || ms <= 0 {
+		return defaultStorageRequestTimeout
 	}
-	return time.Duration(n) * time.Millisecond
+	maxMS := int64(hardStorageConnectionTimeout / time.Millisecond)
+	if ms > maxMS {
+		return hardStorageConnectionTimeout
+	}
+	return storageRequestTimeout(time.Duration(ms) * time.Millisecond)
 }
 func remoteSpaceRequest(host, port string, req map[string]any, timeout time.Duration) (string, error) {
+	timeout = storageRequestTimeout(timeout)
 	c, err := storageDial(host, port, timeout)
 	if err != nil {
 		return "", err
@@ -3823,6 +3825,7 @@ func (e *Engine) addRuntimeMemory(m *Memory) {
 }
 
 func physicalExchange(transport, host, port, request string, timeout time.Duration) (string, error) {
+	timeout = physicalExchangeTimeout(timeout)
 	maxBytes := physicalExchangeMaxBytes()
 	if int64(len(request)) > maxBytes {
 		return "", fmt.Errorf("physical exchange request exceeds physical byte ceiling: size=%d max=%d", len(request), maxBytes)

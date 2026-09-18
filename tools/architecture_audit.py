@@ -374,6 +374,34 @@ def audit() -> dict[str, object]:
         ['io.LimitReader(r, 4<<20)', 'io.LimitReader(c, 4<<20)', 'go handleMemNodeConn(root, c)'],
         "remote storage transport boundary",
     )
+
+    source_adapter = read("Kernel/src/source_adapter_runtime.go")
+    require(
+        physical_limits,
+        [
+            "hardPhysicalExchangeTimeout",
+            "parsePhysicalExchangeTimeoutMS",
+            "physicalExchangeTimeout",
+        ],
+        "external I/O timeout boundary",
+    )
+    require(
+        kernel_source_text,
+        [
+            "timeout = physicalExchangeTimeout(timeout)",
+            "timeout = storageRequestTimeout(timeout)",
+        ],
+        "external I/O timeout boundary",
+    )
+    require(
+        source_adapter + storage_transport,
+        [
+            "hardSourceAdapterTimeout",
+            "clampPhysicalTimeout(d, defaultSourceAdapterTimeout, hardSourceAdapterTimeout)",
+            "storageRequestTimeout",
+        ],
+        "external I/O timeout boundary",
+    )
     forbid(
         daemon,
         [

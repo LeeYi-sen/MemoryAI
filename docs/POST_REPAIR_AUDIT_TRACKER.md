@@ -100,3 +100,18 @@
 - mem-node connection timeout is configurable with `MEMORYAI_STORAGE_TIMEOUT_MS` (30 s default, 120 s hard max). Handler concurrency is bounded by `MEMORYAI_STORAGE_MAX_CONCURRENT` (32 default, 256 hard max). Excess connections are closed before a handler goroutine is created.
 - Storage envelope signing remains byte-stable: the `Encoder.Encode` framing newline is removed before signing/embedding the `RawMessage`, preventing outer JSON normalization from invalidating HMAC verification.
 - Final validation: architecture regression suite 38/38 PASS; live architecture audit PASS; Python suite 55/55 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-029..031 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 042
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-032 | P0 | DONE | Memory-controlled external I/O timeouts can be arbitrarily large: raw `physical_exchange`, remote-storage client requests and source adapters can hold an execution slot far beyond physical resource budgets because CPU/allocation sampling occurs only after the blocking primitive returns | Add hard Kernel timeout clamps at the actual I/O boundary and safe parsers before duration multiplication; invalid/oversized Memory timeout requests must fall back or clamp without overflow, and architecture audit must reject removal of the raw-exchange clamp |
+
+## Entry 043 closure evidence
+
+- PR-032 is DONE.
+- Raw `physical_exchange` now parses Memory-provided millisecond timeouts with overflow-safe `ParseInt`, clamps requests to a 60 s hard Kernel maximum, and clamps again inside `physicalExchange()` immediately before dialing/setting deadlines.
+- Remote-storage client timeout parsing is overflow-safe and clamps to the existing 120 s storage hard maximum. `remoteSpaceRequest()` also clamps direct duration callers at the I/O boundary.
+- Source-adapter timeout parsing now uses a 15 s default and 120 s hard maximum for both Go duration strings and integer-second inputs; oversized integer values are capped before `time.Duration` multiplication.
+- These timeout ceilings are physical execution safety only and do not affect Memory relevance, priority, utility, confidence or goal selection.
+- Final validation: architecture regression suite 41/41 PASS; live architecture audit PASS; Python suite 58/58 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-032 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

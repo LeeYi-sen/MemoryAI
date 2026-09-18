@@ -20,6 +20,7 @@ const storageWireVersion = 1
 const (
 	defaultStorageConnectionTimeout = 30 * time.Second
 	hardStorageConnectionTimeout    = 120 * time.Second
+	defaultStorageRequestTimeout    = 5 * time.Second
 	defaultStorageMaxConcurrent     = 32
 	hardStorageMaxConcurrent        = 256
 )
@@ -38,6 +39,10 @@ func storageConnectionTimeout() time.Duration {
 		return hardStorageConnectionTimeout
 	}
 	return d
+}
+
+func storageRequestTimeout(requested time.Duration) time.Duration {
+	return clampPhysicalTimeout(requested, defaultStorageRequestTimeout, hardStorageConnectionTimeout)
 }
 
 func storageMaxConcurrent() int {
