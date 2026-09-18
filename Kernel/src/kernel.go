@@ -1183,14 +1183,17 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if owner == nil {
 			return -1, fmt.Errorf("mutable owner unavailable: %s", target.ID)
 		}
-		owner.dataMu.Lock()
-		if target.State == nil {
-			target.State = map[string]any{}
-		}
 		key := x(op.B)
+		value := x(op.C)
+		owner.dataMu.Lock()
 		ls := stateList(target.State[key])
-		ls = append(ls, x(op.C))
-		target.State[key] = ls
+		ls = append(ls, value)
+		candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, ls, "state_list_append")
+		if err != nil {
+			owner.dataMu.Unlock()
+			return -1, err
+		}
+		target.State = candidateState
 		target.CapabilitySig = ""
 		target.Revision++
 		owner.dirty = true
@@ -1206,12 +1209,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if owner == nil {
 			return -1, fmt.Errorf("mutable owner unavailable: %s", target.ID)
 		}
+		key := x(op.B)
 		val := x(op.C)
 		owner.dataMu.Lock()
-		if target.State == nil {
-			target.State = map[string]any{}
-		}
-		key := x(op.B)
 		ls := stateList(target.State[key])
 		seen := false
 		for _, v := range ls {
@@ -1222,7 +1222,12 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		if !seen {
 			ls = append(ls, val)
-			target.State[key] = ls
+			candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, ls, "state_list_unique_append")
+			if err != nil {
+				owner.dataMu.Unlock()
+				return -1, err
+			}
+			target.State = candidateState
 			target.CapabilitySig = ""
 			target.Revision++
 			owner.dirty = true
@@ -1249,12 +1254,14 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		key := x(op.B)
 		delta := num(x(op.C))
 		owner.dataMu.Lock()
-		if target.State == nil {
-			target.State = map[string]any{}
-		}
 		cur := num(fmt.Sprint(target.State[key]))
 		nv := cur + delta
-		target.State[key] = ff(nv)
+		candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, ff(nv), "state_num_add")
+		if err != nil {
+			owner.dataMu.Unlock()
+			return -1, err
+		}
+		target.State = candidateState
 		target.CapabilitySig = ""
 		target.Revision++
 		owner.dirty = true
@@ -1273,11 +1280,15 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if owner == nil {
 			return -1, fmt.Errorf("mutable owner unavailable: %s", target.ID)
 		}
+		key := x(op.B)
+		value := x(op.C)
 		owner.dataMu.Lock()
-		if target.State == nil {
-			target.State = map[string]any{}
+		candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, value, "state_set")
+		if err != nil {
+			owner.dataMu.Unlock()
+			return -1, err
 		}
-		target.State[x(op.B)] = x(op.C)
+		target.State = candidateState
 		target.CapabilitySig = ""
 		target.Revision++
 		owner.dirty = true

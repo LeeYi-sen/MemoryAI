@@ -120,6 +120,64 @@ func ensureProgramWithinPhysicalLimits(program []Op, label string) error {
 	return nil
 }
 
+func memoryRecordMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_MEMORY_RECORD_MAX_BYTES",
+		int64(hardMemoryRecordMaxBytes),
+		int64(hardMemoryRecordMaxBytes),
+	)
+}
+
+func ensureMemoryRecordWithinPhysicalLimit(memory *Memory, label string) error {
+	if memory == nil {
+		return fmt.Errorf("%s Memory unavailable", label)
+	}
+	maxBytes := memoryRecordMaxBytes()
+	encoded, err := json.Marshal(memory)
+	if err != nil {
+		return fmt.Errorf("%s Memory encode: %w", label, err)
+	}
+	if int64(len(encoded)) > maxBytes {
+		return fmt.Errorf("%s exceeds physical Memory-record byte ceiling: bytes=%d max=%d", label, len(encoded), maxBytes)
+	}
+	return nil
+}
+
+func memoryStateCandidateWithinPhysicalLimit(memory *Memory, key string, value any, label string) (map[string]any, error) {
+	if memory == nil {
+		return nil, fmt.Errorf("%s Memory unavailable", label)
+	}
+	maxBytes := memoryRecordMaxBytes()
+	if int64(len(key)) > maxBytes {
+		return nil, fmt.Errorf("%s exceeds physical Memory-record byte ceiling: max=%d", label, maxBytes)
+	}
+	switch q := value.(type) {
+	case string:
+		if int64(len(q)) > maxBytes-int64(len(key)) {
+			return nil, fmt.Errorf("%s exceeds physical Memory-record byte ceiling: max=%d", label, maxBytes)
+		}
+	case []string:
+		total := int64(len(key))
+		for _, item := range q {
+			if int64(len(item)) > maxBytes-total {
+				return nil, fmt.Errorf("%s exceeds physical Memory-record byte ceiling: max=%d", label, maxBytes)
+			}
+			total += int64(len(item))
+		}
+	}
+	state := make(map[string]any, len(memory.State)+1)
+	for existingKey, existingValue := range memory.State {
+		state[existingKey] = existingValue
+	}
+	state[key] = value
+	candidate := *memory
+	candidate.State = state
+	if err := ensureMemoryRecordWithinPhysicalLimit(&candidate, label); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
 func frameListMaxItems() int {
 	return boundedPhysicalCountEnv(
 		"MEMORYAI_FRAME_LIST_MAX_ITEMS",

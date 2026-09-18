@@ -322,3 +322,14 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 47/47 PASS; live architecture audit PASS; Python suite 64/64 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-036 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 048 — bound runtime Memory State record growth
+- Base HEAD: `f29010d33e7ecada4b9d793053b52002ece0aaac` (`Entry 047: bound VM template expansion`).
+- Continued post-repair audit closed PR-037; tracker now has 37 DONE / 0 OPEN findings.
+- Runtime State mutation now uses `MEMORYAI_MEMORY_RECORD_MAX_BYTES`, which can be lowered by the operator but cannot exceed the existing 16 MiB `hardMemoryRecordMaxBytes` persistence-format ceiling.
+- `state_set`, `state_list_append`, `state_list_unique_append`, and `state_num_add` construct and validate candidate State while holding the physical owner lock, then commit it once.
+- Record overflow leaves State, Revision, CapabilitySig, dirty bookkeeping and mutation outputs unchanged; obviously impossible string/list values are rejected before full record encoding.
+- The boundary is physical-only: Kernel does not rank State fields, evict data, truncate values, or decide which cognition to preserve. Memory must explicitly split or relocate oversized structures.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 48/48 PASS; live architecture audit PASS; Python suite 65/65 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-037 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

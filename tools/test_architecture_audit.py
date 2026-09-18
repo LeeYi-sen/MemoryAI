@@ -722,5 +722,22 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
 
 
 
+    def test_requires_bounded_memory_state_record_growth(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, value, "state_set")',
+                'candidateState := map[string]any{key: value}; var err error',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Memory State record growth"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()

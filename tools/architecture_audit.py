@@ -321,6 +321,22 @@ def audit() -> dict[str, object]:
     )
 
     require(
+        physical_limits + kernel_source_text,
+        [
+            "MEMORYAI_MEMORY_RECORD_MAX_BYTES",
+            "hardMemoryRecordMaxBytes",
+            "memoryRecordMaxBytes",
+            "ensureMemoryRecordWithinPhysicalLimit",
+            "memoryStateCandidateWithinPhysicalLimit",
+            'memoryStateCandidateWithinPhysicalLimit(target, key, ls, "state_list_append")',
+            'memoryStateCandidateWithinPhysicalLimit(target, key, ls, "state_list_unique_append")',
+            'memoryStateCandidateWithinPhysicalLimit(target, key, ff(nv), "state_num_add")',
+            'memoryStateCandidateWithinPhysicalLimit(target, key, value, "state_set")',
+        ],
+        "bounded Memory State record growth",
+    )
+
+    require(
         kernel_source_text,
         [
             "expandFrameValueBounded",

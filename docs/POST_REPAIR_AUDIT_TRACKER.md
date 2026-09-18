@@ -183,3 +183,19 @@
 - Expansion failures propagate as ordinary VM errors; unexpected panics are rethrown and are not masked.
 - No truncation, template-selection policy, semantic ranking, or cognitive interpretation is introduced.
 - Final validation: architecture regression suite 47/47 PASS; live architecture audit PASS; Python suite 64/64 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-036 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 047
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-037 | P0 | DONE | Runtime `state_set`, `state_list_append`, `state_list_unique_append`, and `state_num_add` can grow a Memory beyond the physical Memory-record size accepted by the persistence format; rejection occurs only later during persistence | Apply a hard-clamped runtime Memory-record byte ceiling at State mutation time; build and validate a candidate State under the owner lock, then commit once; overflow must leave State, revision, signature and dirty bookkeeping unchanged |
+
+## Entry 048 closure evidence
+
+- PR-037 is DONE.
+- Runtime State mutation is bounded by `MEMORYAI_MEMORY_RECORD_MAX_BYTES`, clamped to the existing 16 MiB `hardMemoryRecordMaxBytes` persistence-format ceiling.
+- `state_set`, `state_list_append`, `state_list_unique_append`, and `state_num_add` construct candidate State under the physical owner lock and validate the complete Memory record before committing it.
+- Oversized writes never advance Revision, clear CapabilitySig, mark the owner dirty, publish mutation outputs, or partially replace State.
+- String/list payloads receive a cheap preflight before complete record encoding so obviously impossible values do not force an oversized encoding allocation.
+- No field ranking, State truncation, eviction, or cognitive selection is introduced; Memory must explicitly split or relocate structures that exceed the physical record envelope.
+- Final validation: architecture regression suite 48/48 PASS; live architecture audit PASS; Python suite 65/65 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-037 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
