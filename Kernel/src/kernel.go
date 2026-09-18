@@ -1696,11 +1696,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 	case "str_len":
 		f.Vars[op.B] = strconv.Itoa(len([]rune(x(op.A))))
 	case "emit_event":
-		vars := map[string]string{}
-		for _, k := range splitCSV(x(op.Args["vars"])) {
-			if k != "" {
-				vars[k] = f.Vars[k]
-			}
+		selected, err := splitCSVPhysicalBounded(x(op.Args["vars"]), physicalEventVarMaxItems(), "emit_event vars")
+		if err != nil {
+			return -1, err
+		}
+		vars := make(map[string]string, len(selected))
+		for _, k := range selected {
+			vars[k] = f.Vars[k]
+		}
+		if err := ensurePhysicalEventVars(vars, "emit_event"); err != nil {
+			return -1, err
 		}
 		ev := newPhysicalEvent(x(op.A), x(op.B), vars)
 		if err := e.enqueueEvent(f, ev); err != nil {

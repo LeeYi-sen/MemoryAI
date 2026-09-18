@@ -773,5 +773,22 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
 
 
 
+    def test_requires_bounded_physical_event_variables(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        event = repo / "Kernel/src/event_runtime.go"
+        event.write_text(
+            event.read_text(encoding="utf-8").replace(
+                'if err := ensurePhysicalEventVars(ev.Vars, "physical event"); err != nil {',
+                'if err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded physical event variables"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -32,6 +32,10 @@ const (
 	hardFrameOutputMaxItems               = 32768
 	defaultFrameOutputMaxBytes      int64 = 16 << 20
 	hardFrameOutputMaxBytes         int64 = 64 << 20
+	defaultPhysicalEventVarMaxItems       = 4096
+	hardPhysicalEventVarMaxItems          = 32768
+	defaultPhysicalEventVarMaxBytes int64 = 4 << 20
+	hardPhysicalEventVarMaxBytes    int64 = 16 << 20
 	defaultProgramMaxOps                  = 4096
 	hardProgramMaxOps                     = 65536
 	defaultProgramMaxBytes          int64 = 4 << 20
@@ -184,6 +188,98 @@ func memoryStateCandidateWithinPhysicalLimit(memory *Memory, key string, value a
 		return nil, err
 	}
 	return state, nil
+}
+
+func physicalEventVarMaxItems() int {
+	return boundedPhysicalCountEnv(
+		"MEMORYAI_EVENT_VAR_MAX_ITEMS",
+		defaultPhysicalEventVarMaxItems,
+		hardPhysicalEventVarMaxItems,
+	)
+}
+
+func physicalEventVarMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_EVENT_VAR_MAX_BYTES",
+		defaultPhysicalEventVarMaxBytes,
+		hardPhysicalEventVarMaxBytes,
+	)
+}
+
+func ensurePhysicalEventVars(vars map[string]string, label string) error {
+	maxItems := physicalEventVarMaxItems()
+	if len(vars) > maxItems {
+		return fmt.Errorf("%s exceeds physical event-variable cardinality: items=%d max=%d", label, len(vars), maxItems)
+	}
+	maxBytes := physicalEventVarMaxBytes()
+	total := int64(0)
+	for key, value := range vars {
+		part := int64(len(key)) + int64(len(value))
+		if part > maxBytes-total {
+			return fmt.Errorf("%s exceeds physical event-variable byte ceiling: max=%d", label, maxBytes)
+		}
+		total += part
+	}
+	return nil
+}
+
+func copyPhysicalEventVarsBounded(source map[string]string, skipInternal bool, label string) (map[string]string, error) {
+	maxItems := physicalEventVarMaxItems()
+	maxBytes := physicalEventVarMaxBytes()
+	count := 0
+	total := int64(0)
+	for key, value := range source {
+		if skipInternal && strings.HasPrefix(key, "__") {
+			continue
+		}
+		count++
+		if count > maxItems {
+			return nil, fmt.Errorf("%s exceeds physical event-variable cardinality: items>%d", label, maxItems)
+		}
+		part := int64(len(key)) + int64(len(value))
+		if part > maxBytes-total {
+			return nil, fmt.Errorf("%s exceeds physical event-variable byte ceiling: max=%d", label, maxBytes)
+		}
+		total += part
+	}
+	out := make(map[string]string, count)
+	for key, value := range source {
+		if skipInternal && strings.HasPrefix(key, "__") {
+			continue
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+func splitCSVPhysicalBounded(raw string, maxItems int, label string) ([]string, error) {
+	if maxItems < 1 {
+		return nil, fmt.Errorf("%s physical item ceiling invalid: %d", label, maxItems)
+	}
+	out := make([]string, 0, minInt(maxItems, 32))
+	start := 0
+	for i := 0; i <= len(raw); i++ {
+		if i != len(raw) && raw[i] != ',' {
+			continue
+		}
+		item := strings.TrimSpace(raw[start:i])
+		start = i + 1
+		if item == "" {
+			continue
+		}
+		if len(out)+1 > maxItems {
+			return nil, fmt.Errorf("%s exceeds physical item cardinality: items>%d", label, maxItems)
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func frameListMaxItems() int {

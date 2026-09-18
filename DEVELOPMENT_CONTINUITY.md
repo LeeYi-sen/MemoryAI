@@ -356,3 +356,14 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 50/50 PASS; live architecture audit PASS; Python suite 67/67 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-039 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 051 — bound PhysicalEvent variable envelopes
+- Base HEAD: `29f5561936f2b2667097b35e09a3a0e97ab22b77` (`Entry 050: bound whole-Memory creation and import growth`).
+- Continued post-repair audit closed PR-040; tracker now has 40 DONE / 0 OPEN findings.
+- PhysicalEvent variables now have hard-clamped item and aggregate-byte ceilings: `MEMORYAI_EVENT_VAR_MAX_ITEMS` defaults to 4096 with a 32768 hard maximum; `MEMORYAI_EVENT_VAR_MAX_BYTES` defaults to 4 MiB with a 16 MiB hard maximum.
+- `fireEvent` validates visible Frame variables before allocating its event copy; `emit_event` scans selected CSV names with a physical cardinality bound and validates the resulting variable map.
+- `enqueueEvent` provides the final event-variable gate before `Frame.Events` append, event counters, or handler dispatch.
+- The boundary is physical-only: Kernel does not truncate, rank, filter, or prioritize event variables.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 51/51 PASS; live architecture audit PASS; Python suite 68/68 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-040 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

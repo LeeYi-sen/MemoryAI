@@ -232,3 +232,19 @@
 - Oversized creation/import attempts do not publish a child ID, enter cache/new/dirty sets, or reach persistence.
 - No structure truncation, field ranking, semantic selection or automatic splitting is introduced.
 - Final validation: architecture regression suite 50/50 PASS; live architecture audit PASS; Python suite 67/67 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-039 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 050
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-040 | P0 | DONE | PhysicalEvent variable maps have no hard cardinality or aggregate-byte envelope; `fireEvent` copies all visible Frame variables and `emit_event` parses an unbounded CSV selection before enqueue | Add hard-clamped event-variable item/byte ceilings; bound selection parsing before slice growth, validate/copy `fireEvent` variables before allocation, and reject oversized events before `Frame.Events` append or dispatch |
+
+## Entry 051 closure evidence
+
+- PR-040 is DONE.
+- PhysicalEvent variables are bounded by `MEMORYAI_EVENT_VAR_MAX_ITEMS` (default 4096, hard 32768) and `MEMORYAI_EVENT_VAR_MAX_BYTES` (default 4 MiB, hard 16 MiB).
+- `fireEvent` validates visible Frame variables for cardinality and aggregate bytes before allocating the event variable copy.
+- `emit_event` uses bounded CSV scanning for selected variable names and validates the resulting variable envelope before event construction.
+- `enqueueEvent` is the final backstop and rejects an oversized `PhysicalEvent.Vars` map before appending to `Frame.Events`, incrementing event counters, or dispatching handlers.
+- No event-variable truncation, ranking, semantic filtering, or prioritization is introduced.
+- Final validation: architecture regression suite 51/51 PASS; live architecture audit PASS; Python suite 68/68 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-040 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

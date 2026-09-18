@@ -349,6 +349,25 @@ def audit() -> dict[str, object]:
         "bounded Memory metadata record growth",
     )
 
+    event_var_runtime = read("Kernel/src/event_runtime.go")
+    require(
+        physical_limits + event_var_runtime + kernel_source_text,
+        [
+            "MEMORYAI_EVENT_VAR_MAX_ITEMS",
+            "MEMORYAI_EVENT_VAR_MAX_BYTES",
+            "hardPhysicalEventVarMaxItems",
+            "hardPhysicalEventVarMaxBytes",
+            "ensurePhysicalEventVars",
+            "copyPhysicalEventVarsBounded",
+            "splitCSVPhysicalBounded",
+            'ensurePhysicalEventVars(ev.Vars, "physical event")',
+            'copyPhysicalEventVarsBounded(f.Vars, true, "fireEvent")',
+            'splitCSVPhysicalBounded(x(op.Args["vars"]), physicalEventVarMaxItems(), "emit_event vars")',
+            'ensurePhysicalEventVars(vars, "emit_event")',
+        ],
+        "bounded physical event variables",
+    )
+
     require(
         physical_limits + kernel_source_text,
         [

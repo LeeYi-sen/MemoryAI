@@ -1864,3 +1864,43 @@ func TestMemoryNewRejectsOversizedRecordBeforeFabricPlacement(t *testing.T) {
 		}
 	}
 }
+
+func TestPhysicalEventRejectsVariableCardinalityOverflowBeforeEnqueue(t *testing.T) {
+	t.Setenv("MEMORYAI_EVENT_VAR_MAX_ITEMS", "2")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	ev := PhysicalEvent{Name: "bounded.event", Vars: map[string]string{"a": "1", "b": "2", "c": "3"}}
+	if err := e.enqueueEvent(f, ev); err == nil {
+		t.Fatal("physical event accepted variables above cardinality ceiling")
+	}
+	if len(f.Events) != 0 || f.eventCount != 0 {
+		t.Fatalf("oversized physical event was appended before rejection: events=%d count=%d", len(f.Events), f.eventCount)
+	}
+}
+
+func TestFireEventRejectsVariableByteOverflowBeforeCopy(t *testing.T) {
+	t.Setenv("MEMORYAI_EVENT_VAR_MAX_BYTES", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["payload"] = "123456789"
+	if err := e.fireEvent("bounded.event", "", f); err == nil {
+		t.Fatal("fireEvent accepted variables above aggregate byte ceiling")
+	}
+	if len(f.Events) != 0 || f.eventCount != 0 {
+		t.Fatalf("oversized fireEvent appended event before rejection: events=%d count=%d", len(f.Events), f.eventCount)
+	}
+}
+
+func TestEmitEventRejectsVariableSelectionCardinalityOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_EVENT_VAR_MAX_ITEMS", "2")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["a"], f.Vars["b"], f.Vars["c"] = "1", "2", "3"
+	op := Op{Code: "emit_event", A: "bounded.event", Args: map[string]string{"vars": "a,b,c"}}
+	if _, err := e.execPrimitive(&Memory{ID: "event-var-selection"}, op, f, 0, nil); err == nil {
+		t.Fatal("emit_event accepted variable selection above cardinality ceiling")
+	}
+	if len(f.Events) != 0 || f.eventCount != 0 {
+		t.Fatalf("oversized emit_event appended event before rejection: events=%d count=%d", len(f.Events), f.eventCount)
+	}
+}

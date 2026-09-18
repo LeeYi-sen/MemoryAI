@@ -366,6 +366,9 @@ func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {
 	if f == nil {
 		return fmt.Errorf("physical event frame required")
 	}
+	if err := ensurePhysicalEventVars(ev.Vars, "physical event"); err != nil {
+		return err
+	}
 	// Physical event metadata is stack-scoped. Memory handlers share an
 	// ephemeral Frame, but a nested event must not replace its caller's
 	// __event/__subject namespace after returning. Cognitive payload/output
@@ -419,11 +422,9 @@ func (e *Engine) fireEvent(name, subject string, f *Frame) error {
 	if f == nil {
 		f = newFrame()
 	}
-	vars := map[string]string{}
-	for k, v := range f.Vars {
-		if !strings.HasPrefix(k, "__") {
-			vars[k] = v
-		}
+	vars, err := copyPhysicalEventVarsBounded(f.Vars, true, "fireEvent")
+	if err != nil {
+		return err
 	}
 	ev := newPhysicalEvent(name, subject, vars)
 	if strings.TrimSpace(name) == "mesh.shared.proposal" {
