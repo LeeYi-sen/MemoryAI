@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -9,11 +10,50 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const storageWireVersion = 1
+
+const (
+	defaultStorageConnectionTimeout = 30 * time.Second
+	hardStorageConnectionTimeout    = 120 * time.Second
+	defaultStorageMaxConcurrent     = 32
+	hardStorageMaxConcurrent        = 256
+)
+
+func storageConnectionTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_STORAGE_TIMEOUT_MS"))
+	if raw == "" {
+		return defaultStorageConnectionTimeout
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 1 {
+		return defaultStorageConnectionTimeout
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d > hardStorageConnectionTimeout {
+		return hardStorageConnectionTimeout
+	}
+	return d
+}
+
+func storageMaxConcurrent() int {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_STORAGE_MAX_CONCURRENT"))
+	if raw == "" {
+		return defaultStorageMaxConcurrent
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultStorageMaxConcurrent
+	}
+	if n > hardStorageMaxConcurrent {
+		return hardStorageMaxConcurrent
+	}
+	return n
+}
 
 type storageWireEnvelope struct {
 	Version   int             `json:"version"`
@@ -116,13 +156,18 @@ func storageEnvelopeFor(v any) (storageWireEnvelope, error) {
 	if len(key) == 0 {
 		return storageWireEnvelope{}, errors.New("MEMORYAI_STORAGE_CAPABILITY_KEY or MEMORYAI_MESH_CAPABILITY_KEY required for remote storage transport")
 	}
-	body, err := json.Marshal(v)
+	maxBytes := storageTransportMaxBytes()
+	body, err := encodeJSONPhysicalBounded(v, maxBytes, "remote storage body")
 	if err != nil {
 		return storageWireEnvelope{}, err
 	}
+	// Encoder.Encode appends one framing newline. RawMessage is normalized by
+	// the outer JSON encoder, so sign the stable raw JSON bytes without that
+	// transport delimiter or the receiver would verify different bytes.
+	body = bytes.TrimSuffix(body, []byte{'\n'})
 	return storageWireEnvelope{
 		Version:   storageWireVersion,
-		Body:      body,
+		Body:      json.RawMessage(body),
 		Signature: meshSignBytes(key, body),
 	}, nil
 }
@@ -142,13 +187,23 @@ func storageEnvelopeBody(env storageWireEnvelope) ([]byte, error) {
 }
 
 func readStorageEnvelope(r io.Reader, dst any) error {
+	maxBytes := storageTransportMaxBytes()
+	limited := &io.LimitedReader{R: r, N: maxBytes + 1}
 	var env storageWireEnvelope
-	if err := json.NewDecoder(io.LimitReader(r, 4<<20)).Decode(&env); err != nil {
-		return err
+	decodeErr := json.NewDecoder(limited).Decode(&env)
+	consumed := maxBytes + 1 - limited.N
+	if consumed > maxBytes {
+		return fmt.Errorf("remote storage envelope exceeds physical byte ceiling: max=%d", maxBytes)
+	}
+	if decodeErr != nil {
+		return decodeErr
 	}
 	body, err := storageEnvelopeBody(env)
 	if err != nil {
 		return err
+	}
+	if int64(len(body)) > maxBytes {
+		return fmt.Errorf("remote storage body exceeds physical byte ceiling: size=%d max=%d", len(body), maxBytes)
 	}
 	return json.Unmarshal(body, dst)
 }
@@ -158,5 +213,24 @@ func writeStorageEnvelope(w io.Writer, v any) error {
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(w).Encode(env)
+	payload, err := encodeJSONPhysicalBounded(env, storageTransportMaxBytes(), "remote storage envelope")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(payload)
+	return err
+}
+
+func writeStorageReplyBounded(w io.Writer, v any) error {
+	err := writeStorageEnvelope(w, v)
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "physical byte ceiling") {
+		return err
+	}
+	return writeStorageEnvelope(w, map[string]any{
+		"ok":    false,
+		"error": fmt.Sprintf("remote storage response exceeds physical byte ceiling: max=%d", storageTransportMaxBytes()),
+	})
 }

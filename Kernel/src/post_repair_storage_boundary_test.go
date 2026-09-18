@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1268,5 +1269,202 @@ func TestMeshHTTPServerCarriesPhysicalTimeouts(t *testing.T) {
 		server.IdleTimeout != meshHTTPIdleTimeout ||
 		server.MaxHeaderBytes != meshHTTPMaxHeaderBytes {
 		t.Fatalf("Mesh HTTP server physical limits missing: %#v", server)
+	}
+}
+
+func TestEventFanoutDoesNotCreateGoroutinePerHandler(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(4)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+	oldRuntime := globalParallelRuntime
+	globalParallelRuntime = newParallelRuntime()
+	setPhysicalExecutionConcurrency(2)
+	t.Cleanup(func() { globalParallelRuntime = oldRuntime })
+	oldActivation := globalActivationRuntime
+	globalActivationRuntime = newSparseActivationRuntime()
+	t.Cleanup(func() { globalActivationRuntime = oldActivation })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	addr := ln.Addr().(*net.TCPAddr)
+	release := make(chan struct{})
+	accepted := make(chan struct{}, 64)
+	go func() {
+		for {
+			c, er := ln.Accept()
+			if er != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				accepted <- struct{}{}
+				buf := make([]byte, 8)
+				_, _ = conn.Read(buf)
+				<-release
+				_, _ = conn.Write([]byte("ok"))
+			}(c)
+		}
+	}()
+
+	e := loadCurrentBodyForGrowthTest(t)
+	const handlers = 48
+	for i := 0; i < handlers; i++ {
+		m := &Memory{
+			ID: fmt.Sprintf("event.fanout.block.%03d", i), Layer: "emergent", Revision: 1,
+			Tags: []string{"memory"}, Trigger: []string{"event:test.fanout.block"},
+			Capabilities: []string{"network.raw"},
+			Program: []Op{{Code: "physical_exchange", Args: map[string]string{
+				"transport": "tcp", "host": "127.0.0.1", "port": strconv.Itoa(addr.Port),
+				"request": "BLOCK", "timeout_ms": "5000", "out": "response",
+			}}},
+		}
+		e.addRuntimeMemory(m)
+	}
+	if err := globalActivationRuntime.Build(e); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := globalActivationRuntime.ExactFeatureIDs(e, "trigger:event:test.fanout.block")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != handlers {
+		t.Fatalf("event trigger index mismatch: got=%d want=%d", len(ids), handlers)
+	}
+	baseline := runtime.NumGoroutine()
+	done := make(chan error, 1)
+	go func() { done <- e.fireEvent("test.fanout.block", "", newFrame()) }()
+
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case runErr := <-done:
+		close(release)
+		t.Fatalf("event fanout ended before blocked handlers: %v", runErr)
+	default:
+	}
+	delta := runtime.NumGoroutine() - baseline
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("event fanout failed after release: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("event fanout did not finish")
+	}
+	if delta > 12 {
+		t.Fatalf("event fanout created goroutines proportional to handlers: handlers=%d goroutine_delta=%d", handlers, delta)
+	}
+}
+
+func TestCallParallelRejectsOversizedFanoutBeforeExecution(t *testing.T) {
+	t.Setenv("MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	child := &Memory{
+		ID: "fanout.child", Layer: "emergent", Revision: 1,
+		Tags: []string{"memory"}, Program: []Op{{Code: "set", A: "value", B: "ok"}},
+	}
+	e.addRuntimeMemory(child)
+	f := newFrame()
+	for i := 0; i < 9; i++ {
+		f.Lists["targets"] = append(f.Lists["targets"], child.ID)
+	}
+	op := Op{Code: "call_parallel", Args: map[string]string{
+		"targets_list": "targets", "out": "value", "ok_list": "oks", "max_parallel": "2",
+	}}
+	_, err := e.execPrimitive(&Memory{ID: "fanout.caller"}, op, f, 0, nil)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "fan-out") {
+		t.Fatalf("oversized call_parallel did not fail closed: %v", err)
+	}
+	if len(f.Lists["value"]) != 0 || len(f.Lists["oks"]) != 0 {
+		t.Fatalf("oversized call_parallel allocated/merged outputs before rejection: values=%d oks=%d", len(f.Lists["value"]), len(f.Lists["oks"]))
+	}
+}
+
+func TestStorageEnvelopeWriterRejectsOversizedBody(t *testing.T) {
+	t.Setenv("MEMORYAI_STORAGE_CAPABILITY_KEY", "storage-byte-key")
+	t.Setenv("MEMORYAI_STORAGE_MAX_BYTES", "512")
+	_, err := storageEnvelopeFor(map[string]any{"payload": strings.Repeat("x", 2048)})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "physical byte ceiling") {
+		t.Fatalf("storage envelope writer ignored physical byte ceiling: %v", err)
+	}
+}
+
+func TestStorageEnvelopeReaderRejectsOversizedEnvelope(t *testing.T) {
+	t.Setenv("MEMORYAI_STORAGE_CAPABILITY_KEY", "storage-byte-key")
+	t.Setenv("MEMORYAI_STORAGE_MAX_BYTES", "512")
+	body, err := json.Marshal(map[string]any{"payload": strings.Repeat("x", 2048)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := storageWireEnvelope{Version: storageWireVersion, Body: body, Signature: meshSignBytes(storageTransportKey(), body)}
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	err = readStorageEnvelope(bytes.NewReader(encoded), &out)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "physical byte ceiling") {
+		t.Fatalf("storage envelope reader accepted oversized envelope: %v", err)
+	}
+}
+
+type deadlineRecordingConn struct {
+	deadline time.Time
+}
+
+func (c *deadlineRecordingConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *deadlineRecordingConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *deadlineRecordingConn) Close() error                     { return nil }
+func (c *deadlineRecordingConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *deadlineRecordingConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *deadlineRecordingConn) SetDeadline(v time.Time) error    { c.deadline = v; return nil }
+func (c *deadlineRecordingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *deadlineRecordingConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestMemNodeConnectionDeadlineUsesBoundedStorageTimeout(t *testing.T) {
+	t.Setenv("MEMORYAI_STORAGE_CAPABILITY_KEY", "storage-deadline-test")
+	t.Setenv("MEMORYAI_STORAGE_TIMEOUT_MS", "25")
+	conn := &deadlineRecordingConn{}
+	before := time.Now()
+	handleMemNodeConn(t.TempDir(), conn)
+	if conn.deadline.IsZero() {
+		t.Fatal("mem-node did not set a connection deadline")
+	}
+	delta := conn.deadline.Sub(before)
+	if delta < 20*time.Millisecond || delta > 200*time.Millisecond {
+		t.Fatalf("mem-node ignored configured bounded storage timeout: %v", delta)
+	}
+}
+
+func TestStorageTransportOperatorLimitsCannotExceedKernelHardCaps(t *testing.T) {
+	t.Setenv("MEMORYAI_STORAGE_MAX_BYTES", "999999999")
+	t.Setenv("MEMORYAI_STORAGE_TIMEOUT_MS", "999999999")
+	t.Setenv("MEMORYAI_STORAGE_MAX_CONCURRENT", "999999999")
+	if got := storageTransportMaxBytes(); got != hardStorageTransportMaxBytes {
+		t.Fatalf("storage byte ceiling escaped hard max: %d", got)
+	}
+	if got := storageConnectionTimeout(); got != hardStorageConnectionTimeout {
+		t.Fatalf("storage timeout escaped hard max: %v", got)
+	}
+	if got := storageMaxConcurrent(); got != hardStorageMaxConcurrent {
+		t.Fatalf("storage concurrency escaped hard max: %d", got)
+	}
+}
+
+func TestStorageOversizedReplyFallsBackToBoundedSignedError(t *testing.T) {
+	t.Setenv("MEMORYAI_STORAGE_CAPABILITY_KEY", "storage-reply-test")
+	t.Setenv("MEMORYAI_STORAGE_MAX_BYTES", "512")
+	var wire bytes.Buffer
+	if err := writeStorageReplyBounded(&wire, map[string]any{"ok": true, "data": strings.Repeat("x", 4096)}); err != nil {
+		t.Fatalf("bounded storage fallback failed: %v", err)
+	}
+	var reply map[string]any
+	if err := readStorageEnvelope(bytes.NewReader(wire.Bytes()), &reply); err != nil {
+		t.Fatalf("bounded storage fallback is not a valid signed envelope: %v", err)
+	}
+	if reply["ok"] != false || !strings.Contains(strings.ToLower(fmt.Sprint(reply["error"])), "physical byte ceiling") {
+		t.Fatalf("oversized storage response did not become bounded failure: %#v", reply)
 	}
 }

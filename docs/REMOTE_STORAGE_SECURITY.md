@@ -56,3 +56,15 @@ Registered remote Memory endpoints pin physical `BodyID` and Memory ABI. Direct 
 If multiple reachable replicas expose the same Memory ID, identical structural digests collapse physically. Divergent digests are an explicit conflict and the Kernel does not select a winner.
 
 Remote Memory remains direct-read only: it is not silently imported into local `Memory.mem`. An unreachable origin is forgotten until it becomes reachable again.
+
+## Physical transport limits
+
+Remote storage envelopes are bounded by `MEMORYAI_STORAGE_MAX_BYTES`: 20 MiB by default and 32 MiB maximum. Both request and response bodies are encoded/decoded through explicit overflow-detecting physical ceilings.
+
+Oversized replies are converted to a small HMAC-authenticated failure envelope instead of being silently truncated or partially materialized as an unbounded JSON object.
+
+`MEMORYAI_STORAGE_TIMEOUT_MS` controls the per-connection deadline: 30 seconds by default and 120 seconds maximum.
+
+`MEMORYAI_STORAGE_MAX_CONCURRENT` controls admitted mem-node handlers: 32 by default and 256 maximum. Connections above that ceiling are closed before a handler goroutine is created.
+
+The signed inner JSON is canonicalized to the exact bytes embedded in the outer `RawMessage`; transport framing newlines are excluded from the signed body so envelope re-encoding cannot invalidate HMAC verification.

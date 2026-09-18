@@ -19,6 +19,8 @@ const (
 	hardDaemonTransportMaxBytes     int64 = 8 << 20
 	defaultMeshTransportMaxBytes    int64 = 2 << 20
 	hardMeshTransportMaxBytes       int64 = 16 << 20
+	defaultStorageTransportMaxBytes int64 = 20 << 20
+	hardStorageTransportMaxBytes    int64 = 32 << 20
 )
 
 func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
@@ -93,6 +95,14 @@ func meshTransportMaxBytes() int64 {
 		"MEMORYAI_MESH_MAX_BYTES",
 		defaultMeshTransportMaxBytes,
 		hardMeshTransportMaxBytes,
+	)
+}
+
+func storageTransportMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_STORAGE_MAX_BYTES",
+		defaultStorageTransportMaxBytes,
+		hardStorageTransportMaxBytes,
 	)
 }
 

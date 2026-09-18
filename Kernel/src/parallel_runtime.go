@@ -34,6 +34,26 @@ var globalParallelRuntime = newParallelRuntime()
 var globalPhysicalGPU physicalGPUBackend = newPhysicalGPUBackend()
 var physicalGPUMinScalarOps int64 = defaultPhysicalGPUThreshold()
 
+const (
+	defaultParallelFanoutMaxTargets = 1024
+	hardParallelFanoutMaxTargets    = 65536
+)
+
+func parallelFanoutMaxTargets() int {
+	raw := strings.TrimSpace(os.Getenv("MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS"))
+	if raw == "" {
+		return defaultParallelFanoutMaxTargets
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultParallelFanoutMaxTargets
+	}
+	if n > hardParallelFanoutMaxTargets {
+		return hardParallelFanoutMaxTargets
+	}
+	return n
+}
+
 func defaultPhysicalGPUThreshold() int64 {
 	const fallback int64 = 16384
 	raw := strings.TrimSpace(os.Getenv("MEMORYAI_GPU_MIN_SCALAR_OPS"))

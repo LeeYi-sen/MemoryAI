@@ -242,3 +242,20 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical `data/Memory.mem` remains unchanged from Entry 040 with SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`; image version remains `28.9.0-memory-fabric-sovereign`; Memory ABI remains `memoryai-memory-abi-v1`.
 - Final validation: architecture regression suite 33/33 PASS; live architecture audit PASS; Python suite 50/50 PASS; `go vet` PASS; full direct Go suite PASS; focused resource/transport `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation is permitted for this development entry.
+
+### Entry 042 — bounded fan-out and remote storage transport
+- Base HEAD: `e830b45163cc0f1736f75c2a38753ed4bb86cae2` (`Entry 041: enforce runtime resource and transport bounds`).
+- Continued post-repair audit closed PR-029 through PR-031; `docs/POST_REPAIR_AUDIT_TRACKER.md` now has 31 DONE / 0 OPEN findings.
+- Top-level event dispatch no longer creates one goroutine per exact handler match. It uses bounded batches through the existing physical worker pool; temporary goroutines and result storage scale with physical batch/concurrency rather than total handler cardinality.
+- Event dispatch preserves stable Memory-ID merge order and introduces no semantic priority/ranking. The hard physical batch ceiling is 256 handlers.
+- `call_parallel` now rejects oversized target lists before copying the list, allocating result/status arrays or executing children. `MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS` defaults to 1024 and is hard-capped at 65536.
+- Remote storage request/response envelopes now use `MEMORYAI_STORAGE_MAX_BYTES`: 20 MiB default, 32 MiB hard Kernel maximum. The previous fixed truncating 4 MiB decoder path is removed.
+- Oversized mem-node responses become a small bounded HMAC-authenticated error envelope rather than silent truncation or unbounded response materialization.
+- mem-node connection deadlines are controlled by `MEMORYAI_STORAGE_TIMEOUT_MS`: 30 s default, 120 s hard maximum.
+- mem-node admitted handler concurrency is controlled by `MEMORYAI_STORAGE_MAX_CONCURRENT`: 32 default, 256 hard maximum. Excess connections are closed before a handler goroutine is created.
+- Storage envelope signing remains exact-byte stable after bounded JSON encoding: the `Encoder.Encode` framing newline is removed before the inner `RawMessage` is signed/embedded, preventing outer JSON normalization from invalidating the HMAC.
+- Architecture audit now permanently rejects goroutine-per-handler event fan-out, missing `call_parallel` cardinality ceilings, legacy 4 MiB storage readers, missing mem-node timeout/concurrency boundaries, and bypass of bounded storage response fallback.
+- Canonical cognitive seed remains unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`.
+- Canonical `data/Memory.mem` remains unchanged from Entry 040/041 with SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`; image version remains `28.9.0-memory-fabric-sovereign`; Memory ABI remains `memoryai-memory-abi-v1`.
+- Final validation: architecture regression suite 38/38 PASS; live architecture audit PASS; Python suite 55/55 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-029..031 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

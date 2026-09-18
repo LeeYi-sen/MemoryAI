@@ -508,6 +508,80 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Mesh HTTP transport boundary"):
             self.run_audit(repo)
 
+    def test_rejects_goroutine_per_event_handler_fanout(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        event = repo / "Kernel/src/event_runtime.go"
+        event.write_text(
+            event.read_text(encoding="utf-8").replace(
+                "parallelCPUFor(batchLen, workers",
+                "parallelEventFanoutUnbounded(batchLen, workers",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded event fanout"):
+            self.run_audit(repo)
+
+    def test_requires_call_parallel_fanout_ceiling(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "call_parallel fan-out exceeds physical target ceiling",
+                "call_parallel fan-out unchecked",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded call_parallel fanout"):
+            self.run_audit(repo)
+
+    def test_requires_storage_handler_concurrency_boundary(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "make(chan struct{}, storageMaxConcurrent())",
+                "make(chan struct{}, 1)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "remote storage transport boundary"):
+            self.run_audit(repo)
+
+    def test_requires_storage_connection_timeout_boundary(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "SetDeadline(time.Now().Add(storageConnectionTimeout()))",
+                "SetDeadline(time.Now().Add(30 * time.Second))",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "remote storage transport boundary"):
+            self.run_audit(repo)
+
+    def test_requires_storage_oversize_response_fallback(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "writeStorageReplyBounded(c",
+                "writeStorageEnvelope(c",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "remote storage transport boundary"):
+            self.run_audit(repo)
+
 
 if __name__ == "__main__":
     unittest.main()

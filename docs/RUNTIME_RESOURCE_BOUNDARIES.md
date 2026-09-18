@@ -47,3 +47,13 @@ Both inbound requests and outbound responses use overflow-detecting physical byt
 ## Architecture rule
 
 These controls are physical safety boundaries only. They must never rank Memory, infer utility, choose goals, alter confidence, or become reward/fitness functions.
+
+## Event fan-out and parallel calls
+
+Top-level physical event dispatch never creates one goroutine per matched handler. Exact handler matches are processed in bounded batches through the existing physical worker pool.
+
+The event batch hard ceiling is 256 handlers; the normal batch size is derived from physical worker concurrency and never from semantic relevance or priority.
+
+`call_parallel` has a separate physical cardinality ceiling. `MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS` defaults to 1024 and is hard-capped by the Kernel at 65536 targets.
+
+If a Memory requests a larger fan-out, execution fails before copying the target list, allocating result/status arrays, or running child Memories. Memory may explicitly batch larger work itself.

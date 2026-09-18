@@ -35,6 +35,28 @@ var physicalEventSequence uint64
 var physicalEventHandlerRuns uint64
 var physicalEventHandlerFailures uint64
 
+const hardEventDispatchBatchHandlers = 256
+
+func eventDispatchBatchSize(total, workers int) int {
+	if total <= 0 {
+		return 1
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	batch := workers * 4
+	if batch < workers {
+		batch = workers
+	}
+	if batch > hardEventDispatchBatchHandlers {
+		batch = hardEventDispatchBatchHandlers
+	}
+	if batch > total {
+		batch = total
+	}
+	return batch
+}
+
 func newPhysicalEvent(name, subject string, vars map[string]string) PhysicalEvent {
 	copyVars := map[string]string{}
 	for k, v := range vars {
@@ -298,23 +320,26 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 	}
 
 	// Top-level independent handlers receive identical physical event frames and
-	// execute through the existing speculative scheduler. No semantic priority is
-	// introduced: concurrency is bounded only by the physical execution limit.
+	// execute through the existing speculative scheduler. Process a bounded
+	// physical batch at a time so queued goroutines/results never scale with the
+	// total exact trigger set. matched remains stable Memory-ID order.
 	base := cloneFrame(f)
 	type handlerResult struct {
 		frame *Frame
 		err   error
 	}
-	results := make([]handlerResult, len(matched))
 	workers := physicalConcurrency(0)
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
-	for i, id := range matched {
-		wg.Add(1)
-		go func(index int, memoryID string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+	batchCap := eventDispatchBatchSize(len(matched), workers)
+	var errs []error
+	for start := 0; start < len(matched); start += batchCap {
+		end := start + batchCap
+		if end > len(matched) {
+			end = len(matched)
+		}
+		batchLen := end - start
+		results := make([]handlerResult, batchLen)
+		parallelCPUFor(batchLen, workers, func(offset int) {
+			memoryID := matched[start+offset]
 			branch := cloneFrame(base)
 			atomic.AddUint64(&root.eventStats.handlerRuns, 1)
 			atomic.AddUint64(&physicalEventHandlerRuns, 1)
@@ -322,20 +347,16 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 			if runErr != nil {
 				atomic.AddUint64(&physicalEventHandlerFailures, 1)
 			}
-			results[index] = handlerResult{frame: branch, err: runErr}
-		}(i, id)
-	}
-	wg.Wait()
-
-	var errs []error
-	// matched is already stable Memory-ID order. Merge only ephemeral Frame deltas
-	// in that order; Memory mutations were committed independently by Scheduler.
-	for i, id := range matched {
-		if results[i].frame != nil {
-			mergeIndependentEventFrame(f, base, results[i].frame)
-		}
-		if results[i].err != nil {
-			errs = append(errs, fmt.Errorf("event handler %s: %w", id, results[i].err))
+			results[offset] = handlerResult{frame: branch, err: runErr}
+		})
+		for offset := 0; offset < batchLen; offset++ {
+			id := matched[start+offset]
+			if results[offset].frame != nil {
+				mergeIndependentEventFrame(f, base, results[offset].frame)
+			}
+			if results[offset].err != nil {
+				errs = append(errs, fmt.Errorf("event handler %s: %w", id, results[offset].err))
+			}
 		}
 	}
 	return errors.Join(errs...)

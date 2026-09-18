@@ -82,3 +82,21 @@
 - Mesh HTTP requests/responses use overflow-detecting byte ceilings instead of truncating readers, and the HTTP server has read-header/read/write/idle timeouts plus a header-size ceiling.
 - Bounded JSON response encoding is streaming and stops once the physical ceiling is reached instead of first materializing an unbounded JSON payload.
 - Final architecture regression suite for this entry is 33/33 PASS.
+
+## Continued audit after Entry 041
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-029 | P0 | DONE | Top-level event fan-out creates one goroutine per matched handler before the semaphore, so a large exact trigger set can exhaust memory even when physical execution concurrency is small | Dispatch handlers through a bounded worker/batch path; queued goroutines and temporary result storage must scale with the physical concurrency/batch ceiling rather than total matched handlers |
+| PR-030 | P0 | DONE | `call_parallel` allocates result/status arrays and schedules every target in an unbounded Frame list; worker count is bounded but fan-out cardinality is not | Add a configurable physical fan-out ceiling with a hard Kernel maximum; oversized fan-out must fail closed before child execution/allocation so Memory can explicitly batch the work |
+| PR-031 | P0 | DONE | Remote storage transport still uses a fixed truncating 4 MiB decoder, unbounded JSON response materialization and one goroutine per accepted connection | Add hard-bounded storage request/response envelopes, explicit overflow rejection, connection deadlines and handler concurrency ceiling; oversized list/get/put traffic must fail without partial writes or silent truncation |
+
+## Entry 042 closure evidence
+
+- PR-029 through PR-031 are DONE.
+- Event fan-out no longer creates one goroutine per exact handler match. Top-level independent handlers are processed in bounded batches through the existing physical worker pool; temporary goroutines/results scale with the batch/concurrency ceiling rather than total match cardinality.
+- `call_parallel` now fails closed before target-copy/result allocation/child execution when the Memory-provided target list exceeds the physical fan-out ceiling. Default ceiling is 1024; hard Kernel ceiling is 65536 via `MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS`.
+- Remote storage envelopes now use `MEMORYAI_STORAGE_MAX_BYTES` with a 20 MiB default and 32 MiB hard Kernel maximum. Oversized requests/responses fail explicitly; response fallback is itself a bounded authenticated envelope.
+- mem-node connection timeout is configurable with `MEMORYAI_STORAGE_TIMEOUT_MS` (30 s default, 120 s hard max). Handler concurrency is bounded by `MEMORYAI_STORAGE_MAX_CONCURRENT` (32 default, 256 hard max). Excess connections are closed before a handler goroutine is created.
+- Storage envelope signing remains byte-stable: the `Encoder.Encode` framing newline is removed before signing/embedding the `RawMessage`, preventing outer JSON normalization from invalidating HMAC verification.
+- Final validation: architecture regression suite 38/38 PASS; live architecture audit PASS; Python suite 55/55 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-029..031 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

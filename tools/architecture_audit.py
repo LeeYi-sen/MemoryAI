@@ -253,6 +253,34 @@ def audit() -> dict[str, object]:
         "Sovereign node identity binding",
     )
 
+    event_runtime = read("Kernel/src/event_runtime.go")
+    parallel_runtime = read("Kernel/src/parallel_runtime.go")
+    require(
+        event_runtime,
+        [
+            "hardEventDispatchBatchHandlers = 256",
+            "eventDispatchBatchSize",
+            "parallelCPUFor(batchLen, workers",
+            "results := make([]handlerResult, batchLen)",
+        ],
+        "bounded event fanout",
+    )
+    forbid(
+        event_runtime,
+        ["go func(index int, memoryID string)"],
+        "bounded event fanout",
+    )
+    require(
+        parallel_runtime + kernel_source_text,
+        [
+            "hardParallelFanoutMaxTargets    = 65536",
+            "MEMORYAI_PARALLEL_FANOUT_MAX_TARGETS",
+            "parallelFanoutMaxTargets()",
+            "call_parallel fan-out exceeds physical target ceiling",
+        ],
+        "bounded call_parallel fanout",
+    )
+
     resource_runtime = read("Kernel/src/resource_runtime.go")
     require(
         resource_runtime + kernel_source_text,
@@ -312,6 +340,39 @@ def audit() -> dict[str, object]:
         mesh_runtime,
         ['io.LimitReader(resp.Body, 2<<20)', 'io.LimitReader(r.Body, 2<<20)'],
         "Mesh HTTP transport boundary",
+    )
+
+    storage_transport = read("Kernel/src/storage_transport_security.go")
+    require(
+        storage_transport + physical_limits,
+        [
+            "storageTransportMaxBytes",
+            "MEMORYAI_STORAGE_MAX_BYTES",
+            "storageConnectionTimeout",
+            "MEMORYAI_STORAGE_TIMEOUT_MS",
+            "storageMaxConcurrent",
+            "MEMORYAI_STORAGE_MAX_CONCURRENT",
+            "io.LimitedReader{R: r, N: maxBytes + 1}",
+            "encodeJSONPhysicalBounded",
+            "writeStorageReplyBounded",
+        ],
+        "remote storage transport boundary",
+    )
+    require(
+        kernel_source_text,
+        [
+            "make(chan struct{}, storageMaxConcurrent())",
+            "case concurrency <- struct{}{}:",
+            "remote storage physical concurrency limit reached",
+            "SetDeadline(time.Now().Add(storageConnectionTimeout()))",
+            "writeStorageReplyBounded(c",
+        ],
+        "remote storage transport boundary",
+    )
+    forbid(
+        storage_transport + kernel_source_text,
+        ['io.LimitReader(r, 4<<20)', 'io.LimitReader(c, 4<<20)', 'go handleMemNodeConn(root, c)'],
+        "remote storage transport boundary",
     )
     forbid(
         daemon,

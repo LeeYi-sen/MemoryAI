@@ -1449,7 +1449,12 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 	case "call_parallel":
-		targets := append([]string(nil), f.Lists[x(op.Args["targets_list"])]...)
+		sourceTargets := f.Lists[x(op.Args["targets_list"])]
+		maxTargets := parallelFanoutMaxTargets()
+		if len(sourceTargets) > maxTargets {
+			return -1, fmt.Errorf("call_parallel fan-out exceeds physical target ceiling: targets=%d max=%d", len(sourceTargets), maxTargets)
+		}
+		targets := append([]string(nil), sourceTargets...)
 		results := make([]string, len(targets))
 		oks := make([]string, len(targets))
 		maxp, _ := strconv.Atoi(x(op.Args["max_parallel"]))
@@ -3381,12 +3386,8 @@ func remoteSpaceRequest(host, port string, req map[string]any, timeout time.Dura
 	if err = writeStorageEnvelope(c, req); err != nil {
 		return "", err
 	}
-	var env storageWireEnvelope
-	if err = json.NewDecoder(io.LimitReader(c, 4<<20)).Decode(&env); err != nil {
-		return "", err
-	}
-	body, err := storageEnvelopeBody(env)
-	if err != nil {
+	var body json.RawMessage
+	if err = readStorageEnvelope(c, &body); err != nil {
 		return "", err
 	}
 	return string(body), nil
@@ -3457,23 +3458,33 @@ func serveMemNode(root, addr string) error {
 	}
 	defer ln.Close()
 	fmt.Printf("MEMORYAI_MEM_NODE %s root=%s\\n", ln.Addr().String(), root)
+	concurrency := make(chan struct{}, storageMaxConcurrent())
 	for {
 		c, er := ln.Accept()
 		if er != nil {
 			return er
 		}
-		go handleMemNodeConn(root, c)
+		select {
+		case concurrency <- struct{}{}:
+			go func(conn net.Conn) {
+				defer func() { <-concurrency }()
+				handleMemNodeConn(root, conn)
+			}(c)
+		default:
+			fmt.Fprintln(os.Stderr, "MEMORYAI_MEM_NODE remote storage physical concurrency limit reached")
+			_ = c.Close()
+		}
 	}
 }
 func handleMemNodeConn(root string, c net.Conn) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+	_ = c.SetDeadline(time.Now().Add(storageConnectionTimeout()))
 	var req memNodeRequest
 	if err := readStorageEnvelope(c, &req); err != nil {
-		_ = writeStorageEnvelope(c, map[string]any{"ok": false, "error": err.Error()})
+		_ = writeStorageReplyBounded(c, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	reply := func(v any) { _ = writeStorageEnvelope(c, v) }
+	reply := func(v any) { _ = writeStorageReplyBounded(c, v) }
 	if req.Op == "stat" {
 		var st syscall.Statfs_t
 		if err := syscall.Statfs(root, &st); err != nil {
