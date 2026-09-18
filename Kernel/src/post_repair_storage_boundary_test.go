@@ -1808,3 +1808,59 @@ func TestMemoryTagAddRejectsRecordByteOverflowBeforeMutation(t *testing.T) {
 		t.Fatalf("overflowing memory_tag_add mutated target: revision=%d tags=%v", target.Revision, target.Tags)
 	}
 }
+
+func TestMemoryImportRejectsOversizedRawRecordBeforeDecode(t *testing.T) {
+	t.Setenv("MEMORYAI_MEMORY_RECORD_MAX_BYTES", "256")
+	e := loadCurrentBodyForGrowthTest(t)
+	_, _, err := e.importMemoryJSON(strings.Repeat("{", 512), false)
+	if err == nil || !strings.Contains(err.Error(), "physical Memory-record byte ceiling") {
+		t.Fatalf("oversized Memory import was not rejected before JSON decode: %v", err)
+	}
+}
+
+func TestExplicitMemoryUpsertRejectsOversizedRecordBeforeInsert(t *testing.T) {
+	t.Setenv("MEMORYAI_MEMORY_RECORD_MAX_BYTES", "256")
+	path := filepath.Join(t.TempDir(), "Memory.mem")
+	writeBodyForPersistenceTest(t, path, "storage", nil)
+	e, err := loadEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.close()
+	incoming := &Memory{ID: "oversized-upsert", Layer: "emergent", Tags: []string{"memory"}, Content: strings.Repeat("x", 512), State: map[string]any{}, Revision: 1}
+	if err := e.upsertExplicitMemoryBounded(incoming); err == nil || !strings.Contains(err.Error(), "physical Memory-record byte ceiling") {
+		t.Fatalf("oversized explicit Memory upsert was not rejected: %v", err)
+	}
+	if _, err := e.resolveIDLocal(incoming.ID); !errors.Is(err, io.EOF) {
+		t.Fatalf("oversized explicit Memory leaked into storage body: %v", err)
+	}
+}
+
+func TestMemoryNewRejectsOversizedRecordBeforeFabricPlacement(t *testing.T) {
+	t.Setenv("MEMORYAI_MEMORY_RECORD_MAX_BYTES", "256")
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "Memory.mem")
+	root := &Memory{ID: "root", Layer: "inherited", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1}
+	writeBodyForPersistenceTest(t, primary, "core", []*Memory{root})
+	writeBodyForPersistenceTest(t, filepath.Join(dir, "Memory.1.mem"), "storage", nil)
+	e, err := loadEngine(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.close()
+	e.mountAutomaticStorageShards()
+	f := newFrame()
+	f.Vars["huge"] = strings.Repeat("x", 512)
+	op := Op{Code: "memory_new", A: "child_id", Args: map[string]string{"layer": "emergent", "tags": "memory", "content": "{{huge}}"}}
+	if _, err := e.execPrimitive(root, op, f, 0, nil); err == nil || !strings.Contains(err.Error(), "physical Memory-record byte ceiling") {
+		t.Fatalf("oversized memory_new was not rejected before Fabric placement: %v", err)
+	}
+	if f.Vars["child_id"] != "" {
+		t.Fatalf("oversized memory_new published child id: %q", f.Vars["child_id"])
+	}
+	for _, owner := range e.mountedFabricEngines() {
+		if localMemoryCountFast(owner) != 0 {
+			t.Fatalf("oversized memory_new leaked into storage shard: count=%d", localMemoryCountFast(owner))
+		}
+	}
+}

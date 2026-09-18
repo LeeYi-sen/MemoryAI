@@ -3343,7 +3343,9 @@ func (e *Engine) mergeSpace(source, target string) (map[string]any, error) {
 		if er != nil && er != io.EOF {
 			return nil, er
 		}
-		dst.addRuntimeMemory(copyMemory(m))
+		if err := dst.addRuntimeMemory(copyMemory(m)); err != nil {
+			return nil, err
+		}
 		stat["copied"] = stat["copied"].(int) + 1
 	}
 	stat["conflict_ids"] = conflictIDs
@@ -3961,7 +3963,13 @@ func (e *Engine) isDirty() bool {
 	return d
 }
 
-func (e *Engine) addRuntimeMemory(m *Memory) {
+func (e *Engine) addRuntimeMemory(m *Memory) error {
+	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
+		return fmt.Errorf("runtime Memory insert requires engine and id")
+	}
+	if err := ensureMemoryRecordWithinPhysicalLimit(m, "runtime Memory insert"); err != nil {
+		return err
+	}
 	e.dataMu.Lock()
 	e.cache[m.ID] = m
 	e.newIDs[m.ID] = true
@@ -3971,6 +3979,7 @@ func (e *Engine) addRuntimeMemory(m *Memory) {
 		e.tagDeltaAddLocked(m.ID, t)
 	}
 	e.dataMu.Unlock()
+	return nil
 }
 
 func physicalExchange(transport, host, port, request string, timeout time.Duration) (string, error) {

@@ -215,3 +215,20 @@
 - Single history/tag values larger than the runtime record envelope are rejected before complete record encoding.
 - No history eviction, tag ranking, semantic filtering, or truncation is introduced.
 - Final validation: architecture regression suite 49/49 PASS; live architecture audit PASS; Python suite 66/66 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-038 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 049
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-039 | P0 | DONE | Whole-Memory creation/import paths can bypass runtime record-size enforcement: JSON import decodes before size rejection, explicit upsert copies/inserts unchecked records, and Fabric placement/transfer/merge can directly add an oversized Memory | Enforce the same runtime Memory-record ceiling before raw import decode, before explicit-copy/upsert, at Fabric placement, and again at the final runtime-cache insertion boundary; all production insertion callers must propagate rejection |
+
+## Entry 050 closure evidence
+
+- PR-039 is DONE.
+- `memory_import_json` rejects raw input above `MEMORYAI_MEMORY_RECORD_MAX_BYTES` before JSON decode.
+- `upsertExplicitMemoryBounded` validates the incoming Memory before `copyMemory` or any Fabric/cache mutation.
+- `placeRuntimeMemoryLocked` validates a complete Memory before selecting a writable shard, covering `memory_new` / `memory_copy` creation paths.
+- `addRuntimeMemory` is now a final physical record gate and returns errors; production storage-upsert, transfer, Fabric placement and `space_merge` callers all propagate the rejection.
+- Oversized creation/import attempts do not publish a child ID, enter cache/new/dirty sets, or reach persistence.
+- No structure truncation, field ranking, semantic selection or automatic splitting is introduced.
+- Final validation: architecture regression suite 50/50 PASS; live architecture audit PASS; Python suite 67/67 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-039 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

@@ -291,8 +291,7 @@ func addTransferTargetCandidateBounded(dst *Engine, candidate *Memory) error {
 	if !shardHasCapacity(dst, 1) {
 		return fmt.Errorf("explicit Memory transfer target full: %d Memory limit reached", memoryShardMax())
 	}
-	dst.addRuntimeMemory(candidate)
-	return nil
+	return dst.addRuntimeMemory(candidate)
 }
 
 func rollbackUnpersistedTransferCandidate(dst *Engine, candidate *Memory) bool {

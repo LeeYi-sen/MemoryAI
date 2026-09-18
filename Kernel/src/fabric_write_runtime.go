@@ -157,6 +157,9 @@ func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("explicit Memory upsert requires engine and id")
 	}
+	if err := ensureMemoryRecordWithinPhysicalLimit(m, "explicit Memory upsert"); err != nil {
+		return err
+	}
 	q := copyMemory(m)
 	if q.State == nil {
 		q.State = map[string]any{}
@@ -181,8 +184,7 @@ func (e *Engine) upsertExplicitMemoryBounded(m *Memory) error {
 		if !shardHasCapacity(root, 1) {
 			return fmt.Errorf("storage body full: %d Memory limit reached", memoryShardMax())
 		}
-		root.addRuntimeMemory(q)
-		return nil
+		return root.addRuntimeMemory(q)
 	default:
 		return fmt.Errorf("explicit Memory creation requires core or storage body, got role %q", root.manifest.Role)
 	}

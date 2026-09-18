@@ -165,9 +165,11 @@ func (e *Engine) placeRuntimeMemoryLocked(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("runtime Memory placement requires engine and id")
 	}
+	if err := ensureMemoryRecordWithinPhysicalLimit(m, "runtime Memory placement"); err != nil {
+		return err
+	}
 	if target := e.mountedWritableShard(); target != nil {
-		target.addRuntimeMemory(m)
-		return nil
+		return target.addRuntimeMemory(m)
 	}
 	return fmt.Errorf("Memory Fabric capacity exhausted: Memory must create/select storage explicitly before creating another Memory")
 }

@@ -128,6 +128,14 @@ func memoryRecordMaxBytes() int64 {
 	)
 }
 
+func ensureMemoryRecordRawBytesWithinPhysicalLimit(raw string, label string) error {
+	maxBytes := memoryRecordMaxBytes()
+	if int64(len(raw)) > maxBytes {
+		return fmt.Errorf("%s exceeds physical Memory-record byte ceiling: bytes=%d max=%d", label, len(raw), maxBytes)
+	}
+	return nil
+}
+
 func ensureMemoryRecordWithinPhysicalLimit(memory *Memory, label string) error {
 	if memory == nil {
 		return fmt.Errorf("%s Memory unavailable", label)

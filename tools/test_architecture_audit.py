@@ -756,5 +756,22 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
 
 
 
+    def test_requires_bounded_memory_creation_import_record_growth(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        structure = repo / "Kernel/src/structure_runtime.go"
+        structure.write_text(
+            structure.read_text(encoding="utf-8").replace(
+                'if err := ensureMemoryRecordRawBytesWithinPhysicalLimit(raw, "memory_import_json"); err != nil {',
+                'if err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Memory creation/import record growth"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()

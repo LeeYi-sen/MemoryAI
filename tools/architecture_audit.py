@@ -320,6 +320,26 @@ def audit() -> dict[str, object]:
         "bounded Frame scalar/output growth",
     )
 
+    structure_creation = read("Kernel/src/structure_runtime.go")
+    fabric_write_creation = read("Kernel/src/fabric_write_runtime.go")
+    shard_creation = read("Kernel/src/shard_runtime.go")
+    remote_transfer_creation = read("Kernel/src/remote_durability_runtime.go")
+    require(
+        physical_limits + structure_creation + fabric_write_creation + shard_creation + remote_transfer_creation + kernel_source_text,
+        [
+            "ensureMemoryRecordRawBytesWithinPhysicalLimit",
+            'ensureMemoryRecordRawBytesWithinPhysicalLimit(raw, "memory_import_json")',
+            'ensureMemoryRecordWithinPhysicalLimit(m, "explicit Memory upsert")',
+            'ensureMemoryRecordWithinPhysicalLimit(m, "runtime Memory placement")',
+            'ensureMemoryRecordWithinPhysicalLimit(m, "runtime Memory insert")',
+            "return dst.addRuntimeMemory(candidate)",
+            "return root.addRuntimeMemory(q)",
+            "return target.addRuntimeMemory(m)",
+            "if err := dst.addRuntimeMemory(copyMemory(m)); err != nil {",
+        ],
+        "bounded Memory creation/import record growth",
+    )
+
     require(
         kernel_source_text,
         [

@@ -344,3 +344,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 49/49 PASS; live architecture audit PASS; Python suite 66/66 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-038 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 050 — bound whole-Memory creation and import growth
+- Base HEAD: `c90e340b8ed98a4618eecebc8271d69f0f13de56` (`Entry 049: bound Memory metadata growth`).
+- Continued post-repair audit closed PR-039; tracker now has 39 DONE / 0 OPEN findings.
+- Raw `memory_import_json` input is rejected above the runtime Memory-record ceiling before JSON decode.
+- Explicit upsert validates the incoming Memory before deep copy; Fabric placement validates before shard selection; `addRuntimeMemory` provides a final cache-insertion gate.
+- Production storage-upsert, transfer, Fabric placement and `space_merge` callers now propagate runtime insertion errors rather than discarding them.
+- Oversized whole-Memory creation/import cannot publish child IDs, enter cache/new/dirty sets, or defer failure until persistence.
+- The boundary is physical-only: Kernel does not truncate records, rank fields, select memories, or automatically split cognition.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 50/50 PASS; live architecture audit PASS; Python suite 67/67 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-039 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

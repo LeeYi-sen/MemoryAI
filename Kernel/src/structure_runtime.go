@@ -57,6 +57,9 @@ func (e *Engine) importMemoryJSON(raw string, remote bool) (string, string, erro
 	if remote {
 		return "", "denied", errors.New("remote Memory import disabled; use Sovereign Mesh direct read")
 	}
+	if err := ensureMemoryRecordRawBytesWithinPhysicalLimit(raw, "memory_import_json"); err != nil {
+		return "", "invalid", err
+	}
 	var m Memory
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return "", "invalid", err
