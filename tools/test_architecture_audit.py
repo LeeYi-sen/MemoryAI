@@ -642,6 +642,36 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bounded Frame-list cardinality"):
             self.run_audit(repo)
 
+    def test_requires_frame_scalar_join_ceiling(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'ensureFrameJoinBytes("str_join", left, sep, right)',
+                'nil',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Frame scalar/output growth"):
+            self.run_audit(repo)
+
+    def test_requires_frame_output_append_ceiling(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "ensureFrameOutputAppend(f.Output, value)",
+                "nil",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Frame scalar/output growth"):
+            self.run_audit(repo)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -300,6 +300,26 @@ def audit() -> dict[str, object]:
         "bounded Frame-list cardinality",
     )
 
+    require(
+        physical_limits + kernel_source_text,
+        [
+            "defaultFrameValueMaxBytes",
+            "hardFrameValueMaxBytes",
+            "MEMORYAI_FRAME_VALUE_MAX_BYTES",
+            "defaultFrameOutputMaxItems",
+            "hardFrameOutputMaxItems",
+            "MEMORYAI_FRAME_OUTPUT_MAX_ITEMS",
+            "defaultFrameOutputMaxBytes",
+            "hardFrameOutputMaxBytes",
+            "MEMORYAI_FRAME_OUTPUT_MAX_BYTES",
+            "ensureFrameJoinBytes",
+            "ensureFrameOutputAppend",
+            'ensureFrameJoinBytes("str_join", left, sep, right)',
+            "ensureFrameOutputAppend(f.Output, value)",
+        ],
+        "bounded Frame scalar/output growth",
+    )
+
     resource_runtime = read("Kernel/src/resource_runtime.go")
     require(
         resource_runtime + kernel_source_text,

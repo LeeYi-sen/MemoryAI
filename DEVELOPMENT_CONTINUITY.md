@@ -286,3 +286,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body are unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 42/42 PASS; live architecture audit PASS; Python suite 59/59 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-033 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 045 — bound Frame scalar and output growth
+- Base HEAD: `f336f4d36d696cf12067d8d8f75f80f2003ea16b` (`Entry 044: bound Frame list cardinality`).
+- Continued post-repair audit closed PR-034; tracker now has 34 DONE / 0 OPEN findings.
+- Frame scalar growth is physically bounded by `MEMORYAI_FRAME_VALUE_MAX_BYTES`: default 16 MiB, hard Kernel maximum 64 MiB.
+- Frame Output has independent item and aggregate-byte ceilings: `MEMORYAI_FRAME_OUTPUT_MAX_ITEMS` defaults to 4096 with a 32768 hard maximum; `MEMORYAI_FRAME_OUTPUT_MAX_BYTES` defaults to 16 MiB with a 64 MiB hard maximum.
+- `str_join` checks the combined byte requirement before concatenation, preventing repeated exponential joins from allocating an oversized Frame value before the post-primitive allocator sample.
+- `emit` validates individual value size, output cardinality and aggregate output bytes before appending to `Frame.Output`.
+- The Kernel never truncates, ranks or semantically filters oversized Frame/output content; Memory must explicitly split larger work.
+- Canonical cognitive seed and body are unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 44/44 PASS; live architecture audit PASS; Python suite 61/61 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-034 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

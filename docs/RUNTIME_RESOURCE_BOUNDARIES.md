@@ -78,3 +78,13 @@ Frame list expansion is physically bounded by `MEMORYAI_FRAME_LIST_MAX_ITEMS`.
 - hard Kernel maximum: 65536 items
 
 The Kernel never silently truncates a cognitive result set. A primitive that would exceed the physical cardinality returns an error before the bounded output mutation/allocation; Memory must explicitly split or batch larger work.
+
+## Frame scalar and output bounds
+
+Frame scalar growth and emitted output are bounded before the relevant allocation/mutation:
+
+- `MEMORYAI_FRAME_VALUE_MAX_BYTES`: 16 MiB default, 64 MiB hard maximum.
+- `MEMORYAI_FRAME_OUTPUT_MAX_ITEMS`: 4096 default, 32768 hard maximum.
+- `MEMORYAI_FRAME_OUTPUT_MAX_BYTES`: 16 MiB default, 64 MiB hard maximum.
+
+`str_join` checks the combined byte requirement before concatenation. `emit` checks the individual value, output item count and aggregate output bytes before append. The Kernel never truncates cognitive output to fit these physical ceilings.

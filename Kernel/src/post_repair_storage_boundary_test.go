@@ -1539,3 +1539,67 @@ func TestFrameListOperatorLimitCannotExceedKernelHardCap(t *testing.T) {
 		t.Fatalf("Frame-list operator limit escaped Kernel hard cap: got=%d hard=%d", got, hardFrameListMaxItems)
 	}
 }
+
+func TestStrJoinRejectsFrameValueByteOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VALUE_MAX_BYTES", "64")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["a"] = strings.Repeat("a", 40)
+	f.Vars["b"] = strings.Repeat("b", 40)
+	op := Op{Code: "str_join", A: "{{a}}", B: "{{b}}", C: "out"}
+	if _, err := e.execPrimitive(&Memory{ID: "frame-value-test"}, op, f, 0, nil); err == nil {
+		t.Fatal("str_join exceeded physical Frame-value byte ceiling without rejection")
+	}
+	if f.Vars["out"] != "" {
+		t.Fatalf("overflowing str_join mutated Frame before rejection: %d bytes", len(f.Vars["out"]))
+	}
+}
+
+func TestEmitRejectsFrameOutputCardinalityOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_OUTPUT_MAX_ITEMS", "2")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	self := &Memory{ID: "frame-output-test"}
+	for _, value := range []string{"one", "two"} {
+		if _, err := e.execPrimitive(self, Op{Code: "emit", A: value}, f, 0, nil); err != nil {
+			t.Fatalf("allowed emit failed: %v", err)
+		}
+	}
+	if _, err := e.execPrimitive(self, Op{Code: "emit", A: "three"}, f, 0, nil); err == nil {
+		t.Fatal("emit exceeded physical Frame-output cardinality without rejection")
+	}
+	if len(f.Output) != 2 {
+		t.Fatalf("overflowing emit mutated Frame output before rejection: %d", len(f.Output))
+	}
+}
+
+func TestEmitRejectsFrameOutputByteOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_OUTPUT_MAX_BYTES", "5")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	self := &Memory{ID: "frame-output-bytes-test"}
+	if _, err := e.execPrimitive(self, Op{Code: "emit", A: "123"}, f, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.execPrimitive(self, Op{Code: "emit", A: "456"}, f, 0, nil); err == nil {
+		t.Fatal("emit exceeded physical Frame-output byte ceiling without rejection")
+	}
+	if len(f.Output) != 1 {
+		t.Fatalf("overflowing emit mutated Frame output before rejection: %d", len(f.Output))
+	}
+}
+
+func TestFrameValueAndOutputOperatorLimitsCannotExceedKernelHardCaps(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VALUE_MAX_BYTES", "999999999999")
+	t.Setenv("MEMORYAI_FRAME_OUTPUT_MAX_BYTES", "999999999999")
+	t.Setenv("MEMORYAI_FRAME_OUTPUT_MAX_ITEMS", "999999999")
+	if got := frameValueMaxBytes(); got != hardFrameValueMaxBytes {
+		t.Fatalf("Frame-value operator limit escaped Kernel hard cap: got=%d hard=%d", got, hardFrameValueMaxBytes)
+	}
+	if got := frameOutputMaxBytes(); got != hardFrameOutputMaxBytes {
+		t.Fatalf("Frame-output byte limit escaped Kernel hard cap: got=%d hard=%d", got, hardFrameOutputMaxBytes)
+	}
+	if got := frameOutputMaxItems(); got != hardFrameOutputMaxItems {
+		t.Fatalf("Frame-output item limit escaped Kernel hard cap: got=%d hard=%d", got, hardFrameOutputMaxItems)
+	}
+}

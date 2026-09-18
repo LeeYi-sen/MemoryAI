@@ -1482,7 +1482,11 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			f.Lists[k] = oks
 		}
 	case "emit":
-		f.Output = append(f.Output, x(op.A))
+		value := x(op.A)
+		if err := ensureFrameOutputAppend(f.Output, value); err != nil {
+			return -1, err
+		}
+		f.Output = append(f.Output, value)
 	case "url_escape":
 		f.Vars[op.B] = url.QueryEscape(f.Vars[op.A])
 	case "str_after":
@@ -1647,7 +1651,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		setPhysicalExecutionConcurrency(n)
 	case "str_join":
-		f.Vars[op.C] = x(op.A) + x(op.Args["sep"]) + x(op.B)
+		left := x(op.A)
+		sep := x(op.Args["sep"])
+		right := x(op.B)
+		if err := ensureFrameJoinBytes("str_join", left, sep, right); err != nil {
+			return -1, err
+		}
+		f.Vars[op.C] = left + sep + right
 	case "str_len":
 		f.Vars[op.B] = strconv.Itoa(len([]rune(x(op.A))))
 	case "emit_event":

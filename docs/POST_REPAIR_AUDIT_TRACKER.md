@@ -132,3 +132,19 @@
 - `utf8_bytes`, `unicode_runes`, `json_keys` and `json_array_strings` now reject result cardinality beyond the same physical boundary.
 - No cognitive ranking, truncation, selection or semantic prioritization is performed by this ceiling; Memory must explicitly batch larger work.
 - Architecture regression suite reached 42/42 PASS and live architecture audit PASS before final entry validation.
+
+## Continued audit after Entry 044
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-034 | P0 | DONE | Frame scalar/output growth is unbounded: repeated `str_join` can exponentially grow one value and repeated `emit` can append unlimited output entries before post-primitive allocation sampling | Add hard-bounded Frame value bytes and Output cardinality; reject oversized joins before concatenation and output overflow before append, never silently truncate cognitive content |
+
+## Entry 045 closure evidence
+
+- PR-034 is DONE.
+- Frame scalar growth is physically bounded through `MEMORYAI_FRAME_VALUE_MAX_BYTES`: default 16 MiB, hard Kernel maximum 64 MiB.
+- Frame Output has both cardinality and aggregate-byte ceilings: `MEMORYAI_FRAME_OUTPUT_MAX_ITEMS` defaults to 4096 with a 32768 hard maximum; `MEMORYAI_FRAME_OUTPUT_MAX_BYTES` defaults to 16 MiB with a 64 MiB hard maximum.
+- `str_join` computes the physical byte requirement before concatenation and fails closed rather than allocating an oversized joined value.
+- `emit` rejects oversized individual values, output item overflow and aggregate output-byte overflow before appending.
+- No truncation, ranking or semantic selection is introduced; Memory must explicitly split larger values/output streams.
+- Architecture regression suite reached 44/44 PASS and live architecture audit PASS before final entry validation.

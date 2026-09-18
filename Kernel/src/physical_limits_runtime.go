@@ -26,6 +26,12 @@ const (
 	hardPhysicalExchangeTimeout           = 60 * time.Second
 	defaultFrameListMaxItems              = 8192
 	hardFrameListMaxItems                 = 65536
+	defaultFrameValueMaxBytes       int64 = 16 << 20
+	hardFrameValueMaxBytes          int64 = 64 << 20
+	defaultFrameOutputMaxItems            = 4096
+	hardFrameOutputMaxItems               = 32768
+	defaultFrameOutputMaxBytes      int64 = 16 << 20
+	hardFrameOutputMaxBytes         int64 = 64 << 20
 )
 
 func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
@@ -70,6 +76,69 @@ func ensureFrameListItems(count int, label string) error {
 	maxItems := frameListMaxItems()
 	if count > maxItems {
 		return fmt.Errorf("%s exceeds physical Frame-list cardinality: items=%d max=%d", label, count, maxItems)
+	}
+	return nil
+}
+
+func frameValueMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_FRAME_VALUE_MAX_BYTES",
+		defaultFrameValueMaxBytes,
+		hardFrameValueMaxBytes,
+	)
+}
+
+func frameOutputMaxItems() int {
+	return boundedPhysicalCountEnv(
+		"MEMORYAI_FRAME_OUTPUT_MAX_ITEMS",
+		defaultFrameOutputMaxItems,
+		hardFrameOutputMaxItems,
+	)
+}
+
+func frameOutputMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_FRAME_OUTPUT_MAX_BYTES",
+		defaultFrameOutputMaxBytes,
+		hardFrameOutputMaxBytes,
+	)
+}
+
+func ensureFrameValueBytes(count int, label string) error {
+	maxBytes := frameValueMaxBytes()
+	if int64(count) > maxBytes {
+		return fmt.Errorf("%s exceeds physical Frame-value byte ceiling: bytes=%d max=%d", label, count, maxBytes)
+	}
+	return nil
+}
+
+func ensureFrameJoinBytes(label string, parts ...string) error {
+	maxBytes := frameValueMaxBytes()
+	total := int64(0)
+	for _, part := range parts {
+		if int64(len(part)) > maxBytes-total {
+			return fmt.Errorf("%s exceeds physical Frame-value byte ceiling: max=%d", label, maxBytes)
+		}
+		total += int64(len(part))
+	}
+	return nil
+}
+
+func ensureFrameOutputAppend(output []string, value string) error {
+	if err := ensureFrameValueBytes(len(value), "emit"); err != nil {
+		return err
+	}
+	maxItems := frameOutputMaxItems()
+	if len(output)+1 > maxItems {
+		return fmt.Errorf("emit exceeds physical Frame-output cardinality: items=%d max=%d", len(output)+1, maxItems)
+	}
+	maxBytes := frameOutputMaxBytes()
+	total := int64(len(value))
+	for _, existing := range output {
+		if int64(len(existing)) > maxBytes-total {
+			return fmt.Errorf("emit exceeds physical Frame-output byte ceiling: max=%d", maxBytes)
+		}
+		total += int64(len(existing))
 	}
 	return nil
 }
