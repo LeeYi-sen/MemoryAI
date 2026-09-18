@@ -248,3 +248,20 @@
 - `enqueueEvent` is the final backstop and rejects an oversized `PhysicalEvent.Vars` map before appending to `Frame.Events`, incrementing event counters, or dispatching handlers.
 - No event-variable truncation, ranking, semantic filtering, or prioritization is introduced.
 - Final validation: architecture regression suite 51/51 PASS; live architecture audit PASS; Python suite 68/68 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-040 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 051
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-041 | P0 | DONE | Frame variable maps have per-value bounds but no hard cardinality or aggregate-byte envelope; dynamic `var_set` and PhysicalEvent injection can keep adding keys/bytes beyond a bounded Frame working set | Add hard-clamped Frame variable item/byte ceilings; reject dynamic writes before mutation and preflight the full event-injected candidate Frame before enqueue/dispatch; never truncate or semantically select variables |
+
+## Entry 052 closure evidence
+
+- PR-041 is DONE.
+- Frame variables are bounded by `MEMORYAI_FRAME_VAR_MAX_ITEMS` (default 8192, hard 65536) and `MEMORYAI_FRAME_VAR_MAX_BYTES` (default 16 MiB, hard 64 MiB).
+- `var_set` validates both the individual value and the complete prospective Frame-variable envelope before inserting or replacing a key.
+- PhysicalEvent injection constructs and validates a complete candidate Frame first, including `__event`, `__event_id`, `__subject`, payload keys and `__event.<key>` mirrors.
+- `enqueueEvent` preflights that candidate before appending `Frame.Events`, incrementing event counters, or dispatching handlers.
+- Overflow leaves the existing Frame variable map and event accounting unchanged.
+- No variable truncation, ranking, semantic filtering, or eviction is introduced; Memory must explicitly restructure work inside the physical envelope.
+- Final validation: architecture regression suite 52/52 PASS; live architecture audit PASS; Python suite 69/69 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-041 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

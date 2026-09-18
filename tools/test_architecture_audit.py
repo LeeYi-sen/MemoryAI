@@ -790,5 +790,21 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
 
 
 
+    def test_requires_bounded_frame_variable_envelope(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'if err := setFrameVarBounded(f, x(op.A), x(op.B), "var_set"); err != nil {',
+                'if err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Frame variable envelope"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()

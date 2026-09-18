@@ -1904,3 +1904,48 @@ func TestEmitEventRejectsVariableSelectionCardinalityOverflow(t *testing.T) {
 		t.Fatalf("oversized emit_event appended event before rejection: events=%d count=%d", len(f.Events), f.eventCount)
 	}
 }
+
+func TestVarSetRejectsFrameVarCardinalityOverflowBeforeMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "2")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["a"], f.Vars["b"] = "1", "2"
+	op := Op{Code: "var_set", A: "c", B: "3"}
+	if _, err := e.execPrimitive(&Memory{ID: "frame-var-cardinality"}, op, f, 0, nil); err == nil {
+		t.Fatal("var_set exceeded physical Frame-variable cardinality without rejection")
+	}
+	if _, exists := f.Vars["c"]; exists || len(f.Vars) != 2 {
+		t.Fatalf("overflowing var_set mutated Frame before rejection: %#v", f.Vars)
+	}
+}
+
+func TestVarSetRejectsFrameVarAggregateByteOverflowBeforeMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_BYTES", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["a"] = "12"
+	op := Op{Code: "var_set", A: "b", B: "12345"}
+	if _, err := e.execPrimitive(&Memory{ID: "frame-var-bytes"}, op, f, 0, nil); err == nil {
+		t.Fatal("var_set exceeded physical Frame-variable byte ceiling without rejection")
+	}
+	if _, exists := f.Vars["b"]; exists || len(f.Vars) != 1 {
+		t.Fatalf("overflowing var_set mutated Frame before rejection: %#v", f.Vars)
+	}
+}
+
+func TestEventFrameInjectionRejectsFrameVarOverflowBeforeEnqueue(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "4")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["base"] = "1"
+	ev := PhysicalEvent{Name: "bounded.event", Vars: map[string]string{"payload": "ok"}}
+	if err := e.enqueueEvent(f, ev); err == nil {
+		t.Fatal("event injection exceeded physical Frame-variable cardinality without rejection")
+	}
+	if len(f.Events) != 0 || f.eventCount != 0 {
+		t.Fatalf("overflowing event was enqueued before Frame-variable rejection: events=%d count=%d", len(f.Events), f.eventCount)
+	}
+	if len(f.Vars) != 1 || f.Vars["base"] != "1" {
+		t.Fatalf("overflowing event injection partially mutated Frame: %#v", f.Vars)
+	}
+}

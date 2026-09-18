@@ -210,16 +210,13 @@ func (e *Engine) eventCandidateIDs(ev PhysicalEvent, subjectTags map[string]bool
 	return out, nil
 }
 
-func applyPhysicalEventFrame(f *Frame, ev PhysicalEvent) {
-	f.Vars["__event"] = ev.Name
-	f.Vars["__event_id"] = ev.ID
-	f.Vars["__subject"] = ev.Subject
-	for k, v := range ev.Vars {
-		if !strings.HasPrefix(k, "__") {
-			f.Vars[k] = v
-			f.Vars["__event."+k] = v
-		}
+func applyPhysicalEventFrame(f *Frame, ev PhysicalEvent) error {
+	candidate, err := frameVarsWithEventCandidate(f, ev, "physical event Frame injection")
+	if err != nil {
+		return err
 	}
+	f.Vars = candidate
+	return nil
 }
 
 func equalFrameList(a, b []string) bool {
@@ -269,7 +266,9 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 		return err
 	}
 	atomic.AddUint64(&root.eventStats.dispatched, 1)
-	applyPhysicalEventFrame(f, ev)
+	if err := applyPhysicalEventFrame(f, ev); err != nil {
+		return err
+	}
 
 	matched := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -296,7 +295,9 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 			// A sibling Memory must always observe the physical event that selected it.
 			// Nested emitted events may reuse the same Frame, so restore the parent
 			// event metadata before every serial handler without interpreting payload.
-			applyPhysicalEventFrame(f, ev)
+			if err := applyPhysicalEventFrame(f, ev); err != nil {
+				return err
+			}
 			atomic.AddUint64(&root.eventStats.handlerRuns, 1)
 			atomic.AddUint64(&physicalEventHandlerRuns, 1)
 			var runErr error
@@ -366,6 +367,9 @@ func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {
 	if f == nil {
 		return fmt.Errorf("physical event frame required")
 	}
+	if _, err := frameVarsWithEventCandidate(f, ev, "physical event enqueue"); err != nil {
+		return err
+	}
 	if err := ensurePhysicalEventVars(ev.Vars, "physical event"); err != nil {
 		return err
 	}
@@ -413,7 +417,9 @@ func (e *Engine) enqueueEvent(f *Frame, ev PhysicalEvent) error {
 		}
 	} else {
 		// Keep the top-level physical event as the visible transport context.
-		applyPhysicalEventFrame(f, ev)
+		if err := applyPhysicalEventFrame(f, ev); err != nil {
+			return err
+		}
 	}
 	return err
 }

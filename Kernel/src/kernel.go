@@ -1088,7 +1088,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			f.Vars[op.A] = x(op.B)
 		}
 	case "var_set":
-		f.Vars[x(op.A)] = x(op.B)
+		if err := setFrameVarBounded(f, x(op.A), x(op.B), "var_set"); err != nil {
+			return -1, err
+		}
 	case "var_get":
 		f.Vars[op.B] = f.Vars[x(op.A)]
 	case "self":

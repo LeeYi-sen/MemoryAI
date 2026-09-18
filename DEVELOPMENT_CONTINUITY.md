@@ -367,3 +367,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 51/51 PASS; live architecture audit PASS; Python suite 68/68 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-040 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 052 — bound Frame variable envelope
+- Base HEAD: `cffe7123f94e09302090bb542ebc3c707f85231b` (`Entry 051: bound PhysicalEvent variable envelopes`).
+- Continued post-repair audit closed PR-041; tracker now has 41 DONE / 0 OPEN findings.
+- Frame variables now have hard-clamped cardinality and aggregate-byte ceilings: `MEMORYAI_FRAME_VAR_MAX_ITEMS` defaults to 8192 with a 65536 hard maximum; `MEMORYAI_FRAME_VAR_MAX_BYTES` defaults to 16 MiB with a 64 MiB hard maximum.
+- Dynamic `var_set` preflights the prospective key/value against the complete Frame-variable envelope before mutation.
+- PhysicalEvent injection constructs a full candidate map and validates event metadata, payload keys and `__event.<key>` mirrors before replacing `Frame.Vars`; `enqueueEvent` performs the same preflight before event accounting or dispatch.
+- Overflow leaves Frame variables, `Frame.Events`, and event counters unchanged.
+- The boundary is physical-only: Kernel does not truncate, rank, filter, evict, or assign semantic importance to variables.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 52/52 PASS; live architecture audit PASS; Python suite 69/69 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-041 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

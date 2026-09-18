@@ -320,6 +320,25 @@ def audit() -> dict[str, object]:
         "bounded Frame scalar/output growth",
     )
 
+    require(
+        physical_limits + read("Kernel/src/event_runtime.go") + kernel_source_text,
+        [
+            "defaultFrameVarMaxItems",
+            "hardFrameVarMaxItems",
+            "MEMORYAI_FRAME_VAR_MAX_ITEMS",
+            "defaultFrameVarMaxBytes",
+            "hardFrameVarMaxBytes",
+            "MEMORYAI_FRAME_VAR_MAX_BYTES",
+            "ensureFrameVarsWithinPhysicalLimit",
+            "setFrameVarBounded",
+            "frameVarsWithEventCandidate",
+            'setFrameVarBounded(f, x(op.A), x(op.B), "var_set")',
+            'frameVarsWithEventCandidate(f, ev, "physical event enqueue")',
+            'frameVarsWithEventCandidate(f, ev, "physical event Frame injection")',
+        ],
+        "bounded Frame variable envelope",
+    )
+
     structure_creation = read("Kernel/src/structure_runtime.go")
     fabric_write_creation = read("Kernel/src/fabric_write_runtime.go")
     shard_creation = read("Kernel/src/shard_runtime.go")

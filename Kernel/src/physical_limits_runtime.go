@@ -32,6 +32,10 @@ const (
 	hardFrameOutputMaxItems               = 32768
 	defaultFrameOutputMaxBytes      int64 = 16 << 20
 	hardFrameOutputMaxBytes         int64 = 64 << 20
+	defaultFrameVarMaxItems               = 8192
+	hardFrameVarMaxItems                  = 65536
+	defaultFrameVarMaxBytes         int64 = 16 << 20
+	hardFrameVarMaxBytes            int64 = 64 << 20
 	defaultPhysicalEventVarMaxItems       = 4096
 	hardPhysicalEventVarMaxItems          = 32768
 	defaultPhysicalEventVarMaxBytes int64 = 4 << 20
@@ -280,6 +284,99 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func frameVarMaxItems() int {
+	return boundedPhysicalCountEnv(
+		"MEMORYAI_FRAME_VAR_MAX_ITEMS",
+		defaultFrameVarMaxItems,
+		hardFrameVarMaxItems,
+	)
+}
+
+func frameVarMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_FRAME_VAR_MAX_BYTES",
+		defaultFrameVarMaxBytes,
+		hardFrameVarMaxBytes,
+	)
+}
+
+func ensureFrameVarsWithinPhysicalLimit(vars map[string]string, label string) error {
+	maxItems := frameVarMaxItems()
+	if len(vars) > maxItems {
+		return fmt.Errorf("%s exceeds physical Frame-variable cardinality: items=%d max=%d", label, len(vars), maxItems)
+	}
+	maxBytes := frameVarMaxBytes()
+	total := int64(0)
+	for key, value := range vars {
+		if err := ensureFrameValueBytes(len(value), label); err != nil {
+			return err
+		}
+		part := int64(len(key)) + int64(len(value))
+		if part > maxBytes-total {
+			return fmt.Errorf("%s exceeds physical Frame-variable byte ceiling: max=%d", label, maxBytes)
+		}
+		total += part
+	}
+	return nil
+}
+
+func setFrameVarBounded(f *Frame, key, value, label string) error {
+	if f == nil {
+		return fmt.Errorf("%s Frame unavailable", label)
+	}
+	if f.Vars == nil {
+		f.Vars = map[string]string{}
+	}
+	if err := ensureFrameValueBytes(len(value), label); err != nil {
+		return err
+	}
+	maxItems := frameVarMaxItems()
+	if _, exists := f.Vars[key]; !exists && len(f.Vars)+1 > maxItems {
+		return fmt.Errorf("%s exceeds physical Frame-variable cardinality: items=%d max=%d", label, len(f.Vars)+1, maxItems)
+	}
+	maxBytes := frameVarMaxBytes()
+	total := int64(len(key)) + int64(len(value))
+	for existingKey, existingValue := range f.Vars {
+		if existingKey == key {
+			continue
+		}
+		part := int64(len(existingKey)) + int64(len(existingValue))
+		if part > maxBytes-total {
+			return fmt.Errorf("%s exceeds physical Frame-variable byte ceiling: max=%d", label, maxBytes)
+		}
+		total += part
+	}
+	if total > maxBytes {
+		return fmt.Errorf("%s exceeds physical Frame-variable byte ceiling: max=%d", label, maxBytes)
+	}
+	f.Vars[key] = value
+	return nil
+}
+
+func frameVarsWithEventCandidate(f *Frame, ev PhysicalEvent, label string) (map[string]string, error) {
+	if f == nil {
+		return nil, fmt.Errorf("%s Frame unavailable", label)
+	}
+	candidate := make(map[string]string, len(f.Vars)+3+2*len(ev.Vars))
+	for key, value := range f.Vars {
+		candidate[key] = value
+	}
+	candidate["__event"] = ev.Name
+	candidate["__event_id"] = ev.ID
+	candidate["__subject"] = ev.Subject
+	for key, value := range ev.Vars {
+		if strings.HasPrefix(key, "__") {
+			continue
+		}
+		candidate[key] = value
+		candidate["__event."+key] = value
+	}
+	if err := ensureFrameVarsWithinPhysicalLimit(candidate, label); err != nil {
+		return nil, err
+	}
+	return candidate, nil
 }
 
 func frameListMaxItems() int {
