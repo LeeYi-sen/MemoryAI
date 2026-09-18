@@ -366,6 +366,24 @@ def audit() -> dict[str, object]:
         "bounded CLI and speculative Frame commit",
     )
 
+    primitive_start = kernel_source_text.find("func (e *Engine) execPrimitive")
+    primitive_end = kernel_source_text.find("\nfunc fieldString", primitive_start)
+    if primitive_start < 0 or primitive_end < 0:
+        raise RuntimeError("cannot locate Kernel execPrimitive for Frame-write audit")
+    primitive_block = kernel_source_text[primitive_start:primitive_end]
+    require(
+        physical_limits + primitive_block,
+        [
+            "ensureFrameVarWriteWithinPhysicalLimit",
+            "setv := func(key, value string)",
+            'ensureFrameVarWriteWithinPhysicalLimit(f, op.A, child.ID, "memory_new output")',
+            'ensureFrameVarWriteWithinPhysicalLimit(f, op.A, child.ID, "memory_copy output")',
+        ],
+        "bounded VM Frame writes",
+    )
+    if re.search(r'(?m)^\s*f\.Vars\[[^\n]+\]\s*=(?!=)', primitive_block):
+        raise RuntimeError("bounded VM Frame writes contains raw Frame variable assignment")
+
     structure_creation = read("Kernel/src/structure_runtime.go")
     fabric_write_creation = read("Kernel/src/fabric_write_runtime.go")
     shard_creation = read("Kernel/src/shard_runtime.go")

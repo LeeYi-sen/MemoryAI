@@ -298,3 +298,20 @@
 - An oversized speculative Frame leaves the caller Frame unchanged and does not commit the speculative Memory/Fabric diff.
 - No variable truncation, semantic ranking, filtering, or eviction is introduced.
 - Final validation: architecture regression suite 54/54 PASS; live architecture audit PASS; Python suite 71/71 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-043 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 054
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-044 | P0 | DONE | `execPrimitive` still contains numerous raw `f.Vars[...] = ...` writes, so most VM opcodes can bypass the Frame-variable envelope; local `memory_new` / `memory_copy` can also create a Memory before discovering that the child-ID output cannot fit in Frame | Route every VM Frame-variable assignment through the bounded setter and permanently reject raw assignments in architecture audit; preflight local Memory-creation output slots before Fabric placement so overflow has no Memory side effect |
+
+## Entry 055 closure evidence
+
+- PR-044 is DONE.
+- All 148 raw Frame-variable assignments inside `execPrimitive` were replaced with a single bounded `setv` path backed by `setFrameVarBounded`.
+- Template-expansion and Frame-write failures share the primitive error boundary and propagate as ordinary VM errors; unrelated panics remain visible.
+- Architecture audit now scans the complete `execPrimitive` block and rejects any future raw `f.Vars[...] = ...` assignment.
+- `memory_new` and `memory_copy` preflight their child-ID output against the current Frame envelope before Fabric placement, then publish through the same bounded setter.
+- Frame overflow in local creation leaves Fabric memory count and caller Frame unchanged.
+- No variable truncation, semantic ranking, eviction, or output selection is introduced.
+- Final validation: architecture regression suite 55/55 PASS; live architecture audit PASS; Python suite 72/72 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-044 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

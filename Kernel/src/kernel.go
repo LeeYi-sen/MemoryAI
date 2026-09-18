@@ -1059,14 +1059,14 @@ func (e *Engine) run(idOrTag string, f *Frame) error {
 // execPrimitive intentionally contains only generic data/control/memory/physical primitives.
 // Domain meanings such as selection, credit, source provenance, HTTP parsing and learning
 // are expressed by Memory programs in Genesis, not as dedicated cases here.
-type frameExpansionFailure struct {
+type framePrimitiveFailure struct {
 	err error
 }
 
 func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map[string]int) (next int, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			failure, ok := recovered.(frameExpansionFailure)
+			failure, ok := recovered.(framePrimitiveFailure)
 			if !ok {
 				panic(recovered)
 			}
@@ -1077,9 +1077,14 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 	x := func(s string) string {
 		value, expandErr := expandFrameValueBounded(s, f.Vars)
 		if expandErr != nil {
-			panic(frameExpansionFailure{err: expandErr})
+			panic(framePrimitiveFailure{err: expandErr})
 		}
 		return value
+	}
+	setv := func(key, value string) {
+		if setErr := setFrameVarBounded(f, key, value, op.Code); setErr != nil {
+			panic(framePrimitiveFailure{err: setErr})
+		}
 	}
 	if e.speculative && (speculativeForbiddenPrimitive(op.Code) || speculativeAdditionalForbiddenPrimitive(op.Code)) {
 		atomic.StoreUint32(&e.speculativeBlocked, 1)
@@ -1088,21 +1093,21 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 	switch op.Code {
 	case "label":
 	case "set":
-		f.Vars[op.A] = x(op.B)
+		setv(op.A, x(op.B))
 	case "copy":
-		f.Vars[op.A] = f.Vars[op.B]
+		setv(op.A, f.Vars[op.B])
 	case "var_default":
 		if _, ok := f.Vars[op.A]; !ok || f.Vars[op.A] == "" {
-			f.Vars[op.A] = x(op.B)
+			setv(op.A, x(op.B))
 		}
 	case "var_set":
 		if err := setFrameVarBounded(f, x(op.A), x(op.B), "var_set"); err != nil {
 			return -1, err
 		}
 	case "var_get":
-		f.Vars[op.B] = f.Vars[x(op.A)]
+		setv(op.B, f.Vars[x(op.A)])
 	case "self":
-		f.Vars[op.A] = self.ID
+		setv(op.A, self.ID)
 	case "state_get":
 		target := self
 		if op.A != "" {
@@ -1114,9 +1119,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		v, ok := target.State[x(op.B)]
 		if !ok || v == nil {
-			f.Vars[op.C] = ""
+			setv(op.C, "")
 		} else {
-			f.Vars[op.C] = fmt.Sprint(v)
+			setv(op.C, fmt.Sprint(v))
 		}
 	case "state_keys":
 		target := self
@@ -1144,16 +1149,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		_, ok := target.State[x(op.B)]
 		if ok {
-			f.Vars[op.C] = "1"
+			setv(op.C, "1")
 		} else {
-			f.Vars[op.C] = "0"
+			setv(op.C, "0")
 		}
 	case "state_list_len":
 		target, err := e.resolve(x(op.A))
 		if err != nil {
 			return -1, err
 		}
-		f.Vars[op.C] = strconv.Itoa(len(stateList(target.State[x(op.B)])))
+		setv(op.C, strconv.Itoa(len(stateList(target.State[x(op.B)]))))
 	case "state_list_get":
 		target, err := e.resolve(x(op.A))
 		if err != nil {
@@ -1162,9 +1167,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		idx, _ := strconv.Atoi(x(op.Args["index"]))
 		ls := stateList(target.State[x(op.B)])
 		if idx >= 0 && idx < len(ls) {
-			f.Vars[op.C] = ls[idx]
+			setv(op.C, ls[idx])
 		} else {
-			f.Vars[op.C] = ""
+			setv(op.C, "")
 		}
 	case "state_list_contains":
 		target, err := e.resolve(x(op.A))
@@ -1180,9 +1185,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		if k := op.Args["out"]; k != "" {
-			f.Vars[k] = found
+			setv(k, found)
 		} else {
-			f.Vars[op.C] = found
+			setv(op.C, found)
 		}
 	case "state_list_append":
 		target, err := e.resolveMutable(x(op.A))
@@ -1247,9 +1252,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		owner.dataMu.Unlock()
 		if k := op.Args["added_out"]; k != "" {
 			if seen {
-				f.Vars[k] = "0"
+				setv(k, "0")
 			} else {
-				f.Vars[k] = "1"
+				setv(k, "1")
 			}
 		}
 	case "state_num_add":
@@ -1279,7 +1284,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		owner.dataMu.Unlock()
 		f.memoryWrites++
 		if k := op.Args["out"]; k != "" {
-			f.Vars[k] = ff(nv)
+			setv(k, ff(nv))
 		}
 	case "state_set":
 		target, err := e.resolveMutable(x(op.A))
@@ -1310,7 +1315,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		f.Vars[op.C] = fieldString(target, x(op.B))
+		setv(op.C, fieldString(target, x(op.B)))
 	case "memory_refs":
 		target, err := e.resolve(x(op.A))
 		if err != nil {
@@ -1370,7 +1375,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		e.dataMu.RLock()
 		n := len(e.cache)
 		e.dataMu.RUnlock()
-		f.Vars[op.A] = strconv.Itoa(n)
+		setv(op.A, strconv.Itoa(n))
 	case "cache_drop":
 		id := x(op.A)
 		e.dataMu.Lock()
@@ -1379,7 +1384,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		e.dataMu.Unlock()
 	case "body_count":
-		f.Vars[op.A] = strconv.Itoa(localMemoryCountFast(e))
+		setv(op.A, strconv.Itoa(localMemoryCountFast(e)))
 	case "body_list":
 		ids, err := boundedLegacyBodyIDs(e)
 		if err != nil {
@@ -1393,57 +1398,57 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		f.Lists[op.B] = ids
 	case "list_len":
-		f.Vars[op.B] = strconv.Itoa(len(f.Lists[op.A]))
+		setv(op.B, strconv.Itoa(len(f.Lists[op.A])))
 	case "list_get":
 		i, _ := strconv.Atoi(x(op.B))
 		ls := f.Lists[op.A]
 		if i < 0 || i >= len(ls) {
-			f.Vars[op.C] = ""
+			setv(op.C, "")
 		} else {
-			f.Vars[op.C] = ls[i]
+			setv(op.C, ls[i])
 		}
 	case "num_add":
-		f.Vars[op.A] = ff(num(x(op.B)) + num(x(op.C)))
+		setv(op.A, ff(num(x(op.B))+num(x(op.C))))
 	case "num_sub":
-		f.Vars[op.A] = ff(num(x(op.B)) - num(x(op.C)))
+		setv(op.A, ff(num(x(op.B))-num(x(op.C))))
 	case "num_mul":
-		f.Vars[op.A] = ff(num(x(op.B)) * num(x(op.C)))
+		setv(op.A, ff(num(x(op.B))*num(x(op.C))))
 	case "num_div":
 		d := num(x(op.C))
 		if d == 0 {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		} else {
-			f.Vars[op.A] = ff(num(x(op.B)) / d)
+			setv(op.A, ff(num(x(op.B))/d))
 		}
 	case "cmp_gt":
 		if num(x(op.B)) > num(x(op.C)) {
-			f.Vars[op.A] = "1"
+			setv(op.A, "1")
 		} else {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		}
 	case "cmp_ge":
 		if num(x(op.B)) >= num(x(op.C)) {
-			f.Vars[op.A] = "1"
+			setv(op.A, "1")
 		} else {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		}
 	case "cmp_lt":
 		if num(x(op.B)) < num(x(op.C)) {
-			f.Vars[op.A] = "1"
+			setv(op.A, "1")
 		} else {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		}
 	case "cmp_le":
 		if num(x(op.B)) <= num(x(op.C)) {
-			f.Vars[op.A] = "1"
+			setv(op.A, "1")
 		} else {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		}
 	case "cmp_eq":
 		if x(op.B) == x(op.C) {
-			f.Vars[op.A] = "1"
+			setv(op.A, "1")
 		} else {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		}
 	case "jump":
 		p, ok := labels[op.A]
@@ -1472,7 +1477,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		for _, k := range splitCSV(x(op.Args["out"])) {
-			f.Vars[k] = child.Vars[k]
+			setv(k, child.Vars[k])
 		}
 	case "call_try_isolated":
 		child := newFrame()
@@ -1483,14 +1488,14 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		okout := op.Args["ok_out"]
 		if okout != "" {
 			if err == nil {
-				f.Vars[okout] = "1"
+				setv(okout, "1")
 			} else {
-				f.Vars[okout] = "0"
+				setv(okout, "0")
 			}
 		}
 		if err == nil {
 			for _, k := range splitCSV(x(op.Args["out"])) {
-				f.Vars[k] = child.Vars[k]
+				setv(k, child.Vars[k])
 			}
 		}
 	case "call_parallel":
@@ -1533,30 +1538,30 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		f.Output = append(f.Output, value)
 	case "url_escape":
-		f.Vars[op.B] = url.QueryEscape(f.Vars[op.A])
+		setv(op.B, url.QueryEscape(f.Vars[op.A]))
 	case "str_after":
 		src := f.Vars[op.A]
 		sep := x(op.B)
 		i := strings.Index(src, sep)
 		if i < 0 {
-			f.Vars[op.C] = ""
+			setv(op.C, "")
 		} else {
-			f.Vars[op.C] = src[i+len(sep):]
+			setv(op.C, src[i+len(sep):])
 		}
 	case "str_before":
 		src := f.Vars[op.A]
 		sep := x(op.B)
 		i := strings.Index(src, sep)
 		if i < 0 {
-			f.Vars[op.C] = src
+			setv(op.C, src)
 		} else {
-			f.Vars[op.C] = src[:i]
+			setv(op.C, src[:i])
 		}
 	case "str_contains":
 		if strings.Contains(x(op.B), x(op.C)) {
-			f.Vars[op.A] = "1"
+			setv(op.A, "1")
 		} else {
-			f.Vars[op.A] = "0"
+			setv(op.A, "0")
 		}
 	case "utf8_bytes":
 		src := []byte(f.Vars[op.A])
@@ -1568,7 +1573,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			out[i] = fmt.Sprintf("%02x", b)
 		}
 		f.Lists[op.B] = out
-		f.Vars[op.B+"_count"] = strconv.Itoa(len(out))
+		setv(op.B+"_count", strconv.Itoa(len(out)))
 	case "unicode_runes":
 		runeCount := 0
 		for range f.Vars[op.A] {
@@ -1582,7 +1587,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			out = append(out, fmt.Sprintf("%x", r))
 		}
 		f.Lists[op.B] = out
-		f.Vars[op.B+"_count"] = strconv.Itoa(len(out))
+		setv(op.B+"_count", strconv.Itoa(len(out)))
 	case "unicode_windows":
 		runes := []rune(f.Vars[op.A])
 		minN, maxN, maxOut := 1, 6, 256
@@ -1617,13 +1622,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		f.Lists[op.B] = out
-		f.Vars[op.B+"_count"] = strconv.Itoa(len(out))
+		setv(op.B+"_count", strconv.Itoa(len(out)))
 	case "list_append":
 		if err := ensureFrameListItems(len(f.Lists[op.A])+1, "list_append"); err != nil {
 			return -1, err
 		}
 		f.Lists[op.A] = append(f.Lists[op.A], x(op.B))
-		f.Vars[op.A+"_count"] = strconv.Itoa(len(f.Lists[op.A]))
+		setv(op.A+"_count", strconv.Itoa(len(f.Lists[op.A])))
 	case "list_contains":
 		want := x(op.B)
 		found := "0"
@@ -1634,9 +1639,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		if k := op.Args["out"]; k != "" {
-			f.Vars[k] = found
+			setv(k, found)
 		} else {
-			f.Vars[op.C] = found
+			setv(op.C, found)
 		}
 	case "list_unique_append":
 		val := x(op.B)
@@ -1653,12 +1658,12 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 			f.Lists[op.A] = append(f.Lists[op.A], val)
 		}
-		f.Vars[op.A+"_count"] = strconv.Itoa(len(f.Lists[op.A]))
+		setv(op.A+"_count", strconv.Itoa(len(f.Lists[op.A])))
 		if k := op.Args["added_out"]; k != "" {
 			if seen {
-				f.Vars[k] = "0"
+				setv(k, "0")
 			} else {
-				f.Vars[k] = "1"
+				setv(k, "1")
 			}
 		}
 	case "sha256_text":
@@ -1672,16 +1677,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		h := sha256.Sum256([]byte(src))
-		f.Vars[op.B] = fmt.Sprintf("%x", h[:])
+		setv(op.B, fmt.Sprintf("%x", h[:]))
 	case "time_unix":
-		f.Vars[op.A] = strconv.FormatInt(time.Now().Unix(), 10)
+		setv(op.A, strconv.FormatInt(time.Now().Unix(), 10))
 	case "time_unix_nano":
-		f.Vars[op.A] = strconv.FormatInt(time.Now().UnixNano(), 10)
+		setv(op.A, strconv.FormatInt(time.Now().UnixNano(), 10))
 	case "runtime_cpu_count":
-		f.Vars[op.A] = strconv.Itoa(runtime.GOMAXPROCS(0))
+		setv(op.A, strconv.Itoa(runtime.GOMAXPROCS(0)))
 	case "physical_runtime_stats":
 		b, _ := json.Marshal(physicalRuntimeInfo())
-		f.Vars[op.A] = string(b)
+		setv(op.A, string(b))
 	case "physical_execution_concurrency_set":
 		n := int(num(x(op.A)))
 		if n < 1 {
@@ -1702,9 +1707,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err := ensureFrameJoinBytes("str_join", left, sep, right); err != nil {
 			return -1, err
 		}
-		f.Vars[op.C] = left + sep + right
+		setv(op.C, left+sep+right)
 	case "str_len":
-		f.Vars[op.B] = strconv.Itoa(len([]rune(x(op.A))))
+		setv(op.B, strconv.Itoa(len([]rune(x(op.A)))))
 	case "emit_event":
 		selected, err := splitCSVPhysicalBounded(x(op.Args["vars"]), physicalEventVarMaxItems(), "emit_event vars")
 		if err != nil {
@@ -1726,25 +1731,25 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if !strings.HasPrefix(name, "MEMORYAI_CREDENTIAL_") {
 			return -1, fmt.Errorf("credential env name denied: %s", name)
 		}
-		f.Vars[op.B] = os.Getenv(name)
+		setv(op.B, os.Getenv(name))
 	case "url_parse":
 		u, err := url.Parse(x(op.A))
 		if err != nil {
 			return -1, err
 		}
 		if k := op.Args["scheme_out"]; k != "" {
-			f.Vars[k] = u.Scheme
+			setv(k, u.Scheme)
 		}
 		if k := op.Args["host_out"]; k != "" {
-			f.Vars[k] = u.Hostname()
+			setv(k, u.Hostname())
 		}
 		if k := op.Args["port_out"]; k != "" {
-			f.Vars[k] = u.Port()
+			setv(k, u.Port())
 		}
 		if k := op.Args["path_out"]; k != "" {
-			f.Vars[k] = u.EscapedPath()
+			setv(k, u.EscapedPath())
 			if f.Vars[k] == "" {
-				f.Vars[k] = u.Path
+				setv(k, u.Path)
 			}
 		}
 	case "regex_first":
@@ -1754,9 +1759,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		mm := re.FindStringSubmatch(f.Vars[op.A])
 		if len(mm) > 1 {
-			f.Vars[op.C] = mm[1]
+			setv(op.C, mm[1])
 		} else {
-			f.Vars[op.C] = ""
+			setv(op.C, "")
 		}
 	case "json_keys":
 		var obj map[string]any
@@ -1779,19 +1784,19 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		v, ok := obj[x(op.B)]
 		if !ok || v == nil {
-			f.Vars[op.C] = ""
+			setv(op.C, "")
 			break
 		}
 		switch q := v.(type) {
 		case string:
-			f.Vars[op.C] = q
+			setv(op.C, q)
 		case float64:
-			f.Vars[op.C] = strconv.FormatFloat(q, 'f', -1, 64)
+			setv(op.C, strconv.FormatFloat(q, 'f', -1, 64))
 		case bool:
-			f.Vars[op.C] = strconv.FormatBool(q)
+			setv(op.C, strconv.FormatBool(q))
 		default:
 			b, _ := json.Marshal(q)
-			f.Vars[op.C] = string(b)
+			setv(op.C, string(b))
 		}
 	case "json_array_strings":
 		raw := x(op.A)
@@ -1831,7 +1836,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		f.Lists[op.C] = out
-		f.Vars[op.C+"_count"] = strconv.Itoa(len(out))
+		setv(op.C+"_count", strconv.Itoa(len(out)))
 	case "regex_all":
 		re, err := regexp.Compile(x(op.B))
 		if err != nil {
@@ -1851,9 +1856,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		f.Lists[op.C] = vals
-		f.Vars[op.C+"_count"] = strconv.Itoa(len(vals))
+		setv(op.C+"_count", strconv.Itoa(len(vals)))
 		if len(vals) > 0 {
-			f.Vars[op.C+"_first"] = vals[0]
+			setv(op.C+"_first", vals[0])
 		}
 	case "program_export":
 		target, err := e.resolveExecutable(x(op.A))
@@ -1867,7 +1872,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err := ensureFrameValueBytes(len(b), "program_export"); err != nil {
 			return -1, err
 		}
-		f.Vars[op.B] = string(b)
+		setv(op.B, string(b))
 	case "program_import":
 		target, err := e.resolveExecutable(x(op.A))
 		if err != nil {
@@ -1903,20 +1908,20 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		q := target.Program[idx]
 		if k := op.Args["code_out"]; k != "" {
-			f.Vars[k] = q.Code
+			setv(k, q.Code)
 		}
 		if k := op.Args["a_out"]; k != "" {
-			f.Vars[k] = q.A
+			setv(k, q.A)
 		}
 		if k := op.Args["b_out"]; k != "" {
-			f.Vars[k] = q.B
+			setv(k, q.B)
 		}
 		if k := op.Args["c_out"]; k != "" {
-			f.Vars[k] = q.C
+			setv(k, q.C)
 		}
 		if k := op.Args["args_out"]; k != "" {
 			b, _ := json.Marshal(q.Args)
-			f.Vars[k] = string(b)
+			setv(k, string(b))
 		}
 	case "program_set_field":
 		target, err := e.resolveExecutable(x(op.A))
@@ -1983,7 +1988,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		f.Vars[op.B] = strconv.Itoa(len(target.Program))
+		setv(op.B, strconv.Itoa(len(target.Program)))
 	case "program_delete":
 		target, err := e.resolveExecutable(x(op.A))
 		if err != nil {
@@ -2091,13 +2096,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if caps := splitCSV(x(op.Args["capabilities"])); len(caps) > 0 {
 			child.Capabilities = caps
 		}
+		if err := ensureFrameVarWriteWithinPhysicalLimit(f, op.A, child.ID, "memory_new output"); err != nil {
+			return -1, err
+		}
 		// Memory decides that the structure is born; Kernel only selects a bounded
 		// physical shard for its bytes.
 		if err := e.placeRuntimeMemory(child); err != nil {
 			return -1, err
 		}
 		f.memoryWrites++
-		f.Vars[op.A] = child.ID
+		setv(op.A, child.ID)
 	case "memory_copy":
 		parent, err := e.resolve(x(op.B))
 		if err != nil {
@@ -2123,13 +2131,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 				child.Tags = append(child.Tags, t)
 			}
 		}
+		if err := ensureFrameVarWriteWithinPhysicalLimit(f, op.A, child.ID, "memory_copy output"); err != nil {
+			return -1, err
+		}
 		// Memory decides that the structure is born; Kernel only selects a bounded
 		// physical shard for its bytes.
 		if err := e.placeRuntimeMemory(child); err != nil {
 			return -1, err
 		}
 		f.memoryWrites++
-		f.Vars[op.A] = child.ID
+		setv(op.A, child.ID)
 	case "memory_history_append":
 		target, err := e.resolveMutable(x(op.A))
 		if err != nil {
@@ -2273,13 +2284,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		if k := op.Args["ok_out"]; k != "" {
-			f.Vars[k] = ok
+			setv(k, ok)
 		}
 	case "memory_exists":
 		if _, err := e.resolve(x(op.A)); err == nil {
-			f.Vars[op.B] = "1"
+			setv(op.B, "1")
 		} else {
-			f.Vars[op.B] = "0"
+			setv(op.B, "0")
 		}
 	case "memory_digest":
 		target, err := e.resolve(x(op.A))
@@ -2287,13 +2298,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		b, _ := json.Marshal(target)
-		f.Vars[op.B] = fmt.Sprintf("%x", sha256.Sum256(b))
+		setv(op.B, fmt.Sprintf("%x", sha256.Sum256(b)))
 	case "memory_export_json":
 		raw, er := e.exportMemoryJSON(x(op.A), truth(x(op.Args["sign"])))
 		if er != nil {
 			return -1, er
 		}
-		f.Vars[op.B] = raw
+		setv(op.B, raw)
 	case "memory_import_json":
 		id, status, er := e.importMemoryJSON(x(op.A), truth(x(op.Args["remote"])))
 		if er != nil {
@@ -2303,10 +2314,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			f.memoryWrites++
 		}
 		if op.B != "" {
-			f.Vars[op.B] = id
+			setv(op.B, id)
 		}
 		if op.C != "" {
-			f.Vars[op.C] = status
+			setv(op.C, status)
 		}
 
 	case "process_restart":
@@ -2339,11 +2350,11 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		b, _ := json.Marshal(info)
-		f.Vars[op.A] = string(b)
+		setv(op.A, string(b))
 	case "space_list":
 		f.Lists[op.A] = e.mountedSpacePaths()
 	case "space_next_path":
-		f.Vars[op.A] = e.nextSpacePath()
+		setv(op.A, e.nextSpacePath())
 	case "space_create":
 		path := x(op.A)
 		if path == "" {
@@ -2354,7 +2365,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.B != "" {
-			f.Vars[op.B] = cp
+			setv(op.B, cp)
 		}
 	case "space_mount":
 		cp, err := e.mountSpace(x(op.A))
@@ -2362,15 +2373,15 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.B != "" {
-			f.Vars[op.B] = cp
+			setv(op.B, cp)
 		}
 	case "space_unmount":
 		ok := e.unmountSpace(x(op.A))
 		if op.B != "" {
 			if ok {
-				f.Vars[op.B] = "1"
+				setv(op.B, "1")
 			} else {
-				f.Vars[op.B] = "0"
+				setv(op.B, "0")
 			}
 		}
 	case "space_select_write":
@@ -2378,13 +2389,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.B != "" {
-			f.Vars[op.B] = "1"
+			setv(op.B, "1")
 		}
 	case "space_write_target":
 		if e.writeSpace == "" {
-			f.Vars[op.A] = "primary"
+			setv(op.A, "primary")
 		} else {
-			f.Vars[op.A] = e.writeSpace
+			setv(op.A, e.writeSpace)
 		}
 	case "space_copy":
 		newid, err := e.transferMemory(x(op.A), x(op.B), false)
@@ -2392,7 +2403,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.C != "" {
-			f.Vars[op.C] = newid
+			setv(op.C, newid)
 		}
 	case "space_move":
 		newid, err := e.transferMemory(x(op.A), x(op.B), true)
@@ -2400,7 +2411,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.C != "" {
-			f.Vars[op.C] = newid
+			setv(op.C, newid)
 		}
 	case "space_merge":
 		stat, err := e.mergeSpace(x(op.A), x(op.B))
@@ -2409,7 +2420,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		b, _ := json.Marshal(stat)
 		if op.C != "" {
-			f.Vars[op.C] = string(b)
+			setv(op.C, string(b))
 		}
 	case "space_all_ids":
 		ids, err := e.allMountedIDs()
@@ -2422,7 +2433,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		f.Vars[op.Args["out"]] = resp
+		setv(op.Args["out"], resp)
 	case "remote_space_create":
 		resp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "create", "name": x(op.Args["name"])}, parseTimeout(x(op.Args["timeout_ms"])))
 		if err != nil {
@@ -2431,7 +2442,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err = requireRemoteMutationACK("space_create", resp); err != nil {
 			return -1, err
 		}
-		f.Vars[op.Args["out"]] = resp
+		setv(op.Args["out"], resp)
 	case "remote_space_put":
 		m, err := e.resolve(x(op.A))
 		if err != nil {
@@ -2449,10 +2460,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.Args["out"] != "" {
-			f.Vars[op.Args["out"]] = resp
+			setv(op.Args["out"], resp)
 		}
 		if k := op.Args["status_out"]; k != "" {
-			f.Vars[k] = putResult.Status
+			setv(k, putResult.Status)
 		}
 		if !putResult.OK && putResult.Status == "conflict" {
 			break
@@ -2483,11 +2494,11 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		// into Memory.mem. Its identity remains remote while its data is visible to
 		// the current cognition frame through normal resolve/read primitives.
 		if op.Args["out"] != "" {
-			f.Vars[op.Args["out"]] = rr.Memory.ID
+			setv(op.Args["out"], rr.Memory.ID)
 		}
 		if k := op.Args["json_out"]; k != "" {
 			b, _ := json.Marshal(rr.Memory)
-			f.Vars[k] = string(b)
+			setv(k, string(b))
 		}
 	case "remote_space_digest":
 		resp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "digest", "name": x(op.Args["name"]), "id": x(op.Args["id"])}, parseTimeout(x(op.Args["timeout_ms"])))
@@ -2504,7 +2515,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if !rr.OK {
 			return -1, errors.New("remote memory digest unavailable")
 		}
-		f.Vars[op.Args["out"]] = rr.Digest
+		setv(op.Args["out"], rr.Digest)
 	case "remote_space_import":
 		return -1, errors.New("remote_space_import disabled: remote Memory is direct-read only; disconnected means forgotten, reconnected means remembered")
 	case "remote_space_list":
@@ -2549,10 +2560,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.Args["out"] != "" {
-			f.Vars[op.Args["out"]] = resp
+			setv(op.Args["out"], resp)
 		}
 		if k := op.Args["status_out"]; k != "" {
-			f.Vars[k] = upsertResult.Status
+			setv(k, upsertResult.Status)
 		}
 		if !upsertResult.OK && upsertResult.Status == "conflict" {
 			break
@@ -2587,10 +2598,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.Args["out"] != "" {
-			f.Vars[op.Args["out"]] = resp
+			setv(op.Args["out"], resp)
 		}
 		if k := op.Args["status_out"]; k != "" {
-			f.Vars[k] = deleteResult.Status
+			setv(k, deleteResult.Status)
 		}
 		if !deleteResult.OK && deleteResult.Status == "conflict" {
 			break
@@ -2617,7 +2628,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		b, _ := json.Marshal(stat)
-		f.Vars[op.A] = string(b)
+		setv(op.A, string(b))
 	case "artifact_write":
 		p, err := e.artifactPath(x(op.A))
 		if err != nil {
@@ -2642,7 +2653,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		if op.C != "" {
 			h := sha256.Sum256(data)
-			f.Vars[op.C] = fmt.Sprintf("%x", h[:])
+			setv(op.C, fmt.Sprintf("%x", h[:]))
 		}
 	case "artifact_read":
 		p, err := e.artifactPath(x(op.A))
@@ -2662,7 +2673,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if readErr != nil {
 			return -1, readErr
 		}
-		f.Vars[op.B] = string(b)
+		setv(op.B, string(b))
 	case "artifact_digest":
 		p, err := e.artifactPath(x(op.A))
 		if err != nil {
@@ -2685,16 +2696,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if written > maxBytes {
 			return -1, fmt.Errorf("artifact digest exceeds physical byte ceiling: max=%d", maxBytes)
 		}
-		f.Vars[op.B] = fmt.Sprintf("%x", h.Sum(nil))
+		setv(op.B, fmt.Sprintf("%x", h.Sum(nil)))
 	case "artifact_exists":
 		p, err := e.artifactPath(x(op.A))
 		if err != nil {
 			return -1, err
 		}
 		if _, err = os.Stat(p); err == nil {
-			f.Vars[op.B] = "1"
+			setv(op.B, "1")
 		} else if errors.Is(err, os.ErrNotExist) {
-			f.Vars[op.B] = "0"
+			setv(op.B, "0")
 		} else {
 			return -1, err
 		}
@@ -2703,15 +2714,15 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if m := meshRuntimeCurrent(); m != nil {
 			role = m.role
 		}
-		f.Vars[op.A] = role
+		setv(op.A, role)
 	case "mesh_shared_propose":
 		m := meshRuntimeCurrent()
 		if m == nil {
 			if op.B != "" {
-				f.Vars[op.B] = "standalone"
+				setv(op.B, "standalone")
 			}
 			if op.C != "" {
-				f.Vars[op.C] = "local-only"
+				setv(op.C, "local-only")
 			}
 			break
 		}
@@ -2720,13 +2731,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, err
 		}
 		if op.B != "" {
-			f.Vars[op.B] = res.Status
+			setv(op.B, res.Status)
 		}
 		if op.C != "" {
-			f.Vars[op.C] = res.Decision
+			setv(op.C, res.Decision)
 		}
 		if k := op.Args["reason_out"]; k != "" {
-			f.Vars[k] = res.Reason
+			setv(k, res.Reason)
 		}
 	case "mesh_shared_search":
 		m := meshRuntimeCurrent()
@@ -2755,25 +2766,25 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 				return -1, err
 			}
 			if op.B != "" {
-				f.Vars[op.B] = ""
+				setv(op.B, "")
 			}
 			if op.C != "" {
-				f.Vars[op.C] = "forgotten"
+				setv(op.C, "forgotten")
 			}
 			if k := op.Args["reason_out"]; k != "" {
-				f.Vars[k] = err.Error()
+				setv(k, err.Error())
 			}
 			break
 		}
 		b, _ := json.Marshal(res.Memory)
 		if op.B != "" {
-			f.Vars[op.B] = string(b)
+			setv(op.B, string(b))
 		}
 		if op.C != "" {
-			f.Vars[op.C] = res.Status
+			setv(op.C, res.Status)
 		}
 		if k := op.Args["reason_out"]; k != "" {
-			f.Vars[k] = res.Reason
+			setv(k, res.Reason)
 		}
 	case "mesh_shared_reconcile":
 		m := meshRuntimeCurrent()
@@ -2788,10 +2799,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, errors.New(res.Error)
 		}
 		if op.C != "" {
-			f.Vars[op.C] = res.Status
+			setv(op.C, res.Status)
 		}
 		if k := op.Args["reason_out"]; k != "" {
-			f.Vars[k] = res.Reason
+			setv(k, res.Reason)
 		}
 	case "mesh_structure_run":
 		m := meshRuntimeCurrent()
@@ -2810,10 +2821,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		b, _ := json.Marshal(res.Frame)
 		if op.B != "" {
-			f.Vars[op.B] = string(b)
+			setv(op.B, string(b))
 		}
 		if op.C != "" {
-			f.Vars[op.C] = res.Status
+			setv(op.C, res.Status)
 		}
 	case "mesh_route_execution":
 		m := meshRuntimeCurrent()
@@ -2831,16 +2842,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, er
 		}
 		if op.B != "" {
-			f.Vars[op.B] = node
+			setv(op.B, node)
 		}
 		if op.C != "" && rf != nil {
 			b, _ := json.Marshal(rf)
-			f.Vars[op.C] = string(b)
+			setv(op.C, string(b))
 		}
 		if truth(x(op.Args["merge_frame"])) && rf != nil {
 			for k, v := range rf.Vars {
 				if !strings.HasPrefix(k, "__") {
-					f.Vars[k] = v
+					setv(k, v)
 				}
 			}
 			for k, v := range rf.Lists {
@@ -2877,7 +2888,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		if op.A != "" {
-			f.Vars[op.A] = status
+			setv(op.A, status)
 		}
 	case "mesh_directory":
 		m := meshRuntimeCurrent()
@@ -2905,7 +2916,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		f.Vars[op.Args["out"]] = resp
+		setv(op.Args["out"], resp)
 	case "persist":
 		out := x(op.A)
 		if out == "" {
@@ -2922,7 +2933,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 				return -1, err
 			}
 		}
-		f.Vars[op.B] = out
+		setv(op.B, out)
 	case "halt":
 		return len(self.Program), nil
 	default:
@@ -2930,7 +2941,6 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 	}
 	return -1, nil
 }
-
 func fieldString(m *Memory, k string) string {
 	switch k {
 	case "id":

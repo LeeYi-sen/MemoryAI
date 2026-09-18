@@ -2016,3 +2016,47 @@ func TestSchedulerRejectsOversizedSpeculativeFrameBeforeCommit(t *testing.T) {
 		t.Fatalf("oversized speculative Frame partially replaced caller Frame: %#v", f.Vars)
 	}
 }
+
+func TestSetPrimitiveRejectsFrameVarCardinalityOverflowBeforeMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["occupied"] = "1"
+	if _, err := e.execPrimitive(&Memory{ID: "set-frame-bound"}, Op{Code: "set", A: "new_key", B: "2"}, f, 0, nil); err == nil {
+		t.Fatal("set primitive exceeded Frame-variable cardinality without rejection")
+	}
+	if _, exists := f.Vars["new_key"]; exists || len(f.Vars) != 1 {
+		t.Fatalf("overflowing set primitive mutated Frame: %#v", f.Vars)
+	}
+}
+
+func TestPrimitiveOutputRejectsFrameVarByteOverflowBeforeMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_BYTES", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["src"] = "abcd"
+	if _, err := e.execPrimitive(&Memory{ID: "output-frame-bound"}, Op{Code: "str_len", A: "{{src}}", B: "n"}, f, 0, nil); err == nil {
+		t.Fatal("primitive output exceeded Frame-variable byte ceiling without rejection")
+	}
+	if _, exists := f.Vars["n"]; exists {
+		t.Fatalf("overflowing primitive output mutated Frame: %#v", f.Vars)
+	}
+}
+
+func TestMemoryNewPreflightsFrameOutputBeforeCreatingMemory(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	e := loadFabricWriteTestEngine(t, nil)
+	before := fabricMemoryCountFast(e)
+	f := newFrame()
+	f.Vars["occupied"] = "1"
+	op := Op{Code: "memory_new", A: "new_id", Args: map[string]string{"layer": "acquired", "tags": "memory"}}
+	if _, err := e.execPrimitive(&Memory{ID: "memory-new-frame-bound"}, op, f, 0, nil); err == nil {
+		t.Fatal("memory_new created Memory before rejecting overflowing Frame output")
+	}
+	if after := fabricMemoryCountFast(e); after != before {
+		t.Fatalf("overflowing memory_new leaked Memory side effect: before=%d after=%d", before, after)
+	}
+	if _, exists := f.Vars["new_id"]; exists {
+		t.Fatalf("overflowing memory_new published child id: %#v", f.Vars)
+	}
+}

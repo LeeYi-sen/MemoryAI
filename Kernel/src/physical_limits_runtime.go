@@ -322,12 +322,9 @@ func ensureFrameVarsWithinPhysicalLimit(vars map[string]string, label string) er
 	return nil
 }
 
-func setFrameVarBounded(f *Frame, key, value, label string) error {
+func ensureFrameVarWriteWithinPhysicalLimit(f *Frame, key, value, label string) error {
 	if f == nil {
 		return fmt.Errorf("%s Frame unavailable", label)
-	}
-	if f.Vars == nil {
-		f.Vars = map[string]string{}
 	}
 	if err := ensureFrameValueBytes(len(value), label); err != nil {
 		return err
@@ -350,6 +347,19 @@ func setFrameVarBounded(f *Frame, key, value, label string) error {
 	}
 	if total > maxBytes {
 		return fmt.Errorf("%s exceeds physical Frame-variable byte ceiling: max=%d", label, maxBytes)
+	}
+	return nil
+}
+
+func setFrameVarBounded(f *Frame, key, value, label string) error {
+	if f == nil {
+		return fmt.Errorf("%s Frame unavailable", label)
+	}
+	if f.Vars == nil {
+		f.Vars = map[string]string{}
+	}
+	if err := ensureFrameVarWriteWithinPhysicalLimit(f, key, value, label); err != nil {
+		return err
 	}
 	f.Vars[key] = value
 	return nil

@@ -403,3 +403,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 54/54 PASS; live architecture audit PASS; Python suite 71/71 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-043 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 055 — bound all VM Frame variable writes
+- Base HEAD: `c2cc6576e1456e90e96a3441787f1529a93a9a6a` (`Entry 054: bound CLI and speculative Frame commit`).
+- Continued post-repair audit closed PR-044; tracker now has 44 DONE / 0 OPEN findings.
+- All 148 direct `Frame.Vars` assignments inside `execPrimitive` now route through one bounded setter path.
+- Architecture audit scans the full primitive implementation and fails if a raw Frame-variable assignment is reintroduced.
+- `memory_new` / `memory_copy` preflight child-ID output capacity before Fabric placement, preventing local Memory creation when the result cannot be published to Frame.
+- Primitive Frame overflow leaves the target variable unchanged and surfaces as a normal VM error.
+- The boundary is physical-only: Kernel does not truncate, rank, filter, evict, or reinterpret variables.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 55/55 PASS; live architecture audit PASS; Python suite 72/72 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-044 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

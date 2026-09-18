@@ -838,5 +838,21 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_rejects_raw_vm_frame_variable_assignment(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'setv(op.A, x(op.B))',
+                'f.Vars[op.A] = x(op.B)',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded VM Frame writes"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()
