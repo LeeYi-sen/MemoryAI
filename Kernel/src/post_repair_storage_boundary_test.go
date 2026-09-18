@@ -1674,3 +1674,31 @@ func TestProgramPhysicalLimitsCannotExceedKernelHardCaps(t *testing.T) {
 		t.Fatalf("Program byte limit escaped Kernel hard cap: got=%d hard=%d", got, hardProgramMaxBytes)
 	}
 }
+
+func TestTemplateExpansionRejectsFrameValueOverflowBeforeSet(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VALUE_MAX_BYTES", "64")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["chunk"] = strings.Repeat("x", 40)
+	op := Op{Code: "set", A: "out", B: "{{chunk}}{{chunk}}"}
+	if _, err := e.execPrimitive(&Memory{ID: "expand-bound-test"}, op, f, 0, nil); err == nil {
+		t.Fatal("template expansion exceeded physical Frame-value byte ceiling without rejection")
+	}
+	if _, ok := f.Vars["out"]; ok {
+		t.Fatal("overflowing template expansion mutated Frame before rejection")
+	}
+}
+
+func TestTemplateExpansionRejectsRecursiveIntermediateGrowth(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VALUE_MAX_BYTES", "128")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["grow"] = "{{grow}}{{grow}}"
+	op := Op{Code: "set", A: "out", B: "{{grow}}"}
+	if _, err := e.execPrimitive(&Memory{ID: "expand-recursive-test"}, op, f, 0, nil); err == nil {
+		t.Fatal("recursive template expansion exceeded physical Frame-value byte ceiling without rejection")
+	}
+	if _, ok := f.Vars["out"]; ok {
+		t.Fatal("recursive overflow mutated Frame before rejection")
+	}
+}

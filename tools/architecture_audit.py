@@ -321,6 +321,26 @@ def audit() -> dict[str, object]:
     )
 
     require(
+        kernel_source_text,
+        [
+            "expandFrameValueBounded",
+            "replaceAllFrameValueBounded",
+            'expandedTarget, err := expandFrameValueBounded(idOrTag, f.Vars)',
+            's, err = replaceAllFrameValueBounded(s, "{{"+k+"}}", v, maxBytes)',
+            "template expansion exceeds physical Frame-value byte ceiling",
+        ],
+        "bounded template expansion",
+    )
+    forbid(
+        kernel_source_text,
+        [
+            'func expand(s string, vars map[string]string) string',
+            's = strings.ReplaceAll(s, "{{"+k+"}}", v)',
+        ],
+        "bounded template expansion",
+    )
+
+    require(
         physical_limits + kernel_source_text,
         [
             "defaultProgramMaxOps",

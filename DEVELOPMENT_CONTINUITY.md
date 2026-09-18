@@ -310,3 +310,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 46/46 PASS; live architecture audit PASS; Python suite 63/63 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-035 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 047 — bound VM template expansion
+- Base HEAD: `d29fab483506ed28afaf4d9c579abd5ceb9a771e` (`Entry 046: bound executable Program growth`).
+- Continued post-repair audit closed PR-036; tracker now has 36 DONE / 0 OPEN findings.
+- VM template expansion now uses `expandFrameValueBounded` and the existing `MEMORYAI_FRAME_VALUE_MAX_BYTES` physical ceiling for initial input and every replacement pass.
+- Replacement output length is preflighted before `strings.ReplaceAll`, so direct and recursive template growth cannot allocate an oversized Frame scalar before primitive execution or post-primitive telemetry sampling.
+- `run()` executable-target expansion uses the same bounded path.
+- Expansion overflow fails as a normal VM error before Frame, Memory, transport, storage, or event side effects. Unexpected panics remain visible and are rethrown.
+- The Kernel does not truncate templates, select substitutions, rank content, or assign semantic meaning; Memory retains cognitive control inside the physical envelope.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 47/47 PASS; live architecture audit PASS; Python suite 64/64 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-036 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

@@ -166,3 +166,20 @@
 - `program_export` validates Program bounds and the existing Frame-value byte ceiling before assigning the serialized result.
 - No truncation, semantic selection, mutation strategy, or cognitive policy is introduced; Memory retains control of Program evolution inside the physical safety envelope.
 - Architecture regression suite reached 46/46 PASS; live architecture audit PASS; Python suite 63/63 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-035 `go test -race -count=20` PASS.
+
+## Continued audit after Entry 046
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-036 | P0 | DONE | VM template expansion uses repeated raw `strings.ReplaceAll` and can grow a Frame scalar beyond the configured physical byte ceiling before the target primitive or post-primitive allocation sample runs | Bound every template-expansion step against the Frame-value ceiling before replacement allocation; recursive/intermediate growth must fail closed before any primitive side effect, with no truncation |
+
+## Entry 047 closure evidence
+
+- PR-036 is DONE.
+- `expandFrameValueBounded` now applies the existing `MEMORYAI_FRAME_VALUE_MAX_BYTES` physical envelope to template input and every replacement pass.
+- Replacement cardinality and resulting byte length are preflighted before `strings.ReplaceAll` allocates the expanded string.
+- Recursive/nested template growth fails before the primitive mutates Frame, Memory, transport, storage, or event state.
+- Top-level executable target expansion in `run()` uses the same bounded path.
+- Expansion failures propagate as ordinary VM errors; unexpected panics are rethrown and are not masked.
+- No truncation, template-selection policy, semantic ranking, or cognitive interpretation is introduced.
+- Final validation: architecture regression suite 47/47 PASS; live architecture audit PASS; Python suite 64/64 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-036 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

@@ -705,5 +705,22 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
 
 
 
+    def test_requires_bounded_template_expansion(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                's, err = replaceAllFrameValueBounded(s, "{{"+k+"}}", v, maxBytes)',
+                's = strings.ReplaceAll(s, "{{"+k+"}}", v)',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded template expansion"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()

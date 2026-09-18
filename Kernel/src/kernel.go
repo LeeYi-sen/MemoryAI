@@ -994,7 +994,11 @@ func readZipBytes(zr *zip.Reader, name string) ([]byte, error) {
 }
 
 func (e *Engine) run(idOrTag string, f *Frame) error {
-	m, err := e.resolveExecutable(expand(idOrTag, f.Vars))
+	expandedTarget, err := expandFrameValueBounded(idOrTag, f.Vars)
+	if err != nil {
+		return err
+	}
+	m, err := e.resolveExecutable(expandedTarget)
 	if err != nil {
 		return err
 	}
@@ -1047,8 +1051,28 @@ func (e *Engine) run(idOrTag string, f *Frame) error {
 // execPrimitive intentionally contains only generic data/control/memory/physical primitives.
 // Domain meanings such as selection, credit, source provenance, HTTP parsing and learning
 // are expressed by Memory programs in Genesis, not as dedicated cases here.
-func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map[string]int) (int, error) {
-	x := func(s string) string { return expand(s, f.Vars) }
+type frameExpansionFailure struct {
+	err error
+}
+
+func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map[string]int) (next int, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			failure, ok := recovered.(frameExpansionFailure)
+			if !ok {
+				panic(recovered)
+			}
+			next = -1
+			err = failure.err
+		}
+	}()
+	x := func(s string) string {
+		value, expandErr := expandFrameValueBounded(s, f.Vars)
+		if expandErr != nil {
+			panic(frameExpansionFailure{err: expandErr})
+		}
+		return value
+	}
 	if e.speculative && (speculativeForbiddenPrimitive(op.Code) || speculativeAdditionalForbiddenPrimitive(op.Code)) {
 		atomic.StoreUint32(&e.speculativeBlocked, 1)
 		return -1, fmt.Errorf("%w: %s", errSpeculativeSideEffect, op.Code)
@@ -3935,17 +3959,43 @@ func physicalExchange(transport, host, port, request string, timeout time.Durati
 	return string(b), nil
 }
 
-func expand(s string, vars map[string]string) string {
+func replaceAllFrameValueBounded(s, old, replacement string, maxBytes int64) (string, error) {
+	if old == "" {
+		return s, nil
+	}
+	count := strings.Count(s, old)
+	if count == 0 {
+		return s, nil
+	}
+	keptBytes := int64(len(s) - count*len(old))
+	if keptBytes > maxBytes || int64(len(replacement)) > (maxBytes-keptBytes)/int64(count) {
+		return "", fmt.Errorf("template expansion exceeds physical Frame-value byte ceiling: max=%d", maxBytes)
+	}
+	return strings.ReplaceAll(s, old, replacement), nil
+}
+
+func expandFrameValueBounded(s string, vars map[string]string) (string, error) {
+	maxBytes := frameValueMaxBytes()
+	if int64(len(s)) > maxBytes {
+		return "", fmt.Errorf("template input exceeds physical Frame-value byte ceiling: bytes=%d max=%d", len(s), maxBytes)
+	}
 	for pass := 0; pass < 6; pass++ {
 		prev := s
 		for k, v := range vars {
-			s = strings.ReplaceAll(s, "{{"+k+"}}", v)
+			if int64(len(k))+4 > maxBytes {
+				continue
+			}
+			var err error
+			s, err = replaceAllFrameValueBounded(s, "{{"+k+"}}", v, maxBytes)
+			if err != nil {
+				return "", err
+			}
 		}
 		if s == prev {
 			break
 		}
 	}
-	return s
+	return s, nil
 }
 
 func (e *Engine) allMemories() ([]*Memory, error) {
