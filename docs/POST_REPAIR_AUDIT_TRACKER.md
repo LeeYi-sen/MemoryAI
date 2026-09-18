@@ -148,3 +148,21 @@
 - `emit` rejects oversized individual values, output item overflow and aggregate output-byte overflow before appending.
 - No truncation, ranking or semantic selection is introduced; Memory must explicitly split larger values/output streams.
 - Architecture regression suite reached 44/44 PASS and live architecture audit PASS before final entry validation.
+
+## Continued audit after Entry 045
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-035 | P0 | DONE | Executable Memory Program mutation can grow operation count and serialized payload without a hard physical ceiling; `program_import` can also decode an oversized envelope before any Program-specific bound is checked | Add hard-clamped Program operation-count and byte ceilings; reject oversized import before decode; preflight set/splice/replace mutations before commit; never truncate or semantically rank Program content |
+
+## Entry 046 closure evidence
+
+- PR-035 is DONE.
+- Executable Program cardinality is bounded by `MEMORYAI_PROGRAM_MAX_OPS`: default 4096, hard Kernel maximum 65536.
+- Executable Program serialized size is bounded by `MEMORYAI_PROGRAM_MAX_BYTES`: default 4 MiB, hard Kernel maximum 16 MiB.
+- `program_import` rejects an oversized encoded Program before JSON decode, then validates decoded cardinality/bytes before replacing the target.
+- `program_set_field` and `program_set_var_ref` mutate a candidate copy, validate the complete Program, and only then commit it.
+- `program_insert_from` and `program_replace_from` preflight resulting operation count before slice growth and validate the complete candidate before target mutation.
+- `program_export` validates Program bounds and the existing Frame-value byte ceiling before assigning the serialized result.
+- No truncation, semantic selection, mutation strategy, or cognitive policy is introduced; Memory retains control of Program evolution inside the physical safety envelope.
+- Architecture regression suite reached 46/46 PASS; live architecture audit PASS; Python suite 63/63 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-035 `go test -race -count=20` PASS.

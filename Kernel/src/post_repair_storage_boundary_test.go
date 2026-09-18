@@ -1603,3 +1603,74 @@ func TestFrameValueAndOutputOperatorLimitsCannotExceedKernelHardCaps(t *testing.
 		t.Fatalf("Frame-output item limit escaped Kernel hard cap: got=%d hard=%d", got, hardFrameOutputMaxItems)
 	}
 }
+
+func TestProgramInsertRejectsPhysicalProgramCardinalityOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_PROGRAM_MAX_OPS", "130")
+	e := loadCurrentBodyForGrowthTest(t)
+	target, err := e.resolveExecutable("evolution.feedback.parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(target.Program)
+	if before != 130 {
+		t.Fatalf("unexpected canonical program length: %d", before)
+	}
+	f := newFrame()
+	op := Op{Code: "program_insert_from", A: target.ID, B: "0", C: target.ID, Args: map[string]string{"start": "0", "count": "1"}}
+	if _, err := e.execPrimitive(target, op, f, 0, nil); err == nil {
+		t.Fatal("program_insert_from exceeded physical Program cardinality without rejection")
+	}
+	if len(target.Program) != before {
+		t.Fatalf("overflowing program insert mutated target before rejection: before=%d after=%d", before, len(target.Program))
+	}
+}
+
+func TestProgramSetFieldRejectsPhysicalProgramByteOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_PROGRAM_MAX_BYTES", "1024")
+	e := loadCurrentBodyForGrowthTest(t)
+	target, err := e.resolveExecutable("evolution.feedback.parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeA := target.Program[0].A
+	f := newFrame()
+	f.Vars["huge"] = strings.Repeat("x", 2048)
+	op := Op{Code: "program_set_field", A: target.ID, B: "0", C: "{{huge}}", Args: map[string]string{"field": "a"}}
+	if _, err := e.execPrimitive(target, op, f, 0, nil); err == nil {
+		t.Fatal("program_set_field exceeded physical Program byte ceiling without rejection")
+	}
+	if target.Program[0].A != beforeA {
+		t.Fatal("overflowing program_set_field mutated target before rejection")
+	}
+}
+
+func TestProgramImportRejectsOversizedEnvelopeBeforeDecode(t *testing.T) {
+	t.Setenv("MEMORYAI_PROGRAM_MAX_BYTES", "128")
+	e := loadCurrentBodyForGrowthTest(t)
+	target, err := e.resolveExecutable("evolution.feedback.parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(target.Program)
+	f := newFrame()
+	f.Vars["encoded"] = strings.Repeat("{", 256)
+	op := Op{Code: "program_import", A: target.ID, B: "encoded"}
+	_, err = e.execPrimitive(target, op, f, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "physical Program byte ceiling") {
+		t.Fatalf("program_import did not fail at physical byte boundary before decode: %v", err)
+	}
+	if len(target.Program) != before {
+		t.Fatalf("oversized program import mutated target before rejection: before=%d after=%d", before, len(target.Program))
+	}
+}
+
+func TestProgramPhysicalLimitsCannotExceedKernelHardCaps(t *testing.T) {
+	t.Setenv("MEMORYAI_PROGRAM_MAX_OPS", "999999999")
+	t.Setenv("MEMORYAI_PROGRAM_MAX_BYTES", "999999999999")
+	if got := programMaxOps(); got != hardProgramMaxOps {
+		t.Fatalf("Program operator limit escaped Kernel hard cap: got=%d hard=%d", got, hardProgramMaxOps)
+	}
+	if got := programMaxBytes(); got != hardProgramMaxBytes {
+		t.Fatalf("Program byte limit escaped Kernel hard cap: got=%d hard=%d", got, hardProgramMaxBytes)
+	}
+}

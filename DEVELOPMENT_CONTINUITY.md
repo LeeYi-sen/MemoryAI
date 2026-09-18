@@ -298,3 +298,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body are unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 44/44 PASS; live architecture audit PASS; Python suite 61/61 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-034 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 046 — bound executable Program growth
+- Base HEAD: `72cebb26e5273f51511ce7aeb5f2b2098445d05f` (`Entry 045: bound Frame scalar and output growth`).
+- Continued post-repair audit closed PR-035; tracker now has 35 DONE / 0 OPEN findings.
+- Executable Memory Programs now have physical operation-count and serialized-byte ceilings. `MEMORYAI_PROGRAM_MAX_OPS` defaults to 4096 with a 65536 hard Kernel maximum; `MEMORYAI_PROGRAM_MAX_BYTES` defaults to 4 MiB with a 16 MiB hard maximum.
+- `program_import` rejects oversized input before JSON decode and validates decoded Programs before replacement.
+- `program_set_field`, `program_set_var_ref`, `program_insert_from`, and `program_replace_from` validate candidate Program shape before committing target mutation; splice paths preflight cardinality before slice growth.
+- `program_export` is also checked against Program bounds and the existing Frame-value ceiling before publishing its serialized result into the Frame.
+- The boundary is physical-only: Kernel does not truncate Program content, choose mutation variants, score instructions, or decide cognitive evolution. Memory must explicitly split or restructure growth that exceeds the physical envelope.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 46/46 PASS; live architecture audit PASS; Python suite 63/63 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-035 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

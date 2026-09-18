@@ -673,5 +673,37 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_requires_program_splice_cardinality_gate(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'ensureProgramOpCount(newLen, "program_insert_from")',
+                'nil',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded executable Program growth"):
+            self.run_audit(repo)
+
+    def test_requires_program_import_predecode_byte_gate(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'int64(len(rawProgram)) > programMaxBytes()',
+                'false',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded executable Program growth"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()

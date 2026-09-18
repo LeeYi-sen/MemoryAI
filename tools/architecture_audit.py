@@ -320,6 +320,27 @@ def audit() -> dict[str, object]:
         "bounded Frame scalar/output growth",
     )
 
+    require(
+        physical_limits + kernel_source_text,
+        [
+            "defaultProgramMaxOps",
+            "hardProgramMaxOps",
+            "MEMORYAI_PROGRAM_MAX_OPS",
+            "defaultProgramMaxBytes",
+            "hardProgramMaxBytes",
+            "MEMORYAI_PROGRAM_MAX_BYTES",
+            "ensureProgramWithinPhysicalLimits",
+            'ensureProgramOpCount(newLen, "program_insert_from")',
+            'ensureProgramWithinPhysicalLimits(candidate, "program_set_field")',
+            'ensureProgramWithinPhysicalLimits(candidate, "program_set_var_ref")',
+            'ensureProgramWithinPhysicalLimits(newp, "program_replace_from")',
+            'ensureProgramWithinPhysicalLimits(pp, "program_import")',
+            'int64(len(rawProgram)) > programMaxBytes()',
+        ],
+        "bounded executable Program growth",
+    )
+
+
     resource_runtime = read("Kernel/src/resource_runtime.go")
     require(
         resource_runtime + kernel_source_text,

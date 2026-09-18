@@ -32,6 +32,10 @@ const (
 	hardFrameOutputMaxItems               = 32768
 	defaultFrameOutputMaxBytes      int64 = 16 << 20
 	hardFrameOutputMaxBytes         int64 = 64 << 20
+	defaultProgramMaxOps                  = 4096
+	hardProgramMaxOps                     = 65536
+	defaultProgramMaxBytes          int64 = 4 << 20
+	hardProgramMaxBytes             int64 = 16 << 20
 )
 
 func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
@@ -62,6 +66,58 @@ func boundedPhysicalCountEnv(name string, fallback, hardMax int) int {
 		return hardMax
 	}
 	return value
+}
+
+func programMaxOps() int {
+	return boundedPhysicalCountEnv(
+		"MEMORYAI_PROGRAM_MAX_OPS",
+		defaultProgramMaxOps,
+		hardProgramMaxOps,
+	)
+}
+
+func programMaxBytes() int64 {
+	return boundedPhysicalByteEnv(
+		"MEMORYAI_PROGRAM_MAX_BYTES",
+		defaultProgramMaxBytes,
+		hardProgramMaxBytes,
+	)
+}
+
+func ensureProgramOpCount(count int, label string) error {
+	maxOps := programMaxOps()
+	if count > maxOps {
+		return fmt.Errorf("%s exceeds physical Program cardinality: ops=%d max=%d", label, count, maxOps)
+	}
+	return nil
+}
+
+func ensureProgramWithinPhysicalLimits(program []Op, label string) error {
+	if err := ensureProgramOpCount(len(program), label); err != nil {
+		return err
+	}
+	maxBytes := programMaxBytes()
+	rawBytes := int64(2)
+	for _, op := range program {
+		parts := []string{op.Code, op.A, op.B, op.C}
+		for key, value := range op.Args {
+			parts = append(parts, key, value)
+		}
+		for _, part := range parts {
+			if int64(len(part)) > maxBytes-rawBytes {
+				return fmt.Errorf("%s exceeds physical Program byte ceiling: max=%d", label, maxBytes)
+			}
+			rawBytes += int64(len(part))
+		}
+	}
+	encoded, err := json.Marshal(program)
+	if err != nil {
+		return fmt.Errorf("%s encode: %w", label, err)
+	}
+	if int64(len(encoded)) > maxBytes {
+		return fmt.Errorf("%s exceeds physical Program byte ceiling: bytes=%d max=%d", label, len(encoded), maxBytes)
+	}
+	return nil
 }
 
 func frameListMaxItems() int {

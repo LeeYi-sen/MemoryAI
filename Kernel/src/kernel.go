@@ -1810,15 +1810,28 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
+		if err := ensureProgramWithinPhysicalLimits(target.Program, "program_export"); err != nil {
+			return -1, err
+		}
 		b, _ := json.Marshal(target.Program)
+		if err := ensureFrameValueBytes(len(b), "program_export"); err != nil {
+			return -1, err
+		}
 		f.Vars[op.B] = string(b)
 	case "program_import":
 		target, err := e.resolveExecutable(x(op.A))
 		if err != nil {
 			return -1, err
 		}
+		rawProgram := f.Vars[op.B]
+		if int64(len(rawProgram)) > programMaxBytes() {
+			return -1, fmt.Errorf("program_import exceeds physical Program byte ceiling: bytes=%d max=%d", len(rawProgram), programMaxBytes())
+		}
 		var pp []Op
-		if err = json.Unmarshal([]byte(f.Vars[op.B]), &pp); err != nil {
+		if err = json.Unmarshal([]byte(rawProgram), &pp); err != nil {
+			return -1, err
+		}
+		if err := ensureProgramWithinPhysicalLimits(pp, "program_import"); err != nil {
 			return -1, err
 		}
 		e.dataMu.Lock()
@@ -1865,18 +1878,23 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, fmt.Errorf("program index %d out of range", idx)
 		}
 		v := x(op.C)
+		candidate := append([]Op(nil), target.Program...)
 		switch op.Args["field"] {
 		case "code":
-			target.Program[idx].Code = v
+			candidate[idx].Code = v
 		case "a":
-			target.Program[idx].A = v
+			candidate[idx].A = v
 		case "b":
-			target.Program[idx].B = v
+			candidate[idx].B = v
 		case "c":
-			target.Program[idx].C = v
+			candidate[idx].C = v
 		default:
 			return -1, fmt.Errorf("unknown program field %q", op.Args["field"])
 		}
+		if err := ensureProgramWithinPhysicalLimits(candidate, "program_set_field"); err != nil {
+			return -1, err
+		}
+		target.Program = candidate
 		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
@@ -1891,16 +1909,21 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, fmt.Errorf("program index %d out of range", idx)
 		}
 		v := "{{" + x(op.C) + "}}"
+		candidate := append([]Op(nil), target.Program...)
 		switch op.Args["field"] {
 		case "a":
-			target.Program[idx].A = v
+			candidate[idx].A = v
 		case "b":
-			target.Program[idx].B = v
+			candidate[idx].B = v
 		case "c":
-			target.Program[idx].C = v
+			candidate[idx].C = v
 		default:
 			return -1, fmt.Errorf("unknown program field %q", op.Args["field"])
 		}
+		if err := ensureProgramWithinPhysicalLimits(candidate, "program_set_var_ref"); err != nil {
+			return -1, err
+		}
+		target.Program = candidate
 		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
@@ -1943,10 +1966,19 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if count <= 0 || start+count > len(source.Program) {
 			count = len(source.Program) - start
 		}
+		newLen := len(target.Program) + count
+		if err := ensureProgramOpCount(newLen, "program_insert_from"); err != nil {
+			return -1, err
+		}
 		frag := append([]Op(nil), source.Program[start:start+count]...)
-		target.Program = append(target.Program, make([]Op, len(frag))...)
-		copy(target.Program[i+len(frag):], target.Program[i:len(target.Program)-len(frag)])
-		copy(target.Program[i:i+len(frag)], frag)
+		candidate := append([]Op(nil), target.Program...)
+		candidate = append(candidate, make([]Op, len(frag))...)
+		copy(candidate[i+len(frag):], candidate[i:len(candidate)-len(frag)])
+		copy(candidate[i:i+len(frag)], frag)
+		if err := ensureProgramWithinPhysicalLimits(candidate, "program_insert_from"); err != nil {
+			return -1, err
+		}
+		target.Program = candidate
 		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
@@ -1973,11 +2005,18 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if count <= 0 || start+count > len(source.Program) {
 			count = len(source.Program) - start
 		}
+		newLen := len(target.Program) - deleteCount + count
+		if err := ensureProgramOpCount(newLen, "program_replace_from"); err != nil {
+			return -1, err
+		}
 		frag := append([]Op(nil), source.Program[start:start+count]...)
-		newp := make([]Op, 0, len(target.Program)-deleteCount+len(frag))
+		newp := make([]Op, 0, newLen)
 		newp = append(newp, target.Program[:i]...)
 		newp = append(newp, frag...)
 		newp = append(newp, target.Program[i+deleteCount:]...)
+		if err := ensureProgramWithinPhysicalLimits(newp, "program_replace_from"); err != nil {
+			return -1, err
+		}
 		target.Program = newp
 		target.CapabilitySig = ""
 		target.Revision++
