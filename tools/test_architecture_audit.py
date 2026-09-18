@@ -80,5 +80,23 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_rejects_cognitive_trace_namespace_in_kernel(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(kernel.read_text(encoding="utf-8") + '\nvar traceCognitionLeak = "cog.surface."\n', encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "cognitive namespace"):
+            self.run_audit(repo)
+
+    def test_rejects_active_cog_storage_namespace_in_kernel(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(kernel.read_text(encoding="utf-8") + '\nvar storageNamespaceLeak = "cog.storage.remote.endpoint"\n', encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "storage namespace"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()

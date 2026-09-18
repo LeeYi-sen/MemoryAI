@@ -578,7 +578,7 @@ func (e *Engine) remoteMemoryEndpoints() []RemoteMemoryEndpoint {
 			}
 		}
 	}
-	if tagged, er := e.listTagLocal("cog.storage.remote.endpoint"); er == nil {
+	if tagged, er := e.listTagLocal("physical.storage.remote.endpoint"); er == nil {
 		for _, id := range tagged {
 			if id != "" && !seen[id] {
 				seen[id] = true
@@ -955,16 +955,8 @@ func (e *Engine) run(idOrTag string, f *Frame) error {
 	if err != nil {
 		return err
 	}
-	// Execution count is physical runtime telemetry only. Semantic credit,
-	// confidence, utility and reuse are Memory-owned state and are never updated
-	// implicitly by Kernel execution.
-	surfaceTransport := false
-	for _, tag := range m.Tags {
-		if strings.HasPrefix(tag, "cog.surface.") || strings.HasPrefix(tag, "cog.input.") {
-			surfaceTransport = true
-			break
-		}
-	}
+	// Execution count and trace are physical runtime telemetry only. Kernel does
+	// not inspect Memory semantic tags to decide whether an execution is visible.
 	executionOwner := e.ownerOf(m.ID)
 	if executionOwner == nil {
 		return fmt.Errorf("physical execution owner unavailable: %s", m.ID)
@@ -973,11 +965,9 @@ func (e *Engine) run(idOrTag string, f *Frame) error {
 	m.RuntimeExecCount++
 	program := append([]Op(nil), m.Program...)
 	executionOwner.dataMu.Unlock()
-	if !surfaceTransport {
-		e.mu.Lock()
-		e.trace = append(e.trace, m.ID)
-		e.mu.Unlock()
-	}
+	e.mu.Lock()
+	e.trace = append(e.trace, m.ID)
+	e.mu.Unlock()
 	labels := map[string]int{}
 	for i, op := range program {
 		if op.Code == "label" {
@@ -3160,7 +3150,7 @@ func (e *Engine) knownRemoteReplicaEndpoints(memoryID string) []RemoteMemoryEndp
 	if e == nil || e.manifest.Role != "core" || memoryID == "" {
 		return nil
 	}
-	ids, er := e.listTagLocal("cog.storage.replica.of." + memoryID)
+	ids, er := e.listTagLocal("physical.storage.replica.of." + memoryID)
 	if er != nil {
 		return nil
 	}

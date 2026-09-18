@@ -392,6 +392,51 @@ func removeMigratedSidecars(paths []string) error {
 	return nil
 }
 
+func migrateLegacyStorageNamespace(e *Engine) (bool, error) {
+	if e == nil {
+		return false, nil
+	}
+	memories, err := e.allMemories()
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	for _, memory := range memories {
+		if memory == nil {
+			continue
+		}
+		tags := make([]string, 0, len(memory.Tags))
+		memoryChanged := false
+		for _, tag := range memory.Tags {
+			next := tag
+			switch {
+			case tag == "cog.storage.remote.endpoint":
+				next = "physical.storage.remote.endpoint"
+			case strings.HasPrefix(tag, "cog.storage.replica.of."):
+				next = "physical.storage.replica.of." + strings.TrimPrefix(tag, "cog.storage.replica.of.")
+			}
+			if next != tag {
+				memoryChanged = true
+			}
+			if !contains(tags, next) {
+				tags = append(tags, next)
+			}
+		}
+		if !memoryChanged {
+			continue
+		}
+		q := copyMemory(memory)
+		q.Tags = tags
+		q.CapabilitySig = ""
+		q.Revision++
+		if err := e.upsertExplicitMemoryBounded(q); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
 // migrateLegacyRuntimeState is a one-way physical format migration. It contains
 // no learning policy: it only preserves historical bytes as ordinary Memory,
 // persists them into memory.mem, then removes obsolete runtime sidecars.
@@ -407,11 +452,15 @@ func migrateLegacyRuntimeState(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	storageNamespaceChanged, err := migrateLegacyStorageNamespace(root)
+	if err != nil {
+		return err
+	}
 	cleanup, sidecarChanged, err := migrateLegacyRuntimeSidecars(root)
 	if err != nil {
 		return err
 	}
-	if growthChanged || sidecarChanged {
+	if growthChanged || storageNamespaceChanged || sidecarChanged {
 		if err := root.persistAll(); err != nil {
 			return fmt.Errorf("persist legacy runtime migration into memory.mem: %w", err)
 		}

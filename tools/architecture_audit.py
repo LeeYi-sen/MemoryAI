@@ -170,6 +170,36 @@ def audit() -> dict[str, object]:
 
     abi = audit_memory_kernel_abi()
 
+    production_kernel_sources = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in SRC.glob("*.go")
+        if not path.name.endswith("_test.go")
+    }
+    cognitive_namespace_hits = [
+        f"{name}:{token}"
+        for name, source in production_kernel_sources.items()
+        for token in ("cog.surface.", "cog.input.")
+        if token in source
+    ]
+    if cognitive_namespace_hits:
+        raise RuntimeError(
+            f"physical Kernel contains forbidden cognitive namespace interpretation: {cognitive_namespace_hits}"
+        )
+    active_storage_sources = {
+        name: source
+        for name, source in production_kernel_sources.items()
+        if name != "legacy_runtime_migration.go"
+    }
+    storage_namespace_hits = [
+        f"{name}:cog.storage."
+        for name, source in active_storage_sources.items()
+        if "cog.storage." in source
+    ]
+    if storage_namespace_hits:
+        raise RuntimeError(
+            f"active physical storage namespace retains cog.storage prefix: {storage_namespace_hits}"
+        )
+
     kernel_source = ROOT / "Kernel/src/kernel.go"
     memory_seed = ROOT / "Kernel/current-required-structures.json"
     if not kernel_source.is_file():
