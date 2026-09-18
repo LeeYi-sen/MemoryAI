@@ -81,7 +81,7 @@ func TestMeshProposalReplayExecutingFenceRefusesRestartReplay(t *testing.T) {
 func TestSovereignDirectoryAndSharedAuthorizationRecoverFromMemory(t *testing.T) {
 	dir := t.TempDir()
 	m, e := testMeshMemoryRuntime(t, dir, "sovereign-c", "sovereign")
-	node := MeshNode{ID: "node-x", Role: "node", Endpoint: "https://node-x.invalid", LastSeen: 123}
+	node := MeshNode{ID: "node-x", Role: "node", Endpoint: "https://node-x.invalid", PublicKey: "persisted-node-public-key", LastSeen: 123}
 	if err := persistSovereignMeshNode(m, node); err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +100,8 @@ func TestSovereignDirectoryAndSharedAuthorizationRecoverFromMemory(t *testing.T)
 	if err := recoverSovereignMeshState(m2); err != nil {
 		t.Fatal(err)
 	}
-	if got := m2.directory["node-x"]; got.Endpoint != node.Endpoint {
-		t.Fatalf("directory did not recover from Memory: %+v", got)
+	if got := m2.directory["node-x"]; got.Endpoint != node.Endpoint || got.PublicKey != node.PublicKey {
+		t.Fatalf("directory/node identity did not recover from Memory: %+v", got)
 	}
 	if got := m2.shared["memory.remote"]; got.Revision != 7 || got.OriginNode != "node-x" {
 		t.Fatalf("shared authorization did not recover from Memory: %+v", got)

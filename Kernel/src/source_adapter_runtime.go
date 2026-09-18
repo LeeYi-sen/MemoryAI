@@ -223,6 +223,9 @@ func (e *Engine) executeSourceAdapterInput(id, input string, timeout time.Durati
 		method = http.MethodGet
 	}
 	body := sourceAdapterTemplate(adapterStateString(m, "body"), input)
+	if int64(len(body)) > physicalExchangeMaxBytes() {
+		return nil, fmt.Errorf("source adapter HTTP request exceeds physical byte ceiling: size=%d max=%d", len(body), physicalExchangeMaxBytes())
+	}
 	req, err := http.NewRequest(method, u, bytes.NewBufferString(body))
 	if err != nil {
 		return nil, err
@@ -243,7 +246,7 @@ func (e *Engine) executeSourceAdapterInput(id, input string, timeout time.Durati
 		return map[string]any{"id": m.ID, "transport": "http", "ok": false, "error": err.Error()}, err
 	}
 	defer resp.Body.Close()
-	payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	payload, readErr := readAllPhysicalBounded(resp.Body, 1<<20, "source adapter HTTP response")
 	if readErr != nil {
 		return nil, readErr
 	}

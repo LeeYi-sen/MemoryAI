@@ -1,6 +1,12 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -576,5 +583,432 @@ func TestMemoryNewRejectsUnresolvedParent(t *testing.T) {
 	}
 	if after := fabricMemoryCountFast(e); after != before {
 		t.Fatalf("memory_new changed Fabric after unresolved parent: before=%d after=%d", before, after)
+	}
+}
+
+func TestNextIDConcurrentUniqueness(t *testing.T) {
+	const workers = 32
+	const perWorker = 2000
+	seen := make(map[string]struct{}, workers*perWorker)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errs := make(chan string, workers)
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := nextID("mem")
+				if !strings.HasPrefix(id, "mem-") {
+					errs <- "unexpected prefix: " + id
+					return
+				}
+				mu.Lock()
+				if _, exists := seen[id]; exists {
+					mu.Unlock()
+					errs <- "duplicate id: " + id
+					return
+				}
+				seen[id] = struct{}{}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if len(seen) != workers*perWorker {
+		t.Fatalf("identity count mismatch: got=%d want=%d", len(seen), workers*perWorker)
+	}
+}
+
+func TestPhysicalExchangeRejectsOversizedResponse(t *testing.T) {
+	t.Setenv("MEMORYAI_PHYSICAL_EXCHANGE_MAX_BYTES", "1024")
+	if _, err := physicalExchange("tcp", "127.0.0.1", "1", strings.Repeat("q", 1025), time.Second); err == nil || !strings.Contains(strings.ToLower(err.Error()), "request exceeds") {
+		t.Fatalf("oversized physical exchange request was not rejected before I/O: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, er := ln.Accept()
+		if er != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 16)
+		_, _ = c.Read(buf)
+		_, _ = c.Write([]byte(strings.Repeat("x", 2048)))
+	}()
+	addr := ln.Addr().(*net.TCPAddr)
+	_, err = physicalExchange("tcp", "127.0.0.1", strconv.Itoa(addr.Port), "PING", 2*time.Second)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "response exceeds") {
+		t.Fatalf("oversized physical exchange was not rejected: %v", err)
+	}
+}
+
+func TestArtifactPrimitivesEnforcePhysicalByteCeiling(t *testing.T) {
+	t.Setenv("MEMORYAI_ARTIFACT_MAX_BYTES", "1024")
+	dir := t.TempDir()
+	body := filepath.Join(dir, "data", "Memory.mem")
+	if err := os.MkdirAll(filepath.Dir(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{bodyPath: body, cache: map[string]*Memory{}, newIDs: map[string]bool{}, dirtyIDs: map[string]bool{}, deletedIDs: map[string]bool{}, tagAdded: map[string]map[string]bool{}, tagRemoved: map[string]map[string]bool{}, spaces: map[string]*Engine{}, dataMu: &sync.RWMutex{}}
+	t.Setenv("MEMORYAI_WORKSPACE", filepath.Join(dir, "workspace"))
+	if err := os.MkdirAll(filepath.Join(dir, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "workspace", "large.bin")
+	if err := os.WriteFile(p, []byte(strings.Repeat("a", 2048)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFrame()
+	self := &Memory{ID: "artifact-test", Capabilities: []string{"artifact.read", "artifact.write"}}
+	if _, err := e.execPrimitive(self, Op{Code: "artifact_read", A: "large.bin", B: "out"}, f, 0, nil); err == nil {
+		t.Fatal("artifact_read accepted file above physical byte ceiling")
+	}
+	if _, err := e.execPrimitive(self, Op{Code: "artifact_digest", A: "large.bin", B: "digest"}, f, 0, nil); err == nil {
+		t.Fatal("artifact_digest accepted file above physical byte ceiling")
+	}
+	f.Vars["payload"] = strings.Repeat("b", 2048)
+	if _, err := e.execPrimitive(self, Op{Code: "artifact_write", A: "too-large.bin", B: "{{payload}}"}, f, 0, nil); err == nil {
+		t.Fatal("artifact_write accepted payload above physical byte ceiling")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "workspace", "too-large.bin")); !os.IsNotExist(err) {
+		t.Fatalf("oversized artifact write created file: %v", err)
+	}
+}
+
+func TestArtifactPathRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	workspace := filepath.Join(dir, "workspace")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MEMORYAI_WORKSPACE", workspace)
+	e := &Engine{bodyPath: filepath.Join(dir, "data", "Memory.mem")}
+	f := newFrame()
+	self := &Memory{ID: "artifact-symlink", Capabilities: []string{"artifact.read", "artifact.write"}}
+
+	if _, err := e.execPrimitive(self, Op{Code: "artifact_read", A: "escape/secret.txt", B: "out"}, f, 0, nil); err == nil {
+		t.Fatalf("artifact_read followed workspace symlink outside boundary: %q", f.Vars["out"])
+	}
+	f.Vars["payload"] = "must-not-escape"
+	if _, err := e.execPrimitive(self, Op{Code: "artifact_write", A: "escape/new.txt", B: "{{payload}}"}, f, 0, nil); err == nil {
+		t.Fatal("artifact_write followed workspace symlink outside boundary")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("artifact write escaped workspace via symlink: %v", err)
+	}
+}
+
+func TestMemNodePathRejectsSymlinkEscape(t *testing.T) {
+	t.Setenv("MEMORYAI_STORAGE_CAPABILITY_KEY", "storage-path-key")
+	root := t.TempDir()
+	outside := t.TempDir()
+	m := &Memory{ID: "outside-memory", Layer: "emergent", Tags: []string{"memory"}, Revision: 1}
+	writeTestRemoteBody(t, outside, "outside.mem", []*Memory{m})
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	host, port := startTestMemNode(t, root)
+	raw, err := remoteSpaceRequest(host, port, map[string]any{
+		"op": "get", "name": "escape/outside.mem", "id": m.ID,
+	}, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := decodeRemoteReply(t, raw)
+	if reply["ok"] == true {
+		t.Fatalf("mem-node followed storage-root symlink outside boundary: %#v", reply)
+	}
+}
+
+func TestSovereignGrantRejectsUnboundClaimedOriginNode(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64", base64.StdEncoding.EncodeToString(priv))
+	t.Setenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64", base64.StdEncoding.EncodeToString(pub))
+
+	m := &meshRuntime{
+		role:   "sovereign",
+		nodeID: "sovereign",
+		directory: map[string]MeshNode{
+			"node-a": {ID: "node-a", Role: "node", Endpoint: "https://node-a.invalid"},
+			"node-b": {ID: "node-b", Role: "node", Endpoint: "https://node-b.invalid"},
+		},
+		shared: map[string]MeshRecord{
+			"shared-memory": {MemoryID: "shared-memory", OriginNode: "node-a", Endpoint: "https://node-a.invalid", Digest: "abc"},
+		},
+	}
+	res := m.handleAuthority(MeshRequest{
+		Op: "shared_grant", MemoryID: "shared-memory",
+		OriginNode: "node-a", AuthenticatedNodeID: "node-b",
+		Vars: map[string]string{"operation": "shared_fetch"},
+	})
+	if res.OK {
+		t.Fatalf("sovereign issued grant for claimed origin node without binding requester identity: %#v", res.Grant)
+	}
+}
+
+func TestSovereignNodeIdentityRejectsPublicKeyRebind(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &meshRuntime{
+		role: "sovereign", nodeID: "sovereign", engine: e,
+		directory: map[string]MeshNode{
+			"node-a": {ID: "node-a", Role: "node", PublicKey: base64.StdEncoding.EncodeToString(pubA)},
+		},
+		shared: map[string]MeshRecord{},
+	}
+	res := m.handleAuthority(MeshRequest{
+		Op: "register_node", AuthenticatedNodeID: "node-a",
+		Node: &MeshNode{ID: "node-a", Role: "node", PublicKey: base64.StdEncoding.EncodeToString(pubB)},
+	})
+	if res.OK || !strings.Contains(strings.ToLower(res.Error), "rebind") {
+		t.Fatalf("sovereign accepted node identity public-key rebind: %#v", res)
+	}
+}
+
+func TestMeshNodeRequestSignatureBindsNodeIdentity(t *testing.T) {
+	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &meshRuntime{
+		role: "sovereign", nodeID: "sovereign",
+		directory: map[string]MeshNode{
+			"node-a": {ID: "node-a", Role: "node", PublicKey: base64.StdEncoding.EncodeToString(pubA)},
+		},
+		shared: map[string]MeshRecord{},
+	}
+	req := MeshRequest{Op: "directory"}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSig := base64.StdEncoding.EncodeToString(ed25519.Sign(privB, body))
+	if err := m.authenticateMeshHTTPRequest(&req, body, "node-a", wrongSig); err == nil {
+		t.Fatal("shared transport member impersonated node-a with a different private key")
+	}
+	goodSig := base64.StdEncoding.EncodeToString(ed25519.Sign(privA, body))
+	if err := m.authenticateMeshHTTPRequest(&req, body, "node-a", goodSig); err != nil {
+		t.Fatalf("registered node identity signature rejected: %v", err)
+	}
+	if req.AuthenticatedNodeID != "node-a" {
+		t.Fatalf("authenticated node identity not bound into request: %q", req.AuthenticatedNodeID)
+	}
+}
+
+func TestDirectMeshGrantBindsOriginPublicKeyToRequesterSignature(t *testing.T) {
+	sovereignPub, sovereignPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64", base64.StdEncoding.EncodeToString(sovereignPriv))
+	t.Setenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64", base64.StdEncoding.EncodeToString(sovereignPub))
+	originPub, originPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attackerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := issueMeshGrant(
+		"shared_fetch", "memory.x", "node-origin", "node-target",
+		base64.StdEncoding.EncodeToString(originPub), 30*time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := MeshRequest{Op: "shared_fetch", MemoryID: "memory.x", Grant: grant}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := &meshRuntime{role: "node", nodeID: "node-target", directory: map[string]MeshNode{}, shared: map[string]MeshRecord{}}
+	attackerSig := base64.StdEncoding.EncodeToString(ed25519.Sign(attackerPriv, body))
+	if err := target.authenticateMeshHTTPRequest(&req, body, "node-origin", attackerSig); err == nil {
+		t.Fatal("direct Mesh request accepted signature not matching Sovereign-bound origin public key")
+	}
+	originSig := base64.StdEncoding.EncodeToString(ed25519.Sign(originPriv, body))
+	if err := target.authenticateMeshHTTPRequest(&req, body, "node-origin", originSig); err != nil {
+		t.Fatalf("Sovereign-bound origin signature rejected: %v", err)
+	}
+}
+
+func TestReadJSONZipRejectsOversizedMetadataEntry(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(bytes.Repeat([]byte("x"), int(hardJSONZipEntryMaxBytes)+1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst map[string]any
+	err = readJSONZip(zr, "manifest.json", &dst)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "exceeds physical byte ceiling") {
+		t.Fatalf("oversized Memory metadata was not rejected before decode: %v", err)
+	}
+}
+
+func TestIndexedStoreRejectsRecordSliceBeforeAllocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.bin")
+	if err := os.WriteFile(path, make([]byte, 64), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	store := &IndexedStore{file: file, records: section{off: 0, size: 64}}
+
+	if _, err := store.readRecord(indexEntry{off: 60, length: 8}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "escapes section") {
+		t.Fatalf("record slice outside section was not rejected: %v", err)
+	}
+	if _, err := store.readRecord(indexEntry{off: 0, length: uint32(hardMemoryRecordMaxBytes + 1)}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "byte ceiling") {
+		t.Fatalf("oversized record was not rejected before allocation: %v", err)
+	}
+	if err := indexedSliceBounds(section{off: 0, size: int64(hardTagListPayloadMaxBytes + 2)}, 0, uint32(hardTagListPayloadMaxBytes+1), hardTagListPayloadMaxBytes, "tag-list payload"); err == nil {
+		t.Fatal("oversized tag-list payload was not rejected before allocation")
+	}
+}
+
+func TestMemoryZipRejectsDuplicateEntryNames(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, payload := range []string{"{\"format\":\"first\"}", "{\"format\":\"second\"}"} {
+		w, err := zw.Create("manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateUniqueZipEntryNames(zr); err == nil || !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+		t.Fatalf("duplicate Memory ZIP entry names were not rejected: %v", err)
+	}
+	var manifest Manifest
+	if err := readJSONZip(zr, "manifest.json", &manifest); err == nil || !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+		t.Fatalf("duplicate manifest first-wins lookup survived: %v", err)
+	}
+}
+
+func TestNormalLoadRejectsCorruptAuthenticatedIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Memory.mem")
+	memory := &Memory{ID: "integrity.memory", Layer: "emergent", Tags: []string{"memory"}, Revision: 1}
+	records, ididx, tagidx, taglists, err := buildIndexedSections([]*Memory{memory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis := Genesis{Format: "memoryai-genesis-index-v1", Root: memory.ID, MemoryCount: 1}
+	gb, _ := json.Marshal(genesis)
+	sm := StoreManifest{
+		Records: "store/records.bin", IDIndex: "store/id.idx", TagIndex: "store/tag.idx",
+		TagLists: "store/taglists.bin", IndexFormat: indexFormatV2, MemoryCount: 1,
+	}
+	entries := []zipEntry{
+		{name: "genesis.json", b: gb},
+		{name: sm.Records, b: records, store: true},
+		{name: sm.IDIndex, b: ididx, store: true},
+		{name: sm.TagIndex, b: tagidx, store: true},
+		{name: sm.TagLists, b: taglists, store: true},
+	}
+	hashes := map[string]string{}
+	for _, entry := range entries {
+		sum := sha256.Sum256(entry.b)
+		hashes[entry.name] = fmt.Sprintf("%x", sum[:])
+	}
+	hashes[sm.IDIndex] = strings.Repeat("0", 64)
+	manifest := Manifest{
+		Role: "core", Format: "memoryai-body-v2", Version: imageVersion, MemoryABI: memoryABI,
+		BodyID: "integrity-test", Root: memory.ID, GenesisPath: "genesis.json",
+		Entry: map[string]string{}, Hashes: hashes, Store: sm,
+	}
+	mb, _ := json.Marshal(manifest)
+	entries = append(entries, zipEntry{name: "manifest.json", b: mb})
+	if err := writeDetZip(path, entries); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadEngine(path); err == nil || !strings.Contains(strings.ToLower(err.Error()), "hash mismatch") {
+		t.Fatalf("normal load accepted corrupt authenticated index: %v", err)
+	}
+}
+
+func TestV2IndexedStoreLazilyRejectsCorruptRecordDigest(t *testing.T) {
+	original := []byte(`{"id":"lazy.integrity","layer":"emergent","revision":1}`)
+	path := filepath.Join(t.TempDir(), "records.bin")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	digest := sha256.Sum256(original)
+	store := &IndexedStore{
+		file: file, records: section{off: 0, size: int64(len(original))},
+		entrySize: indexEntrySize, hasDigests: true,
+	}
+	entry := indexEntry{off: 0, length: uint32(len(original)), digest: digest}
+	got, err := store.readRecord(entry)
+	if err != nil || got.ID != "lazy.integrity" {
+		t.Fatalf("valid digest-backed record failed: got=%v err=%v", got, err)
+	}
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), len(original)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.readRecord(entry); err == nil || !strings.Contains(strings.ToLower(err.Error()), "digest mismatch") {
+		t.Fatalf("corrupt record passed lazy digest verification: %v", err)
 	}
 }

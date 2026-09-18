@@ -89,6 +89,164 @@ def audit() -> dict[str, object]:
     if growth:
         raise RuntimeError(f"compiled Kernel still contains cognitive growth implementation: {growth}")
 
+    identity = read("Kernel/src/identity_runtime.go")
+    require(
+        identity,
+        [
+            '"crypto/rand"',
+            "identityProcessNonce",
+            "identitySequence",
+            "atomic.AddUint64(&identitySequence",
+        ],
+        "identity generator",
+    )
+    if re.search(r"func\s+nextID\s*\([^)]*\).*?UnixNano\(", identity, re.S):
+        raise RuntimeError("identity generator must not depend on wall-clock granularity")
+    kernel_source_text = read("Kernel/src/kernel.go")
+    if "func nextID(" in kernel_source_text:
+        raise RuntimeError("identity generator must live in the dedicated physical identity runtime")
+    writer_start = kernel_source_text.find("func writeDetZip(")
+    if writer_start < 0:
+        raise RuntimeError("initial body writer missing")
+    writer = kernel_source_text[writer_start:]
+    require(
+        writer,
+        [
+            "f.Sync()",
+            "os.Rename(tmp, path)",
+            "os.Open(filepath.Dir(path))",
+            "dir.Sync()",
+            "os.Remove(tmp)",
+        ],
+        "initial body writer",
+    )
+
+    path_sandbox = read("Kernel/src/path_sandbox_runtime.go")
+    require(
+        path_sandbox,
+        [
+            "physicalSandboxPath",
+            "filepath.EvalSymlinks(absRoot)",
+            "os.Lstat(current)",
+            "os.ModeSymlink",
+            "path contains symlink component",
+        ],
+        "physical path sandbox",
+    )
+    require(
+        kernel_source_text,
+        [
+            'return physicalSandboxPath(root, rel, "artifact workspace")',
+            'return physicalSandboxPath(root, name, "remote storage")',
+        ],
+        "shared physical path sandbox",
+    )
+
+    physical_limits = read("Kernel/src/physical_limits_runtime.go")
+    require(
+        physical_limits,
+        [
+            "hardPhysicalExchangeMaxBytes",
+            "hardArtifactMaxBytes",
+            "MEMORYAI_PHYSICAL_EXCHANGE_MAX_BYTES",
+            "MEMORYAI_ARTIFACT_MAX_BYTES",
+            "io.LimitReader(r, maxBytes+1)",
+            "response exceeds physical byte ceiling",
+        ],
+        "physical byte ceilings",
+    )
+    require(
+        kernel_source_text,
+        [
+            "physical exchange request exceeds physical byte ceiling",
+            'readAllPhysicalBounded(c, maxBytes, "physical exchange")',
+            "artifactMaxBytes()",
+            'readAllPhysicalBounded(file, maxBytes, "artifact read")',
+            "io.Copy(h, io.LimitReader(file, maxBytes+1))",
+        ],
+        "single-primitive physical I/O boundary",
+    )
+
+    body_input = read("Kernel/src/body_input_runtime.go")
+    store_source = read("Kernel/src/store.go")
+    body_builder = read("tools/build_memory_body.py")
+    require(
+        body_input,
+        [
+            "hardJSONZipEntryMaxBytes",
+            "hardMemoryRecordMaxBytes",
+            "hardTagListPayloadMaxBytes",
+            "readZipFileBounded",
+            "indexedSliceBounds",
+            "validateUniqueZipEntryNames",
+            "verifyBodyLoadIntegrity",
+            "Memory manifest hash missing",
+        ],
+        "Memory body input bounds",
+    )
+    require(
+        kernel_source_text + store_source,
+        [
+            'readZipFileBounded(file, hardJSONZipEntryMaxBytes, "Memory metadata")',
+            "hashZipFileStreaming(file)",
+            'indexedSliceBounds(s.records, e.off, e.length, hardMemoryRecordMaxBytes, "Memory record")',
+            'indexedSliceBounds(s.tagLists, e.off, e.length, hardTagListPayloadMaxBytes, "tag-list payload")',
+            "indexed section %s escapes physical body file",
+            "indexFormatV2",
+            "Memory record digest mismatch",
+            "tag-list payload digest mismatch",
+            "validateUniqueZipEntryNames(&zr.Reader)",
+            "verifyBodyLoadIntegrity(&zr.Reader, mf)",
+        ],
+        "Memory indexed body bounds",
+    )
+    require(
+        body_builder,
+        [
+            'INDEX_FORMAT = "memoryai-index-v2-sha256"',
+            'struct.pack("<QQII32s"',
+            '"index_format": INDEX_FORMAT',
+        ],
+        "Memory body builder index integrity",
+    )
+    v2_integrity = re.search(r"case indexFormatV2:(.*?)(?:default:)", body_input, re.S)
+    if not v2_integrity:
+        raise RuntimeError("Memory v2 lazy integrity branch missing")
+    if "verify = append" in v2_integrity.group(1):
+        raise RuntimeError("Memory v2 load integrity regressed to full records/taglists scan")
+    legacy_integrity = re.search(r'case "":(.*?)case indexFormatV2:', body_input, re.S)
+    if not legacy_integrity or "mf.Store.Records" not in legacy_integrity.group(1) or "mf.Store.TagLists" not in legacy_integrity.group(1):
+        raise RuntimeError("Memory legacy load integrity must verify complete records/taglists")
+
+    mesh_node_identity = read("Kernel/src/mesh_node_identity_runtime.go")
+    mesh_runtime = read("Kernel/src/mesh_runtime.go")
+    mesh_grant = read("Kernel/src/mesh_grant_runtime.go")
+    mesh_authority = read("Kernel/src/mesh_authority_runtime.go")
+    require(
+        mesh_node_identity,
+        [
+            "MEMORYAI_MESH_NODE_PRIVATE_KEY_B64",
+            "meshNodeSignatureHeader",
+            "ed25519.Sign",
+            "ed25519.Verify",
+            "req.AuthenticatedNodeID = nodeID",
+            "Mesh grant origin-node/requester mismatch",
+        ],
+        "Mesh node identity",
+    )
+    require(
+        mesh_runtime + mesh_grant + mesh_authority,
+        [
+            "PublicKey string",
+            "OriginPublicKey string",
+            "meshGrantVersion           = 2",
+            "shared grant requester identity mismatch",
+            "node identity rebind denied",
+            "sovereign grant requester identity mismatch",
+        ],
+        "Sovereign node identity binding",
+    )
+
     daemon = read("Kernel/src/daemon_runtime.go")
     require(daemon, ["event:memory.activity" if False else 'fireEvent("memory.activity"', 'fireEvent("memory.run.resolve"'], "daemon")
     forbid(

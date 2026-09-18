@@ -81,7 +81,8 @@ func writeIndexedStoreForTest(t *testing.T, memories []*Memory) (*zip.ReadCloser
 		t.Fatal(err)
 	}
 	return zr, path, StoreManifest{
-		Records: "records.bin", IDIndex: "ids.bin", TagIndex: "tags.bin", TagLists: "taglists.bin", MemoryCount: len(memories),
+		Records: "records.bin", IDIndex: "ids.bin", TagIndex: "tags.bin", TagLists: "taglists.bin",
+		IndexFormat: indexFormatV2, MemoryCount: len(memories),
 	}
 }
 

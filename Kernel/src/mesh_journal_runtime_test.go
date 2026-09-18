@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +14,13 @@ import (
 
 func testMeshMemoryRuntime(t *testing.T, dir, nodeID, role string) (*meshRuntime, *Engine) {
 	t.Helper()
+	if role == "node" {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MEMORYAI_MESH_NODE_PRIVATE_KEY_B64", base64.StdEncoding.EncodeToString(priv))
+	}
 	path := filepath.Join(dir, "Memory.mem")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		writeBodyForPersistenceTest(t, path, "core", []*Memory{{

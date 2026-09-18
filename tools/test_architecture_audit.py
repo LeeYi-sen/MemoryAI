@@ -227,5 +227,241 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_rejects_clock_only_identity_generator(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        identity = repo / "Kernel/src/identity_runtime.go"
+        identity.write_text(
+            'package main\n\nimport ("fmt"; "time")\n\n'
+            'func nextID(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }\n',
+            encoding="utf-8",
+        )
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'func nextID(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }',
+                '',
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "identity generator"):
+            self.run_audit(repo)
+
+    def test_requires_durable_initial_body_writer(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'if err = f.Sync(); err != nil {',
+                'if false {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "initial body writer"):
+            self.run_audit(repo)
+
+
+    def test_rejects_unbounded_physical_exchange(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        limits = repo / "Kernel/src/physical_limits_runtime.go"
+        limits.write_text(
+            limits.read_text(encoding="utf-8").replace(
+                "io.LimitReader(r, maxBytes+1)",
+                "r",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "physical byte ceilings"):
+            self.run_audit(repo)
+
+    def test_rejects_unbounded_artifact_primitive(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'readAllPhysicalBounded(file, maxBytes, "artifact read")',
+                "io.ReadAll(file)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "single-primitive physical I/O boundary"):
+            self.run_audit(repo)
+
+
+    def test_rejects_symlink_unsafe_physical_path_sandbox(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        sandbox = repo / "Kernel/src/path_sandbox_runtime.go"
+        sandbox.write_text(
+            sandbox.read_text(encoding="utf-8").replace(
+                "os.Lstat(current)",
+                "os.Stat(current)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "physical path sandbox"):
+            self.run_audit(repo)
+
+    def test_requires_memnode_and_artifact_to_share_path_sandbox(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'return physicalSandboxPath(root, name, "remote storage")',
+                'return filepath.Join(root, name), nil',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "shared physical path sandbox"):
+            self.run_audit(repo)
+
+
+    def test_rejects_mesh_without_node_identity_signature(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        identity = repo / "Kernel/src/mesh_node_identity_runtime.go"
+        identity.write_text(
+            identity.read_text(encoding="utf-8").replace(
+                "ed25519.Verify(pub, body, sig)",
+                "true",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Mesh node identity"):
+            self.run_audit(repo)
+
+    def test_requires_sovereign_requester_identity_binding(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        authority = repo / "Kernel/src/mesh_authority_runtime.go"
+        authority.write_text(
+            authority.read_text(encoding="utf-8").replace(
+                "shared grant requester identity mismatch",
+                "shared grant requester unchecked",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Sovereign node identity binding"):
+            self.run_audit(repo)
+
+    def test_requires_node_public_key_rebind_fence(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        authority = repo / "Kernel/src/mesh_authority_runtime.go"
+        authority.write_text(
+            authority.read_text(encoding="utf-8").replace(
+                "node identity rebind denied",
+                "node identity rebound",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Sovereign node identity binding"):
+            self.run_audit(repo)
+
+
+    def test_rejects_unbounded_memory_metadata_zip_read(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'readZipFileBounded(file, hardJSONZipEntryMaxBytes, "Memory metadata")',
+                'io.ReadAll(mustOpenZip(file))',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Memory indexed body bounds"):
+            self.run_audit(repo)
+
+    def test_requires_indexed_record_slice_bounds(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        store = repo / "Kernel/src/store.go"
+        store.write_text(
+            store.read_text(encoding="utf-8").replace(
+                'indexedSliceBounds(s.records, e.off, e.length, hardMemoryRecordMaxBytes, "Memory record")',
+                'nil',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Memory indexed body bounds"):
+            self.run_audit(repo)
+
+
+    def test_requires_duplicate_zip_entry_load_gate(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "validateUniqueZipEntryNames(&zr.Reader)",
+                "validateUniqueZipEntryNamesDisabled(&zr.Reader)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Memory indexed body bounds"):
+            self.run_audit(repo)
+
+    def test_requires_normal_load_integrity_gate(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "verifyBodyLoadIntegrity(&zr.Reader, mf)",
+                "verifyBodyLoadIntegrityDisabled(&zr.Reader, mf)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Memory indexed body bounds"):
+            self.run_audit(repo)
+
+    def test_requires_lazy_record_digest_verification(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        store = repo / "Kernel/src/store.go"
+        store.write_text(
+            store.read_text(encoding="utf-8").replace(
+                "Memory record digest mismatch",
+                "Memory record digest unchecked",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "Memory indexed body bounds"):
+            self.run_audit(repo)
+
+    def test_rejects_v2_full_record_scan_at_load(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        source = repo / "Kernel/src/body_input_runtime.go"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                "case indexFormatV2:\n",
+                "case indexFormatV2:\n\t\tverify = append(verify, mf.Store.Records, mf.Store.TagLists)\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "full records/taglists scan"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()

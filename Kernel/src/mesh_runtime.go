@@ -19,10 +19,11 @@ import (
 const meshRPCPath = "/memoryai/mesh/v1"
 
 type MeshNode struct {
-	ID       string `json:"id"`
-	Role     string `json:"role"`
-	Endpoint string `json:"endpoint,omitempty"`
-	LastSeen int64  `json:"last_seen"`
+	ID        string `json:"id"`
+	Role      string `json:"role"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
+	LastSeen  int64  `json:"last_seen"`
 }
 
 type MeshRecord struct {
@@ -35,18 +36,19 @@ type MeshRecord struct {
 }
 
 type MeshRequest struct {
-	Op             string            `json:"op"`
-	Query          string            `json:"query,omitempty"`
-	Tags           []string          `json:"tags,omitempty"`
-	MemoryID       string            `json:"memory_id,omitempty"`
-	ProposalDigest string            `json:"proposal_digest,omitempty"`
-	Revision       uint64            `json:"revision,omitempty"`
-	OriginNode     string            `json:"origin_node,omitempty"`
-	Endpoint       string            `json:"endpoint,omitempty"`
-	ReceiptID      string            `json:"receipt_id,omitempty"`
-	Vars           map[string]string `json:"vars,omitempty"`
-	Node           *MeshNode         `json:"node,omitempty"`
-	Grant          *MeshGrant        `json:"grant,omitempty"`
+	Op                  string            `json:"op"`
+	Query               string            `json:"query,omitempty"`
+	Tags                []string          `json:"tags,omitempty"`
+	MemoryID            string            `json:"memory_id,omitempty"`
+	ProposalDigest      string            `json:"proposal_digest,omitempty"`
+	Revision            uint64            `json:"revision,omitempty"`
+	OriginNode          string            `json:"origin_node,omitempty"`
+	Endpoint            string            `json:"endpoint,omitempty"`
+	ReceiptID           string            `json:"receipt_id,omitempty"`
+	Vars                map[string]string `json:"vars,omitempty"`
+	Node                *MeshNode         `json:"node,omitempty"`
+	Grant               *MeshGrant        `json:"grant,omitempty"`
+	AuthenticatedNodeID string            `json:"-"`
 }
 
 type MeshResponse struct {
@@ -150,9 +152,16 @@ func bindMeshEngine(e *Engine) {
 	if m == nil || e == nil {
 		return
 	}
+	publicKey, identityErr := meshNodePublicKeyB64(m)
 	m.mu.Lock()
 	m.engine = e
-	m.directory[m.nodeID] = MeshNode{ID: m.nodeID, Role: m.role, Endpoint: m.endpoint, LastSeen: time.Now().Unix()}
+	if identityErr != nil {
+		if m.startupErr == "" {
+			m.startupErr = identityErr.Error()
+		}
+	} else {
+		m.directory[m.nodeID] = MeshNode{ID: m.nodeID, Role: m.role, Endpoint: m.endpoint, PublicKey: publicKey, LastSeen: time.Now().Unix()}
+	}
 	listen := m.listenAddr
 	alreadyServing := m.server != nil
 	startupErr := m.startupErr
@@ -208,12 +217,18 @@ func (m *meshRuntime) rpc(endpoint string, req MeshRequest) (MeshResponse, error
 	if err != nil {
 		return out, err
 	}
+	nodeID, nodeSignature, err := signMeshNodeRequest(m, body)
+	if err != nil {
+		return out, err
+	}
 	hreq, err := http.NewRequest(http.MethodPost, endpoint+meshRPCPath, bytes.NewReader(body))
 	if err != nil {
 		return out, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("X-MemoryAI-Mesh-Signature", meshSignBytes(key, body))
+	hreq.Header.Set(meshNodeIDHeader, nodeID)
+	hreq.Header.Set(meshNodeSignatureHeader, nodeSignature)
 	resp, err := m.client.Do(hreq)
 	if err != nil {
 		return out, err
@@ -292,6 +307,11 @@ func (m *meshRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: err.Error()})
+		return
+	}
+	if err := m.authenticateMeshHTTPRequest(&req, body, r.Header.Get(meshNodeIDHeader), r.Header.Get(meshNodeSignatureHeader)); err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "mesh node identity denied: " + err.Error()})
 		return
 	}
 	res := m.handleRPC(req)

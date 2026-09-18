@@ -35,3 +35,33 @@
 - All behavior changes were covered by focused RED -> GREEN regressions.
 - Permanent architecture gates now cover Memory-owned expansion, durable Mesh journal ownership, remote identity conflicts, authenticated/TLS storage transport, unified structural digest semantics, bounded remote writes, endpoint BodyID/ABI pinning, explicit remote creation, transfer conflict fail-closed behavior, CapabilitySig invalidation, ambiguous-tag fail-closed resolution, remote mutation CAS fencing, and parent-lineage resolution.
 - Final validation before Entry 039: architecture regressions 15/15 PASS; live architecture audit PASS; Python suite 32 tests PASS; go vet PASS; full Go suite PASS; focused race -count=20 PASS; Memory.mem verify PASS.
+
+## Continued audit after Entry 039
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-015 | P1 | DONE | `nextID()` derives Memory/Body identity only from `time.Now().UnixNano()` | Identity generation must include process-unique entropy plus an atomic in-process sequence; concurrent generation must be collision-free without relying on clock granularity |
+| PR-016 | P1 | DONE | Initial empty-body `writeDetZip()` closes and renames without syncing the file and parent directory | Successful body creation must mean durable bytes: sync file, rename atomically, sync parent directory, and clean temporary file on failure |
+
+| PR-017 | P0 | DONE | Raw TCP/TLS `physicalExchange()` uses unbounded `io.ReadAll`, so one primitive can allocate arbitrarily before VM budget enforcement | Raw exchange must use an overflow-detecting bounded physical read; operator tuning may adjust within a hard Kernel ceiling but never make it unbounded |
+| PR-018 | P0 | DONE | `artifact_read/write/digest` can process arbitrarily large files/data inside one primitive before the post-primitive resource budget check | Artifact primitives must enforce a bounded physical byte ceiling before allocation/I/O; digest must stream rather than read the whole file into memory |
+| PR-019 | P0 | DONE | Artifact workspace containment is lexical only; a symlink inside the workspace can redirect read/write/digest outside the sandbox | Resolve the configured workspace root physically and reject symlink components in every artifact-relative path before I/O |
+| PR-020 | P0 | DONE | mem-node storage-root containment is lexical only; a symlink inside the root can redirect remote body operations outside the configured storage sandbox | Artifact and mem-node path resolution must share one real-root physical sandbox helper that rejects symlink components below the trusted root |
+| PR-021 | P0 | DONE | Shared Mesh HMAC authenticates cluster membership but does not cryptographically bind a request to its claimed `OriginNode`; a member can request a Sovereign grant under another node label | Add per-node Ed25519 identity: registration binds node ID to public key, authority/direct RPC bodies are node-signed, grants bind origin public key, and public-key rebind fails closed |
+| PR-022 | P0 | DONE | Memory.mem JSON ZIP metadata entries can be decompressed without a hard physical ceiling before VM/resource budgets exist | Bound metadata/opaque entry reads with overflow detection; fsck hashes large entries as a stream instead of allocating the whole entry |
+| PR-023 | P0 | DONE | IndexedStore trusts index offset/length before allocation/read; a malformed record/tag entry can request huge memory or point outside its Stored section | Validate Stored section against actual body file bounds and validate every indexed slice + per-record physical ceiling before allocation |
+| PR-024 | P1 | DONE | ZIP archives may contain duplicate entry names; current first-match lookup makes manifest/store/hash resolution ambiguous | Reject duplicate Memory.mem ZIP entry names and require unique lookup for metadata, store sections and fsck |
+| PR-025 | P0 | DONE | Normal load trusts manifest-declared store bytes without enforcing their hashes; explicit fsck is the only whole-body integrity check | New index format must authenticate record/posting slices lazily via per-entry SHA-256 while load verifies genesis + index hashes; legacy index bodies remain fail-closed by verifying all declared store section hashes before use |
+
+## Entry 040 closure evidence
+
+- PR-015 through PR-025 are DONE.
+- Identity allocation now uses process entropy + atomic sequence rather than wall-clock granularity.
+- Initial body creation is durable across file sync, atomic rename and parent-directory sync.
+- Raw exchange and artifact primitives have hard physical byte ceilings; artifact and mem-node paths share a symlink-safe physical sandbox.
+- Sovereign Mesh now uses HMAC membership plus per-node Ed25519 identity. Grant v2 binds requester node ID and public key, and node public-key rebind fails closed.
+- Memory body input rejects duplicate ZIP entries, oversized metadata, out-of-section indexed slices, and unauthenticated index corruption.
+- Index v2 (`memoryai-index-v2-sha256`) stores SHA-256 per Memory record and tag posting. Load verifies genesis + id/tag indexes only; record/posting payloads are verified lazily when accessed. Legacy v1 indexes remain readable only after complete records/taglists hash verification.
+- Canonical cognitive seed is unchanged: 129 Memories, seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`.
+- Canonical physical body is now version `28.9.0-memory-fabric-sovereign`, SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 30/30 PASS; live architecture audit PASS; Python suite 47/47 PASS; `go vet` PASS; full direct Go suite PASS; focused post-repair `go test -race -count=20` PASS; `git diff --check` PASS; Memory.mem verify PASS. No `go build` or release packaging executed.

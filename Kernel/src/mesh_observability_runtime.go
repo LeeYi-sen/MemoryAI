@@ -19,6 +19,10 @@ func (m *meshRuntime) fanout(id string, vars map[string]string, includeSelf bool
 	m.mu.RLock()
 	self := m.nodeID
 	m.mu.RUnlock()
+	selfPublicKey, ok := m.nodePublicKey(self)
+	if !ok {
+		return nil, errors.New("sovereign node identity public key unavailable")
+	}
 	sort.Slice(res.Nodes, func(i, j int) bool { return res.Nodes[i].ID < res.Nodes[j].ID })
 	out := make([]string, 0, len(res.Nodes))
 	for _, n := range res.Nodes {
@@ -34,7 +38,7 @@ func (m *meshRuntime) fanout(id string, vars map[string]string, includeSelf bool
 				er = errors.New(rr.Error)
 			}
 		} else {
-			grant, grantErr := issueMeshGrant("route_execute", id, self, n.ID, meshGrantTTL)
+			grant, grantErr := issueMeshGrant("route_execute", id, self, n.ID, selfPublicKey, meshGrantTTL)
 			if grantErr != nil {
 				er = grantErr
 			} else {
@@ -71,8 +75,9 @@ func meshInfoMap() map[string]any {
 		"startup_error":                 m.startupErr,
 		"remote_memory_semantics":       "direct-read-no-import",
 		"routing":                       "stable-physical-availability-only",
-		"shared_authorization":          "sovereign-memory-event+ed25519-grant",
-		"transport_authentication":      "hmac-channel-only",
+		"shared_authorization":          "sovereign-memory-event+ed25519-grant-v2",
+		"transport_authentication":      "hmac-membership+ed25519-node-identity",
+		"node_identity_key_present":     m.role == "sovereign" || strings.TrimSpace(os.Getenv("MEMORYAI_MESH_NODE_PRIVATE_KEY_B64")) != "",
 		"cross_host_transport":          "tls-required",
 		"sovereign_public_key_present":  strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PUBLIC_KEY_B64")) != "",
 		"sovereign_private_key_present": strings.TrimSpace(os.Getenv("MEMORYAI_MESH_SOVEREIGN_PRIVATE_KEY_B64")) != "",

@@ -12,8 +12,9 @@ from typing import Any
 FORMAT = "memoryai-body-v2"
 GENESIS_FORMAT = "memoryai-genesis-index-v1"
 DEFAULT_ABI = "memoryai-memory-abi-v1"
-DEFAULT_VERSION = "28.8.0-memory-fabric-sovereign"
+DEFAULT_VERSION = "28.9.0-memory-fabric-sovereign"
 PHYSICAL_PREFIX = "\x1fmemoryai.phys.v1:"
+INDEX_FORMAT = "memoryai-index-v2-sha256"
 JOURNAL_COMMENT_SIZE = 65535
 EPOCH = (1980, 1, 1, 0, 0, 0)
 
@@ -117,17 +118,19 @@ def normalize_seed(raw: Any) -> tuple[str, list[dict[str, Any]]]:
     return root, out
 
 
-def encode_index(rows: list[tuple[int, int, int, int, str]]) -> bytes:
-    rows.sort(key=lambda r: (r[0], r[4]))
+def encode_index(rows: list[tuple[int, int, int, int, bytes, str]]) -> bytes:
+    rows.sort(key=lambda r: (r[0], r[5]))
     out = bytearray()
-    for h, off, length, count, _name in rows:
-        out += struct.pack("<QQII", h, off, length, count)
+    for h, off, length, count, digest, _name in rows:
+        if len(digest) != hashlib.sha256().digest_size:
+            raise ValueError("index digest must be SHA-256")
+        out += struct.pack("<QQII32s", h, off, length, count, digest)
     return bytes(out)
 
 
 def build_sections(memories: list[dict[str, Any]]) -> tuple[bytes, bytes, bytes, bytes]:
     records = bytearray()
-    id_rows: list[tuple[int, int, int, int, str]] = []
+    id_rows: list[tuple[int, int, int, int, bytes, str]] = []
     postings: dict[str, set[str]] = {}
 
     for memory in sorted(memories, key=lambda m: m["id"]):
@@ -135,7 +138,7 @@ def build_sections(memories: list[dict[str, Any]]) -> tuple[bytes, bytes, bytes,
         off = len(records)
         records += blob
         mid = memory["id"]
-        id_rows.append((fnv1a64(mid), off, len(blob), 0, mid))
+        id_rows.append((fnv1a64(mid), off, len(blob), 0, hashlib.sha256(blob).digest(), mid))
         keys = {str(t) for t in (memory.get("tags") or []) if str(t)}
         for feature in features(memory):
             keys.add(PHYSICAL_PREFIX + feature)
@@ -143,13 +146,13 @@ def build_sections(memories: list[dict[str, Any]]) -> tuple[bytes, bytes, bytes,
             postings.setdefault(key, set()).add(mid)
 
     taglists = bytearray()
-    tag_rows: list[tuple[int, int, int, int, str]] = []
+    tag_rows: list[tuple[int, int, int, int, bytes, str]] = []
     for tag in sorted(postings):
         ids = sorted(postings[tag])
         blob = compact_json({"tag": tag, "ids": ids})
         off = len(taglists)
         taglists += blob
-        tag_rows.append((fnv1a64(tag), off, len(blob), len(ids), tag))
+        tag_rows.append((fnv1a64(tag), off, len(blob), len(ids), hashlib.sha256(blob).digest(), tag))
 
     return bytes(records), encode_index(id_rows), encode_index(tag_rows), bytes(taglists)
 
@@ -177,6 +180,7 @@ def build_body(seed: Path, out: Path, version: str, abi: str, role: str) -> dict
         "id_index": "store/id.idx",
         "tag_index": "store/tag.idx",
         "tag_lists": "store/taglists.bin",
+        "index_format": INDEX_FORMAT,
         "memory_count": len(memories),
     }
     entries: dict[str, tuple[bytes, bool]] = {
@@ -231,24 +235,29 @@ def verify_body(path: Path) -> None:
     with zipfile.ZipFile(path, "r") as zf:
         if len(zf.comment) != JOURNAL_COMMENT_SIZE:
             raise ValueError("Memory.mem mutation journal reserve is not 65535 bytes")
+        names = zf.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError("Memory.mem contains duplicate ZIP entry names")
         manifest = json.loads(zf.read("manifest.json"))
         if manifest.get("format") != FORMAT:
             raise ValueError("unexpected Memory body format")
         store = manifest["store"]
+        if store.get("index_format") != INDEX_FORMAT:
+            raise ValueError(f"unexpected Memory index format: {store.get('index_format')!r}")
         for field in ("records", "id_index", "tag_index", "tag_lists"):
             info = zf.getinfo(store[field])
             if info.compress_type != zipfile.ZIP_STORED:
                 raise ValueError(f"indexed section {store[field]} must use zip.Store")
+        for field in ("id_index", "tag_index"):
+            size = zf.getinfo(store[field]).file_size
+            if size % struct.calcsize("<QQII32s") != 0:
+                raise ValueError(f"indexed section {store[field]} is not v2 entry aligned")
+        if zf.getinfo(store["id_index"]).file_size // struct.calcsize("<QQII32s") != int(store["memory_count"]):
+            raise ValueError("Memory ID index cardinality does not match memory_count")
         for name, expected in manifest.get("hashes", {}).items():
             got = sha256_bytes(zf.read(name))
             if got != expected:
                 raise ValueError(f"hash mismatch for {name}: {got} != {expected}")
-        if len(zf.read(store["id_index"])) % 24:
-            raise ValueError("id index size invalid")
-        if len(zf.read(store["tag_index"])) % 24:
-            raise ValueError("tag index size invalid")
-        if store["memory_count"] * 24 != len(zf.read(store["id_index"])):
-            raise ValueError("id index count differs from manifest")
 
 
 def main() -> None:

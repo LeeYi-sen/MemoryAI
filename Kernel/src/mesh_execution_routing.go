@@ -33,6 +33,10 @@ func (m *meshRuntime) routeExecution(id string, vars map[string]string, preferLo
 	if len(nodes) == 0 {
 		return "", nil, errors.New("no mesh nodes available")
 	}
+	selfPublicKey, ok := m.nodePublicKey(self)
+	if !ok {
+		return "", nil, errors.New("sovereign node identity public key unavailable")
+	}
 	// Deterministic physical sharding only; no semantic score is computed.
 	h := sha256.Sum256([]byte(id))
 	start := int(h[0]) % len(nodes)
@@ -51,7 +55,7 @@ func (m *meshRuntime) routeExecution(id string, vars map[string]string, preferLo
 		if n.Endpoint == "" {
 			continue
 		}
-		grant, err := issueMeshGrant("route_execute", id, self, n.ID, meshGrantTTL)
+		grant, err := issueMeshGrant("route_execute", id, self, n.ID, selfPublicKey, meshGrantTTL)
 		if err != nil {
 			return "", nil, err
 		}

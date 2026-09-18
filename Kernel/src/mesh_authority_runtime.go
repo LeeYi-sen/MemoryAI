@@ -29,6 +29,9 @@ func (m *meshRuntime) authorityRPC(req MeshRequest) (MeshResponse, error) {
 		return MeshResponse{}, errors.New("mesh runtime unavailable")
 	}
 	if m.role == "sovereign" {
+		if strings.TrimSpace(req.AuthenticatedNodeID) == "" {
+			req.AuthenticatedNodeID = m.nodeID
+		}
 		res := m.handleAuthority(req)
 		if !res.OK {
 			return res, errors.New(res.Error)
@@ -44,11 +47,17 @@ func (m *meshRuntime) authorityRPC(req MeshRequest) (MeshResponse, error) {
 func (m *meshRuntime) handleRPC(req MeshRequest) MeshResponse {
 	switch req.Op {
 	case "shared_fetch":
+		if req.Grant == nil || strings.TrimSpace(req.AuthenticatedNodeID) == "" || req.AuthenticatedNodeID != req.Grant.OriginNode {
+			return MeshResponse{OK: false, Error: "sovereign grant requester identity mismatch"}
+		}
 		if err := consumeMeshGrant(req.Grant, []string{"shared_fetch"}, req.MemoryID, m.nodeID); err != nil {
 			return MeshResponse{OK: false, Error: "sovereign grant denied: " + err.Error()}
 		}
 		return m.serveLocalMemory(req.MemoryID)
 	case "structure_run":
+		if req.Grant == nil || strings.TrimSpace(req.AuthenticatedNodeID) == "" || req.AuthenticatedNodeID != req.Grant.OriginNode {
+			return MeshResponse{OK: false, Error: "sovereign grant requester identity mismatch"}
+		}
 		if err := consumeMeshGrant(req.Grant, []string{"shared_execute", "route_execute"}, req.MemoryID, m.nodeID); err != nil {
 			return MeshResponse{OK: false, Error: "sovereign grant denied: " + err.Error()}
 		}
@@ -68,6 +77,18 @@ func (m *meshRuntime) handleAuthority(req MeshRequest) MeshResponse {
 			return MeshResponse{OK: false, Error: "node registration missing id"}
 		}
 		n := *req.Node
+		if strings.TrimSpace(req.AuthenticatedNodeID) == "" || req.AuthenticatedNodeID != n.ID {
+			return MeshResponse{OK: false, Error: "node registration identity mismatch"}
+		}
+		if strings.TrimSpace(n.PublicKey) == "" {
+			return MeshResponse{OK: false, Error: "node registration public key required"}
+		}
+		m.mu.RLock()
+		existing, exists := m.directory[n.ID]
+		m.mu.RUnlock()
+		if exists && strings.TrimSpace(existing.PublicKey) != "" && existing.PublicKey != n.PublicKey {
+			return MeshResponse{OK: false, Error: "node identity rebind denied"}
+		}
 		n.LastSeen = time.Now().Unix()
 		if err := persistSovereignMeshNode(m, n); err != nil {
 			return MeshResponse{OK: false, Error: "persist Sovereign node directory: " + err.Error()}
@@ -137,13 +158,21 @@ func (m *meshRuntime) issueSharedGrant(req MeshRequest) MeshResponse {
 	if operation != "shared_fetch" && operation != "shared_execute" {
 		return MeshResponse{OK: false, Error: "shared grant operation denied"}
 	}
+	requester := strings.TrimSpace(req.AuthenticatedNodeID)
+	if requester == "" || requester != strings.TrimSpace(req.OriginNode) {
+		return MeshResponse{OK: false, Error: "shared grant requester identity mismatch"}
+	}
 	m.mu.RLock()
 	rec, ok := m.shared[strings.TrimSpace(req.MemoryID)]
 	m.mu.RUnlock()
 	if !ok {
 		return MeshResponse{OK: false, Error: "shared Memory not authorized", Status: "forgotten"}
 	}
-	grant, err := issueMeshGrant(operation, rec.MemoryID, req.OriginNode, rec.OriginNode, meshGrantTTL)
+	requesterPublicKey, requesterKnown := m.nodePublicKey(requester)
+	if !requesterKnown {
+		return MeshResponse{OK: false, Error: "shared grant requester identity not registered"}
+	}
+	grant, err := issueMeshGrant(operation, rec.MemoryID, requester, rec.OriginNode, requesterPublicKey, meshGrantTTL)
 	if err != nil {
 		return MeshResponse{OK: false, Error: err.Error()}
 	}

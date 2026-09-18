@@ -28,7 +28,7 @@ import (
 	"unicode"
 )
 
-const imageVersion = "28.8.0-memory-fabric-sovereign"
+const imageVersion = "28.9.0-memory-fabric-sovereign"
 const memoryABI = "memoryai-memory-abi-v1"
 
 type Manifest struct {
@@ -450,6 +450,9 @@ func loadEngine(body string) (*Engine, error) {
 		return nil, err
 	}
 	defer zr.Close()
+	if err := validateUniqueZipEntryNames(&zr.Reader); err != nil {
+		return nil, err
+	}
 	var mf Manifest
 	if err = readJSONZip(&zr.Reader, "manifest.json", &mf); err != nil {
 		return nil, err
@@ -463,6 +466,9 @@ func loadEngine(body string) (*Engine, error) {
 	}
 	if mf.MemoryABI != memoryABI {
 		return nil, fmt.Errorf("unsupported Memory ABI %q", mf.MemoryABI)
+	}
+	if err = verifyBodyLoadIntegrity(&zr.Reader, mf); err != nil {
+		return nil, err
 	}
 	if mf.BodyID == "" {
 		// Legacy bodies remain readable after AI program generations change.
@@ -968,32 +974,22 @@ func (e *Engine) resolve(idOrTag string) (*Memory, error) {
 }
 
 func readJSONZip(zr *zip.Reader, name string, dst any) error {
-	for _, f := range zr.File {
-		if f.Name != name {
-			continue
-		}
-		r, e := f.Open()
-		if e != nil {
-			return e
-		}
-		defer r.Close()
-		return json.NewDecoder(r).Decode(dst)
+	file, err := uniqueZipFile(zr, name)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("%s missing", name)
+	b, err := readZipFileBounded(file, hardJSONZipEntryMaxBytes, "Memory metadata")
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, dst)
 }
 func readZipBytes(zr *zip.Reader, name string) ([]byte, error) {
-	for _, f := range zr.File {
-		if f.Name != name {
-			continue
-		}
-		r, e := f.Open()
-		if e != nil {
-			return nil, e
-		}
-		defer r.Close()
-		return io.ReadAll(r)
+	file, err := uniqueZipFile(zr, name)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("%s missing", name)
+	return readZipFileBounded(file, hardOpaqueZipEntryMaxBytes, "Memory opaque entry")
 }
 
 func (e *Engine) run(idOrTag string, f *Frame) error {
@@ -2453,8 +2449,13 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err = os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 			return -1, err
 		}
-		data := []byte(x(op.B))
-		tmp := p + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+		raw := x(op.B)
+		maxBytes := artifactMaxBytes()
+		if int64(len(raw)) > maxBytes {
+			return -1, fmt.Errorf("artifact write exceeds physical byte ceiling: size=%d max=%d", len(raw), maxBytes)
+		}
+		data := []byte(raw)
+		tmp := p + ".tmp-" + nextID("artifact")
 		if err = os.WriteFile(tmp, data, 0644); err != nil {
 			return -1, err
 		}
@@ -2471,9 +2472,18 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		b, err := os.ReadFile(p)
+		maxBytes := artifactMaxBytes()
+		if err := ensureArtifactSizeWithinLimit(p, maxBytes); err != nil {
+			return -1, err
+		}
+		file, err := os.Open(p)
 		if err != nil {
 			return -1, err
+		}
+		b, readErr := readAllPhysicalBounded(file, maxBytes, "artifact read")
+		_ = file.Close()
+		if readErr != nil {
+			return -1, readErr
 		}
 		f.Vars[op.B] = string(b)
 	case "artifact_digest":
@@ -2481,12 +2491,24 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		b, err := os.ReadFile(p)
+		maxBytes := artifactMaxBytes()
+		if err := ensureArtifactSizeWithinLimit(p, maxBytes); err != nil {
+			return -1, err
+		}
+		file, err := os.Open(p)
 		if err != nil {
 			return -1, err
 		}
-		h := sha256.Sum256(b)
-		f.Vars[op.B] = fmt.Sprintf("%x", h[:])
+		h := sha256.New()
+		written, copyErr := io.Copy(h, io.LimitReader(file, maxBytes+1))
+		_ = file.Close()
+		if copyErr != nil {
+			return -1, copyErr
+		}
+		if written > maxBytes {
+			return -1, fmt.Errorf("artifact digest exceeds physical byte ceiling: max=%d", maxBytes)
+		}
+		f.Vars[op.B] = fmt.Sprintf("%x", h.Sum(nil))
 	case "artifact_exists":
 		p, err := e.artifactPath(x(op.A))
 		if err != nil {
@@ -2771,28 +2793,7 @@ func (e *Engine) artifactPath(rel string) (string, error) {
 	if root == "" {
 		root = filepath.Join(filepath.Dir(e.bodyPath), "..", "workspace")
 	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	rel = strings.TrimSpace(rel)
-	if rel == "" || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("artifact path must be relative to workspace")
-	}
-	clean := filepath.Clean(rel)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("artifact path escapes workspace: %q", rel)
-	}
-	p := filepath.Join(absRoot, clean)
-	absP, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	prefix := absRoot + string(os.PathSeparator)
-	if absP != absRoot && !strings.HasPrefix(absP, prefix) {
-		return "", fmt.Errorf("artifact path escapes workspace: %q", rel)
-	}
-	return absP, nil
+	return physicalSandboxPath(root, rel, "artifact workspace")
 }
 
 type SpaceInfo struct {
@@ -2985,7 +2986,7 @@ func createEmptyBody(path string) error {
 	g := Genesis{Format: "memoryai-genesis-index-v1", Root: "", MemoryCount: 0}
 	gb, _ := json.MarshalIndent(g, "", "  ")
 	gb = append(gb, '\n')
-	sm := StoreManifest{Records: "store/records.bin", IDIndex: "store/id.idx", TagIndex: "store/tag.idx", TagLists: "store/taglists.bin", MemoryCount: 0}
+	sm := StoreManifest{Records: "store/records.bin", IDIndex: "store/id.idx", TagIndex: "store/tag.idx", TagLists: "store/taglists.bin", IndexFormat: indexFormatV2, MemoryCount: 0}
 	parts := []zipEntry{{"genesis.json", gb, false}, {sm.Records, records, true}, {sm.IDIndex, ididx, true}, {sm.TagIndex, tagidx, true}, {sm.TagLists, taglists, true}}
 	hashes := map[string]string{}
 	for _, q := range parts {
@@ -3418,20 +3419,10 @@ type memNodeRequest struct {
 }
 
 func safeNodePath(root, name string) (string, error) {
-	if name == "" {
+	if strings.TrimSpace(name) == "" {
 		return "", errors.New("name required")
 	}
-	cp := filepath.Clean(name)
-	if filepath.IsAbs(cp) {
-		return "", errors.New("absolute remote body name unsupported")
-	}
-	full := filepath.Join(root, cp)
-	rr, _ := filepath.Abs(root)
-	ff, _ := filepath.Abs(full)
-	if ff != rr && !strings.HasPrefix(ff, rr+string(os.PathSeparator)) {
-		return "", errors.New("path escapes storage root")
-	}
-	return ff, nil
+	return physicalSandboxPath(root, name, "remote storage")
 }
 func loadPassiveStorage(path string) (*Engine, error) {
 	sp, err := loadEngineWithMutationJournal(path)
@@ -3811,9 +3802,12 @@ func (e *Engine) addRuntimeMemory(m *Memory) {
 	}
 	e.dataMu.Unlock()
 }
-func nextID(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }
 
 func physicalExchange(transport, host, port, request string, timeout time.Duration) (string, error) {
+	maxBytes := physicalExchangeMaxBytes()
+	if int64(len(request)) > maxBytes {
+		return "", fmt.Errorf("physical exchange request exceeds physical byte ceiling: size=%d max=%d", len(request), maxBytes)
+	}
 	addr := net.JoinHostPort(host, port)
 	d := &net.Dialer{Timeout: timeout}
 	var c net.Conn
@@ -3834,7 +3828,7 @@ func physicalExchange(transport, host, port, request string, timeout time.Durati
 	if _, err = io.WriteString(c, request); err != nil {
 		return "", err
 	}
-	b, err := io.ReadAll(c)
+	b, err := readAllPhysicalBounded(c, maxBytes, "physical exchange")
 	if err != nil {
 		return "", err
 	}
@@ -3942,11 +3936,14 @@ func (e *Engine) fsck() error {
 	}
 	defer zr.Close()
 	for name, want := range e.manifest.Hashes {
-		b, er := readZipBytes(&zr.Reader, name)
+		file, er := uniqueZipFile(&zr.Reader, name)
 		if er != nil {
 			return er
 		}
-		got := fmt.Sprintf("%x", sha256.Sum256(b))
+		got, er := hashZipFileStreaming(file)
+		if er != nil {
+			return er
+		}
 		if got != want {
 			return fmt.Errorf("hash mismatch %s", name)
 		}
@@ -4048,6 +4045,7 @@ func (e *Engine) saveBody(out string) error {
 	mf.Version = imageVersion
 	mf.Root = e.genesis.Root
 	mf.Hashes = hashes
+	mf.Store.IndexFormat = indexFormatV2
 	mf.Store.MemoryCount = len(ms)
 	mb, _ := json.MarshalIndent(mf, "", "  ")
 	mb = append(mb, '\n')
@@ -4067,6 +4065,13 @@ type zipEntry struct {
 func writeDetZip(path string, entries []zipEntry) error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 	tmp := path + ".tmp"
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmp)
+		}
+	}()
+
 	f, err := os.Create(tmp)
 	if err != nil {
 		return err
@@ -4083,24 +4088,40 @@ func writeDetZip(path string, entries []zipEntry) error {
 		h.SetMode(0644)
 		w, er := zw.CreateHeader(h)
 		if er != nil {
-			zw.Close()
-			f.Close()
+			_ = zw.Close()
+			_ = f.Close()
 			return er
 		}
 		if _, er = w.Write(e.b); er != nil {
-			zw.Close()
-			f.Close()
+			_ = zw.Close()
+			_ = f.Close()
 			return er
 		}
 	}
 	if err = zw.Close(); err != nil {
-		f.Close()
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
 		return err
 	}
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err = os.Rename(tmp, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	if err = dir.Sync(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // Keep imports exercised by deterministic tooling and future Memory byte transforms.

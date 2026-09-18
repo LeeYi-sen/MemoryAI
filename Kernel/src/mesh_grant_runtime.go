@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	meshGrantVersion           = 1
+	meshGrantVersion           = 2
 	meshGrantTTL               = 30 * time.Second
 	meshGrantReceiptTag        = "memory-mesh-grant-consumed"
 	defaultMeshGrantReceiptMax = 65536
@@ -29,24 +29,26 @@ const (
 // that a packet came from a mesh peer; this ticket separately proves that the
 // Sovereign authorized this exact physical operation.
 type MeshGrant struct {
-	Version     int    `json:"version"`
-	Operation   string `json:"operation"`
-	MemoryID    string `json:"memory_id"`
-	OriginNode  string `json:"origin_node"`
-	TargetNode  string `json:"target_node"`
-	ExpiresUnix int64  `json:"expires_unix"`
-	Nonce       string `json:"nonce"`
-	Signature   string `json:"signature"`
+	Version         int    `json:"version"`
+	Operation       string `json:"operation"`
+	MemoryID        string `json:"memory_id"`
+	OriginNode      string `json:"origin_node"`
+	OriginPublicKey string `json:"origin_public_key"`
+	TargetNode      string `json:"target_node"`
+	ExpiresUnix     int64  `json:"expires_unix"`
+	Nonce           string `json:"nonce"`
+	Signature       string `json:"signature"`
 }
 
 type meshGrantPayload struct {
-	Version     int    `json:"version"`
-	Operation   string `json:"operation"`
-	MemoryID    string `json:"memory_id"`
-	OriginNode  string `json:"origin_node"`
-	TargetNode  string `json:"target_node"`
-	ExpiresUnix int64  `json:"expires_unix"`
-	Nonce       string `json:"nonce"`
+	Version         int    `json:"version"`
+	Operation       string `json:"operation"`
+	MemoryID        string `json:"memory_id"`
+	OriginNode      string `json:"origin_node"`
+	OriginPublicKey string `json:"origin_public_key"`
+	TargetNode      string `json:"target_node"`
+	ExpiresUnix     int64  `json:"expires_unix"`
+	Nonce           string `json:"nonce"`
 }
 
 var consumedMeshGrantNonces sync.Map // nonce -> expiresUnix; fast in-process fence
@@ -57,7 +59,7 @@ func meshGrantPayloadBytes(g *MeshGrant) ([]byte, error) {
 	}
 	return json.Marshal(meshGrantPayload{
 		Version: g.Version, Operation: g.Operation, MemoryID: g.MemoryID,
-		OriginNode: g.OriginNode, TargetNode: g.TargetNode,
+		OriginNode: g.OriginNode, OriginPublicKey: g.OriginPublicKey, TargetNode: g.TargetNode,
 		ExpiresUnix: g.ExpiresUnix, Nonce: g.Nonce,
 	})
 }
@@ -135,7 +137,7 @@ func verifyMeshGrantWithKey(g *MeshGrant, publicKey ed25519.PublicKey) error {
 	return nil
 }
 
-func issueMeshGrant(operation, memoryID, originNode, targetNode string, ttl time.Duration) (*MeshGrant, error) {
+func issueMeshGrant(operation, memoryID, originNode, targetNode, originPublicKey string, ttl time.Duration) (*MeshGrant, error) {
 	privateKey, err := meshSovereignPrivateKey()
 	if err != nil {
 		return nil, err
@@ -150,11 +152,12 @@ func issueMeshGrant(operation, memoryID, originNode, targetNode string, ttl time
 	g := &MeshGrant{
 		Version: meshGrantVersion, Operation: strings.TrimSpace(operation),
 		MemoryID: strings.TrimSpace(memoryID), OriginNode: strings.TrimSpace(originNode),
-		TargetNode: strings.TrimSpace(targetNode), ExpiresUnix: time.Now().Add(ttl).Unix(),
+		OriginPublicKey: strings.TrimSpace(originPublicKey),
+		TargetNode:      strings.TrimSpace(targetNode), ExpiresUnix: time.Now().Add(ttl).Unix(),
 		Nonce: hex.EncodeToString(nonce),
 	}
-	if g.Operation == "" || g.MemoryID == "" || g.TargetNode == "" {
-		return nil, errors.New("mesh grant requires operation, memory_id and target_node")
+	if g.Operation == "" || g.MemoryID == "" || g.OriginNode == "" || g.OriginPublicKey == "" || g.TargetNode == "" {
+		return nil, errors.New("mesh grant requires operation, memory_id, origin_node, origin_public_key and target_node")
 	}
 	if err := signMeshGrantWithKey(g, privateKey); err != nil {
 		return nil, err
@@ -308,6 +311,12 @@ func consumeMeshGrant(g *MeshGrant, allowedOperations []string, memoryID, target
 	if g.MemoryID != strings.TrimSpace(memoryID) {
 		return errors.New("mesh grant MemoryID mismatch")
 	}
+	if strings.TrimSpace(g.OriginNode) == "" || strings.TrimSpace(g.OriginPublicKey) == "" {
+		return errors.New("mesh grant origin identity missing")
+	}
+	if _, err := decodeEd25519Public(g.OriginPublicKey); err != nil {
+		return fmt.Errorf("mesh grant origin public key invalid: %w", err)
+	}
 	if g.TargetNode != strings.TrimSpace(targetNode) {
 		return errors.New("mesh grant target-node mismatch")
 	}
@@ -356,7 +365,8 @@ func meshGrantCryptoSelfTest() (map[string]any, error) {
 	}
 	g := &MeshGrant{
 		Version: meshGrantVersion, Operation: "shared_fetch", MemoryID: "m1",
-		OriginNode: "requester", TargetNode: "owner", ExpiresUnix: time.Now().Add(30 * time.Second).Unix(),
+		OriginNode: "requester", OriginPublicKey: base64.StdEncoding.EncodeToString(pub),
+		TargetNode: "owner", ExpiresUnix: time.Now().Add(30 * time.Second).Unix(),
 		Nonce: "00112233445566778899aabbccddeeff",
 	}
 	if err := signMeshGrantWithKey(g, priv); err != nil {

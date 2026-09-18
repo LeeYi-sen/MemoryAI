@@ -51,7 +51,7 @@ func TestMeshGrantSideEffectReplayFenceSurvivesRestart(t *testing.T) {
 		restoreConsumedMeshGrantNoncesForTest(oldConsumed)
 	}()
 
-	grant, err := issueMeshGrant("shared_execute", "memory.x", "requester", "target-node", 30*time.Second)
+	grant, err := issueMeshGrant("shared_execute", "memory.x", "requester", "target-node", base64.StdEncoding.EncodeToString(pub), 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

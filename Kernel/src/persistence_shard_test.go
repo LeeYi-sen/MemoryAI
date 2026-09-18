@@ -25,7 +25,7 @@ func writeBodyForPersistenceTest(t *testing.T, path, role string, memories []*Me
 	gb = append(gb, '\n')
 	sm := StoreManifest{
 		Records: "store/records.bin", IDIndex: "store/id.idx", TagIndex: "store/tag.idx",
-		TagLists: "store/taglists.bin", MemoryCount: len(memories),
+		TagLists: "store/taglists.bin", IndexFormat: indexFormatV2, MemoryCount: len(memories),
 	}
 	entries := []zipEntry{
 		{"genesis.json", gb, false},
