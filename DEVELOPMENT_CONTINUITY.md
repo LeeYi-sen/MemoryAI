@@ -379,3 +379,15 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 52/52 PASS; live architecture audit PASS; Python suite 69/69 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-041 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 053 — make bulk Frame variable merges atomic
+- Base HEAD: `9c88c647bb78162ec65b2bc4725789b47c523c1e` (`Entry 052: bound Frame variable envelope`).
+- Continued post-repair audit closed PR-042; tracker now has 42 DONE / 0 OPEN findings.
+- Parallel event branch Vars are aggregated into one candidate map per physical batch and validated against the Frame envelope before any branch-variable commit.
+- If the candidate overflows, no Vars or other branch-frame effects from that batch are merged; handler errors remain independently reported.
+- Mesh local execution validates inbound Vars before assigning the new Frame; Mesh replay applies request/result Vars through an atomic bounded candidate.
+- Daemon `run` / `event` key/value arguments now use incremental bounded insertion rather than an unchecked intermediate map.
+- The boundary is physical-only: Kernel does not rank, truncate, filter, evict, or reinterpret branch/Mesh/daemon variables.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 53/53 PASS; live architecture audit PASS; Python suite 70/70 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-042 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

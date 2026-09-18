@@ -339,6 +339,22 @@ def audit() -> dict[str, object]:
         "bounded Frame variable envelope",
     )
 
+    event_merge_runtime = read("Kernel/src/event_runtime.go")
+    mesh_shared_frame_runtime = read("Kernel/src/mesh_shared_runtime.go")
+    mesh_replay_frame_runtime = read("Kernel/src/mesh_proposal_replay_runtime.go")
+    daemon_frame_runtime = read("Kernel/src/daemon_runtime.go")
+    require(
+        physical_limits + event_merge_runtime + mesh_shared_frame_runtime + mesh_replay_frame_runtime + daemon_frame_runtime,
+        [
+            "frameVarsMergeCandidate",
+            "independentEventFrameVarsCandidate",
+            'ensureFrameVarsWithinPhysicalLimit(inputVars, "Mesh local execution input")',
+            'frameVarsMergeCandidate(f.Vars, updates, "Mesh replay result")',
+            'setFrameVarBounded(f, key, value, "daemon frame args")',
+        ],
+        "atomic bulk Frame variable merge",
+    )
+
     structure_creation = read("Kernel/src/structure_runtime.go")
     fabric_write_creation = read("Kernel/src/fabric_write_runtime.go")
     shard_creation = read("Kernel/src/shard_runtime.go")

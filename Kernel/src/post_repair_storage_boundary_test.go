@@ -1949,3 +1949,54 @@ func TestEventFrameInjectionRejectsFrameVarOverflowBeforeEnqueue(t *testing.T) {
 		t.Fatalf("overflowing event injection partially mutated Frame: %#v", f.Vars)
 	}
 }
+
+func TestParallelEventFrameMergeRejectsVarOverflowAtomically(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "4")
+	oldProcs := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(oldProcs)
+	oldConcurrency := physicalConcurrency(0)
+	setPhysicalExecutionConcurrency(4)
+	defer setPhysicalExecutionConcurrency(oldConcurrency)
+	handlers := []*Memory{
+		{ID: "merge.a", Layer: "emergent", Tags: []string{"memory"}, Trigger: []string{"event:frame-merge-bound"}, State: map[string]any{}, Revision: 1, Program: []Op{{Code: "set", A: "branch_a", B: "1"}, {Code: "halt"}}},
+		{ID: "merge.b", Layer: "emergent", Tags: []string{"memory"}, Trigger: []string{"event:frame-merge-bound"}, State: map[string]any{}, Revision: 1, Program: []Op{{Code: "set", A: "branch_b", B: "1"}, {Code: "halt"}}},
+	}
+	e := loadFabricWriteTestEngine(t, handlers)
+	f := newFrame()
+	if err := e.fireEvent("frame-merge-bound", "", f); err == nil {
+		t.Fatal("parallel event merge exceeded physical Frame-variable cardinality without rejection")
+	}
+	if _, ok := f.Vars["branch_a"]; ok {
+		t.Fatalf("overflowing event batch partially merged branch_a: %#v", f.Vars)
+	}
+	if _, ok := f.Vars["branch_b"]; ok {
+		t.Fatalf("overflowing event batch partially merged branch_b: %#v", f.Vars)
+	}
+}
+
+func TestMeshReplayResultRejectsFrameVarOverflowAtomically(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "2")
+	f := newFrame()
+	f.Vars["base"] = "1"
+	entry := meshProposalReplayEntry{RequestID: "request-1", ResultVars: map[string]string{"a": "1", "b": "2"}}
+	if err := applyMeshProposalReplayResult(f, entry); err == nil {
+		t.Fatal("Mesh replay result exceeded physical Frame-variable cardinality without rejection")
+	}
+	if len(f.Vars) != 1 || f.Vars["base"] != "1" {
+		t.Fatalf("overflowing Mesh replay partially mutated Frame: %#v", f.Vars)
+	}
+}
+
+func TestMeshLocalExecutionRejectsOversizedInputFrame(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	executable := &Memory{ID: "mesh.frame.bound", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1, Program: []Op{{Code: "halt"}}}
+	e := loadFabricWriteTestEngine(t, []*Memory{executable})
+	m := &meshRuntime{engine: e}
+	res := m.serveLocalExecution(executable.ID, map[string]string{"a": "1", "b": "2"})
+	if res.OK {
+		t.Fatalf("Mesh local execution accepted oversized input Frame: %#v", res)
+	}
+	if !strings.Contains(strings.ToLower(res.Error), "frame-variable") {
+		t.Fatalf("Mesh local execution returned wrong overflow error: %q", res.Error)
+	}
+}

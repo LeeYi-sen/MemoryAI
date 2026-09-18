@@ -806,5 +806,21 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_requires_atomic_bulk_frame_variable_merge(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        daemon = repo / "Kernel/src/daemon_runtime.go"
+        daemon.write_text(
+            daemon.read_text(encoding="utf-8").replace(
+                'if err := setFrameVarBounded(f, key, value, "daemon frame args"); err != nil {',
+                'f.Vars[key] = value\n\t\tif err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "atomic bulk Frame variable merge"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()

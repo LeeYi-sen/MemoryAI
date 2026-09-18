@@ -43,11 +43,16 @@ func (m *meshRuntime) serveLocalExecution(id string, vars map[string]string) Mes
 		return MeshResponse{OK: false, Error: err.Error()}
 	}
 	f := newFrame()
+	inputVars := map[string]string{}
 	for k, v := range vars {
 		if !strings.HasPrefix(k, "__") || k == "__subject" {
-			f.Vars[k] = v
+			inputVars[k] = v
 		}
 	}
+	if err := ensureFrameVarsWithinPhysicalLimit(inputVars, "Mesh local execution input"); err != nil {
+		return MeshResponse{OK: false, Error: err.Error()}
+	}
+	f.Vars = inputVars
 	if err := globalTxnScheduler.run(owner, id, f); err != nil {
 		return MeshResponse{OK: false, Error: err.Error()}
 	}

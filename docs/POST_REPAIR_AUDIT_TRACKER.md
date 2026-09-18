@@ -265,3 +265,20 @@
 - Overflow leaves the existing Frame variable map and event accounting unchanged.
 - No variable truncation, ranking, semantic filtering, or eviction is introduced; Memory must explicitly restructure work inside the physical envelope.
 - Final validation: architecture regression suite 52/52 PASS; live architecture audit PASS; Python suite 69/69 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-041 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 052
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-042 | P0 | DONE | Bulk Frame variable merges can bypass the Frame envelope or partially commit before overflow is known: parallel event branches merge one-by-one, Mesh replay/local execution writes maps directly, and daemon key/value args populate a Frame without bounded insertion | Build/validate a complete candidate variable map before committing bulk merges; reject a whole event batch atomically on overflow; validate Mesh input/replay maps and daemon args through the same Frame-variable envelope |
+
+## Entry 053 closure evidence
+
+- PR-042 is DONE.
+- Parallel event handlers first aggregate all changed Vars in the physical batch into a candidate map; the candidate is validated before any branch Vars are committed.
+- An overflowing event batch contributes no branch variables or other branch-frame merge effects from that batch.
+- Mesh local execution validates filtered inbound variables before assigning them to a new Frame.
+- Mesh proposal replay merges `mesh_request_id` plus result variables through an atomic candidate map; replay request-ID single writes use the bounded Frame setter.
+- Daemon `run` / `event` key/value arguments are parsed incrementally through `setFrameVarBounded`, preventing an oversized argument map from being materialized as Frame state.
+- No variable truncation, semantic filtering, priority selection, or eviction is introduced.
+- Final validation: architecture regression suite 53/53 PASS; live architecture audit PASS; Python suite 70/70 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-042 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

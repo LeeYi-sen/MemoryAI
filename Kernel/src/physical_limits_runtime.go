@@ -355,6 +355,20 @@ func setFrameVarBounded(f *Frame, key, value, label string) error {
 	return nil
 }
 
+func frameVarsMergeCandidate(base, updates map[string]string, label string) (map[string]string, error) {
+	candidate := make(map[string]string, len(base)+len(updates))
+	for key, value := range base {
+		candidate[key] = value
+	}
+	for key, value := range updates {
+		candidate[key] = value
+	}
+	if err := ensureFrameVarsWithinPhysicalLimit(candidate, label); err != nil {
+		return nil, err
+	}
+	return candidate, nil
+}
+
 func frameVarsWithEventCandidate(f *Frame, ev PhysicalEvent, label string) (map[string]string, error) {
 	if f == nil {
 		return nil, fmt.Errorf("%s Frame unavailable", label)

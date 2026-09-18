@@ -185,12 +185,19 @@ func runDaemonClient(socket string, args []string) error {
 	return nil
 }
 
-func daemonFrameFromArgs(args []string) *Frame {
+func daemonFrameFromArgs(args []string) (*Frame, error) {
 	f := newFrame()
-	for k, v := range kvArgs(args) {
-		f.Vars[k] = v
+	for _, raw := range args {
+		i := strings.IndexByte(raw, '=')
+		if i <= 0 {
+			continue
+		}
+		key, value := raw[:i], raw[i+1:]
+		if err := setFrameVarBounded(f, key, value, "daemon frame args"); err != nil {
+			return nil, err
+		}
 	}
-	return f
+	return f, nil
 }
 
 // resolveMemoryRunTarget gives executable Memory a physical event opportunity
@@ -267,7 +274,10 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 		if len(args) < 1 {
 			return fail(errors.New("run requires Memory id/tag"))
 		}
-		f := daemonFrameFromArgs(args[1:])
+		f, err := daemonFrameFromArgs(args[1:])
+		if err != nil {
+			return fail(err)
+		}
 		targetID, err := e.resolveMemoryRunTarget(args[0], f)
 		if err != nil {
 			return fail(err)
@@ -301,7 +311,10 @@ func (e *Engine) handleDaemonRequest(req daemonRequest) daemonResponse {
 			subject = args[1]
 			varStart = 2
 		}
-		f := daemonFrameFromArgs(args[varStart:])
+		f, err := daemonFrameFromArgs(args[varStart:])
+		if err != nil {
+			return fail(err)
+		}
 		if err := e.fireEvent(args[0], subject, f); err != nil {
 			return fail(err)
 		}

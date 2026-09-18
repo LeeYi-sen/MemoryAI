@@ -231,12 +231,22 @@ func equalFrameList(a, b []string) bool {
 	return true
 }
 
-func mergeIndependentEventFrame(dst, base, branch *Frame) {
-	for k, v := range branch.Vars {
-		if old, ok := base.Vars[k]; !ok || old != v {
-			dst.Vars[k] = v
+func independentEventFrameVarsCandidate(dst, base *Frame, branches []*Frame) (map[string]string, error) {
+	updates := map[string]string{}
+	for _, branch := range branches {
+		if branch == nil {
+			continue
+		}
+		for k, v := range branch.Vars {
+			if old, ok := base.Vars[k]; !ok || old != v {
+				updates[k] = v
+			}
 		}
 	}
+	return frameVarsMergeCandidate(dst.Vars, updates, "independent event Frame merge")
+}
+
+func mergeIndependentEventFrameNonVars(dst, base, branch *Frame) {
 	for k, values := range branch.Lists {
 		if !equalFrameList(values, base.Lists[k]) {
 			dst.Lists[k] = append([]string(nil), values...)
@@ -350,11 +360,23 @@ func (e *Engine) dispatchPhysicalEvent(f *Frame, ev PhysicalEvent) error {
 			}
 			results[offset] = handlerResult{frame: branch, err: runErr}
 		})
+		branches := make([]*Frame, 0, batchLen)
+		for offset := 0; offset < batchLen; offset++ {
+			if results[offset].frame != nil {
+				branches = append(branches, results[offset].frame)
+			}
+		}
+		candidateVars, mergeErr := independentEventFrameVarsCandidate(f, base, branches)
+		if mergeErr == nil {
+			f.Vars = candidateVars
+			for _, branch := range branches {
+				mergeIndependentEventFrameNonVars(f, base, branch)
+			}
+		} else {
+			errs = append(errs, mergeErr)
+		}
 		for offset := 0; offset < batchLen; offset++ {
 			id := matched[start+offset]
-			if results[offset].frame != nil {
-				mergeIndependentEventFrame(f, base, results[offset].frame)
-			}
 			if results[offset].err != nil {
 				errs = append(errs, fmt.Errorf("event handler %s: %w", id, results[offset].err))
 			}

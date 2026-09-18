@@ -483,10 +483,16 @@ func applyMeshProposalReplayResult(f *Frame, entry meshProposalReplayEntry) erro
 	if f == nil {
 		return errors.New("mesh proposal replay requires frame")
 	}
-	f.Vars["mesh_request_id"] = entry.RequestID
+	updates := make(map[string]string, len(entry.ResultVars)+1)
+	updates["mesh_request_id"] = entry.RequestID
 	for k, v := range entry.ResultVars {
-		f.Vars[k] = v
+		updates[k] = v
 	}
+	candidate, err := frameVarsMergeCandidate(f.Vars, updates, "Mesh replay result")
+	if err != nil {
+		return err
+	}
+	f.Vars = candidate
 	if entry.ResultError != "" {
 		return errors.New(entry.ResultError)
 	}
@@ -604,7 +610,9 @@ func executeMeshProposalEventOnce(e *Engine, f *Frame, ev PhysicalEvent, dispatc
 	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
 	if replay {
 		if err != nil {
-			f.Vars["mesh_request_id"] = entry.RequestID
+			if setErr := setFrameVarBounded(f, "mesh_request_id", entry.RequestID, "Mesh replay request id"); setErr != nil {
+				return setErr
+			}
 			return err
 		}
 		return applyMeshProposalReplayResult(f, entry)
@@ -612,7 +620,9 @@ func executeMeshProposalEventOnce(e *Engine, f *Frame, ev PhysicalEvent, dispatc
 	if err != nil {
 		return err
 	}
-	f.Vars["mesh_request_id"] = entry.RequestID
+	if err := setFrameVarBounded(f, "mesh_request_id", entry.RequestID, "Mesh replay request id"); err != nil {
+		return err
+	}
 	runErr := dispatch()
 	if persistErr := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, runErr); persistErr != nil {
 		return fmt.Errorf("mesh proposal event executed but replay result was not durably recorded in memory.mem; request remains fenced: %w", persistErr)
