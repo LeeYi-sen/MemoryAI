@@ -108,16 +108,79 @@ def audit() -> dict[str, object]:
     replay = read("Kernel/src/mesh_proposal_replay_runtime.go")
     state = read("Kernel/src/mesh_state_memory.go")
     grant = read("Kernel/src/mesh_grant_runtime.go")
+    observability = read("Kernel/src/mesh_observability_runtime.go")
     legacy = read("Kernel/src/legacy_runtime_migration.go")
     require(journal, ["memory-mesh-deferred-journal", '"durability":   "memory.mem"', '"sidecar":      false'], "mesh journal")
     require(replay, ["memory-mesh-proposal-replay", "persistAll()", "meshProposalReplayExecuting"], "mesh replay")
     require(state, ["memory-mesh-directory-node", "memory-mesh-shared-record", "recoverSovereignMeshState"], "sovereign state")
     require(grant, ["memory-mesh-grant-consumed", "persistConsumedMeshGrant", "Persist the fence before"], "mesh grants")
     forbid(journal + replay + state + grant, ["Memory.mesh-journal.", "Memory.mesh-proposal-replay.", "persistMeshJournalFile"], "active Mesh runtime")
+    if re.search(r"func\s+\(m \*meshRuntime\)\s+flushJournal\s*\(", observability):
+        raise RuntimeError("non-durable Mesh journal flush implementation remains active")
     require(legacy, ["Memory.mesh-journal.*.json", "Memory.mesh-proposal-replay.*.json", "persist legacy runtime migration into memory.mem"], "legacy migration")
 
     shard = read("Kernel/src/shard_runtime.go")
     require(shard, ["minimumAutomaticShardFreeBytes int64 = 5 << 30", "ensureAutomaticShardDiskBudget", "syscall.Statfs"], "automatic Memory expansion")
+    forbid(shard, ["createAutomaticWritableShard"], "Memory-owned expansion")
+    require(
+        shard,
+        ["Memory Fabric capacity exhausted: Memory must create/select storage explicitly"],
+        "Memory-owned expansion",
+    )
+
+    persistence = read("Kernel/src/persistence_runtime.go")
+    require(
+        persistence,
+        ["func structuralMemoryDigest", "return memoryJSONDigest(m)"],
+        "unified structural Memory digest",
+    )
+
+    kernel = read("Kernel/src/kernel.go")
+    remote_durability = read("Kernel/src/remote_durability_runtime.go")
+    storage_security = read("Kernel/src/storage_transport_security.go")
+    require(
+        storage_security,
+        [
+            "storageWireEnvelope",
+            "storageTransportKey",
+            "storageListenUsesTLS",
+            "non-loopback Memory storage listener requires",
+            "storageEnvelopeBody",
+            "meshVerifyBytes",
+        ],
+        "remote storage transport security",
+    )
+    require(
+        kernel,
+        [
+            "storageDial(host, port, timeout)",
+            "writeStorageEnvelope(c, req)",
+            "readStorageEnvelope(c, &req)",
+            "upsertExplicitMemoryBounded(q)",
+            "divergent same-ID Memory requires Memory-owned reconciliation",
+            "remote storage body missing; explicit create required",
+            "remote replace compare-and-swap conflict",
+            "remote delete compare-and-swap conflict",
+            "remote replace revision must advance monotonically",
+            "remoteSpaceObservedDigest",
+            "expected_digest",
+            "memory_new parent %q unresolved",
+            "ambiguous Memory tag",
+            "ambiguous mutable Memory tag",
+            "Memory must select an explicit ID",
+        ],
+        "remote storage/physical single-target boundary",
+    )
+    forbid(
+        kernel,
+        ["Deterministic physical tie-break only. Cognitive arbitration belongs to Memory."],
+        "single-target Memory resolution",
+    )
+    forbid(
+        kernel + remote_durability + storage_security,
+        ['merge_source_id', 'createAutomaticWritableShard', 'net.DialTimeout("tcp"'],
+        "physical remote conflict/transport boundary",
+    )
 
     activation = read("Kernel/src/activation_runtime.go")
     activation_qualification = read("Kernel/src/activation_qualification.go")
@@ -199,6 +262,29 @@ def audit() -> dict[str, object]:
         raise RuntimeError(
             f"active physical storage namespace retains cog.storage prefix: {storage_namespace_hits}"
         )
+
+    stale_signature_revision_hits: list[str] = []
+    for name, source in production_kernel_sources.items():
+        lines = source.splitlines()
+        for index, line in enumerate(lines):
+            match = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\.Revision\+\+", line)
+            if not match:
+                continue
+            target = match.group(1)
+            window = "\n".join(lines[max(0, index - 6): index + 1])
+            if f'{target}.CapabilitySig = ""' not in window:
+                stale_signature_revision_hits.append(f"{name}:{index + 1}:{target}.Revision++")
+    if stale_signature_revision_hits:
+        raise RuntimeError(
+            f"revision mutation can retain stale CapabilitySig: {stale_signature_revision_hits}"
+        )
+
+    structure_runtime = read("Kernel/src/structure_runtime.go")
+    if not re.search(
+        r'q\.CapabilitySig\s*=\s*""\s*\n\s*q\.Revision\s*=\s*current\.Revision\s*\+\s*1',
+        structure_runtime,
+    ):
+        raise RuntimeError("structure-sync revision bump can retain stale CapabilitySig")
 
     kernel_source = ROOT / "Kernel/src/kernel.go"
     memory_seed = ROOT / "Kernel/current-required-structures.json"

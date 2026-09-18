@@ -392,20 +392,10 @@ func transferMemoryDurable(e *Engine, id, target string, move bool) (string, err
 			}
 			return newID, nil
 		}
-		oldID := newID
-		for {
-			newID = nextID("mem")
-			if _, er := resolveSpecificOwnerMemoryCopy(dst, newID); errors.Is(er, io.EOF) {
-				break
-			} else if er != nil {
-				return "", er
-			}
-		}
-		candidate.ID = newID
-		if candidate.State == nil {
-			candidate.State = map[string]any{}
-		}
-		candidate.State["merge_source_id"] = oldID
+		return "", fmt.Errorf(
+			"Memory transfer conflict: target already contains divergent identity %q; Memory-owned reconciliation required",
+			newID,
+		)
 	} else if !errors.Is(er, io.EOF) {
 		return "", er
 	}

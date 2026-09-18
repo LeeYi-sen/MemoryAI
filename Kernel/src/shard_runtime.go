@@ -161,39 +161,6 @@ func (e *Engine) mountedWritableShard() *Engine {
 	return nil
 }
 
-func (e *Engine) createAutomaticWritableShard() (*Engine, error) {
-	// Frozen architecture invariant: Memory may expand itself only while the
-	// current physical path has at least 5 GiB free. Operators may raise, never
-	// lower, this physical safety floor.
-	if err := ensureAutomaticShardDiskBudget(e); err != nil {
-		return nil, err
-	}
-	locator, err := e.createAndMountSpace("")
-	if err != nil {
-		return nil, err
-	}
-	cp, err := e.localLocatorPath(locator)
-	if err != nil {
-		return nil, err
-	}
-	e.spaceMu.Lock()
-	sp := e.spaces[cp]
-	if sp != nil {
-		e.writeSpace = cp
-	}
-	e.spaceMu.Unlock()
-	if sp == nil {
-		return nil, fmt.Errorf("automatic shard %s mounted without engine", locator)
-	}
-	if sp.manifest.Role != "storage" {
-		return nil, fmt.Errorf("automatic shard %s is not passive storage", locator)
-	}
-	if !shardHasCapacity(sp, 1) {
-		return nil, fmt.Errorf("new automatic shard %s has no physical capacity", locator)
-	}
-	return sp, nil
-}
-
 func (e *Engine) placeRuntimeMemoryLocked(m *Memory) error {
 	if e == nil || m == nil || strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("runtime Memory placement requires engine and id")
@@ -202,12 +169,7 @@ func (e *Engine) placeRuntimeMemoryLocked(m *Memory) error {
 		target.addRuntimeMemory(m)
 		return nil
 	}
-	target, err := e.createAutomaticWritableShard()
-	if err != nil {
-		return fmt.Errorf("Memory shard expansion failed: %w", err)
-	}
-	target.addRuntimeMemory(m)
-	return nil
+	return fmt.Errorf("Memory Fabric capacity exhausted: Memory must create/select storage explicitly before creating another Memory")
 }
 
 func (e *Engine) placeRuntimeMemory(m *Memory) error {

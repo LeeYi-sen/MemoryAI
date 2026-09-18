@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -52,26 +51,6 @@ func (m *meshRuntime) fanout(id string, vars map[string]string, includeSelf bool
 		out = append(out, string(b))
 	}
 	return out, nil
-}
-
-func (m *meshRuntime) flushJournal() error {
-	m.mu.Lock()
-	pending := append([]MeshRequest(nil), m.journal...)
-	m.journal = nil
-	m.mu.Unlock()
-	failed := make([]MeshRequest, 0)
-	for _, req := range pending {
-		if _, err := m.authorityRPC(req); err != nil {
-			failed = append(failed, req)
-		}
-	}
-	if len(failed) > 0 {
-		m.mu.Lock()
-		m.journal = append(failed, m.journal...)
-		m.mu.Unlock()
-		return fmt.Errorf("%d mesh journal entries remain deferred", len(failed))
-	}
-	return nil
 }
 
 func meshInfoMap() map[string]any {

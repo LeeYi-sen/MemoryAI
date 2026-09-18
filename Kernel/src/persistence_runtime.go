@@ -2,8 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -23,18 +21,11 @@ func lockEnginePersistence(e *Engine) func() {
 	return mu.Unlock
 }
 
-// structuralMemoryDigest excludes RuntimeExecCount because it is physical
-// telemetry, not semantic Memory state. An execution-count change alone must
-// never force another body rewrite.
+// structuralMemoryDigest is the single production structural-identity
+// definition. Physical runtime/security metadata must never make a Memory look
+// semantically different merely because it executed or was re-signed.
 func structuralMemoryDigest(m *Memory) string {
-	if m == nil {
-		return ""
-	}
-	q := copyMemory(m)
-	q.RuntimeExecCount = 0
-	b, _ := json.Marshal(q)
-	h := sha256.Sum256(b)
-	return fmt.Sprintf("%x", h[:])
+	return memoryJSONDigest(m)
 }
 
 // snapshotMemoriesForPersistence deep-copies every record that will be written.

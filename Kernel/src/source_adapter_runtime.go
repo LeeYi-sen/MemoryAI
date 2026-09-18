@@ -324,6 +324,7 @@ func replaceExternalRequestLifecycle(m *Memory, status, tag string, updates map[
 	if (status == "response-ready" || status == "done") && !contains(q.Tags, externalRequestDoneTag) {
 		q.Tags = append(q.Tags, externalRequestDoneTag)
 	}
+	q.CapabilitySig = ""
 	q.Revision++
 	return q
 }

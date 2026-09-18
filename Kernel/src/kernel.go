@@ -633,6 +633,15 @@ func remoteMemoryGet(ep RemoteMemoryEndpoint, id string) (*Memory, error) {
 	if !rr.OK || rr.Memory == nil {
 		return nil, io.EOF
 	}
+	if strings.TrimSpace(rr.Memory.ID) != strings.TrimSpace(id) {
+		return nil, fmt.Errorf("remote Memory integrity: requested id %q but endpoint returned %q", id, rr.Memory.ID)
+	}
+	if ep.BodyID != "" && rr.BodyID != ep.BodyID {
+		return nil, fmt.Errorf("remote Memory integrity: endpoint BodyID drift: expected=%q got=%q", ep.BodyID, rr.BodyID)
+	}
+	if ep.MemoryABI != "" && rr.MemoryABI != ep.MemoryABI {
+		return nil, fmt.Errorf("remote Memory integrity: endpoint Memory ABI drift: expected=%q got=%q", ep.MemoryABI, rr.MemoryABI)
+	}
 	if rr.MemoryABI != "" && rr.MemoryABI != memoryABI {
 		return nil, fmt.Errorf("remote Memory ABI %q incompatible with %q", rr.MemoryABI, memoryABI)
 	}
@@ -640,13 +649,41 @@ func remoteMemoryGet(ep RemoteMemoryEndpoint, id string) (*Memory, error) {
 }
 
 func (e *Engine) resolveRemoteID(id string) (*Memory, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, io.EOF
+	}
+	var selected *Memory
+	selectedDigest := ""
+	var integrityErr error
 	for _, ep := range e.remoteMemoryEndpoints() {
 		m, er := remoteMemoryGet(ep, id)
-		if er == nil && m != nil {
-			// Direct read: this object is intentionally ephemeral. It is NOT added to
-			// Memory.mem cache/store and therefore does not become a local replica.
-			return m, nil
+		if er != nil {
+			if !errors.Is(er, io.EOF) && strings.Contains(er.Error(), "remote Memory integrity:") && integrityErr == nil {
+				integrityErr = er
+			}
+			continue
 		}
+		if m == nil {
+			continue
+		}
+		digest := memoryJSONDigest(m)
+		if selected == nil {
+			selected = m
+			selectedDigest = digest
+			continue
+		}
+		if digest != selectedDigest {
+			return nil, fmt.Errorf("remote Memory identity conflict: id=%q reachable replicas have divergent structural digests %s and %s", id, selectedDigest, digest)
+		}
+	}
+	if integrityErr != nil {
+		return nil, integrityErr
+	}
+	if selected != nil {
+		// Direct read: this object is intentionally ephemeral. It is NOT added to
+		// Memory.mem cache/store and therefore does not become a local replica.
+		return selected, nil
 	}
 	return nil, io.EOF
 }
@@ -701,6 +738,8 @@ func (e *Engine) resolveID(id string) (*Memory, error) {
 	}
 	if m, err := e.resolveRemoteID(id); err == nil {
 		return m, nil
+	} else if !errors.Is(err, io.EOF) {
+		return nil, err
 	}
 	// Sovereign Mesh is a virtual remote address space. Shared Memory is read
 	// directly from a live origin and is never imported into local Memory.mem.
@@ -730,9 +769,14 @@ func (e *Engine) resolveMutable(idOrTag string) (*Memory, error) {
 			return nil, err
 		}
 		sort.Strings(ids)
-		for _, id := range ids {
-			if m, er := e.resolveIDLocal(id); er == nil {
+		if len(ids) > 1 {
+			return nil, fmt.Errorf("ambiguous mutable Memory tag %q matched %d identities; Memory must select an explicit ID", idOrTag, len(ids))
+		}
+		if len(ids) == 1 {
+			if m, er := e.resolveIDLocal(ids[0]); er == nil {
 				return m, nil
+			} else if er != io.EOF {
+				return nil, er
 			}
 		}
 		return nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
@@ -756,14 +800,15 @@ func (e *Engine) resolveMutable(idOrTag string) (*Memory, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
 	}
-	for _, id := range ids {
-		_, m, er := root.resolveLocalFabricMemory(id)
-		if er == nil {
-			return m, nil
-		}
-		if er != io.EOF {
-			return nil, er
-		}
+	if len(ids) > 1 {
+		return nil, fmt.Errorf("ambiguous mutable Memory tag %q matched %d identities; Memory must select an explicit ID", idOrTag, len(ids))
+	}
+	_, m, er := root.resolveLocalFabricMemory(ids[0])
+	if er == nil {
+		return m, nil
+	}
+	if er != io.EOF {
+		return nil, er
 	}
 	return nil, fmt.Errorf("mutable memory %q not found in mounted Memory Fabric", idOrTag)
 }
@@ -885,13 +930,14 @@ func (e *Engine) listTag(tag string) ([]string, error) {
 // Mounted .mem containers are part of the same logical AI body. Remote executable
 // Memory is executed at its origin through Mesh/remote execution and is not imported.
 func (e *Engine) resolveExecutable(idOrTag string) (*Memory, error) {
-	if m, err := e.resolveMutable(idOrTag); err == nil {
-		if len(m.Program) == 0 && len(m.Trigger) == 0 {
-			return nil, fmt.Errorf("memory %q is not executable", idOrTag)
-		}
-		return m, nil
+	m, err := e.resolveMutable(idOrTag)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("executable memory %q not found in mounted Memory Fabric", idOrTag)
+	if len(m.Program) == 0 && len(m.Trigger) == 0 {
+		return nil, fmt.Errorf("memory %q is not executable", idOrTag)
+	}
+	return m, nil
 }
 
 func (e *Engine) resolve(idOrTag string) (*Memory, error) {
@@ -909,14 +955,14 @@ func (e *Engine) resolve(idOrTag string) (*Memory, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("memory %q not found", idOrTag)
 	}
-	// Deterministic physical tie-break only. Cognitive arbitration belongs to Memory.
 	sort.Strings(ids)
-	for _, id := range ids {
-		if m, er := e.resolveID(id); er == nil {
-			return m, nil
-		} else if er != io.EOF {
-			return nil, er
-		}
+	if len(ids) > 1 {
+		return nil, fmt.Errorf("ambiguous Memory tag %q matched %d identities; Memory must select an explicit ID", idOrTag, len(ids))
+	}
+	if m, er := e.resolveID(ids[0]); er == nil {
+		return m, nil
+	} else if er != io.EOF {
+		return nil, er
 	}
 	return nil, fmt.Errorf("memory %q not found", idOrTag)
 }
@@ -1899,7 +1945,11 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		content := x(op.Args["content"])
 		gen := 0
 		for _, pid := range parents {
-			if pm, er := e.resolveID(pid); er == nil && pm.Generation >= gen {
+			pm, er := e.resolveID(pid)
+			if er != nil {
+				return -1, fmt.Errorf("memory_new parent %q unresolved: %w", pid, er)
+			}
+			if pm.Generation >= gen {
 				gen = pm.Generation + 1
 			}
 		}
@@ -2218,10 +2268,25 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
+		var putResult struct {
+			OK     bool   `json:"ok"`
+			Status string `json:"status,omitempty"`
+		}
+		if err = json.Unmarshal([]byte(resp), &putResult); err != nil {
+			return -1, err
+		}
+		if op.Args["out"] != "" {
+			f.Vars[op.Args["out"]] = resp
+		}
+		if k := op.Args["status_out"]; k != "" {
+			f.Vars[k] = putResult.Status
+		}
+		if !putResult.OK && putResult.Status == "conflict" {
+			break
+		}
 		if err = requireRemoteMutationACK("space_put", resp); err != nil {
 			return -1, err
 		}
-		f.Vars[op.Args["out"]] = resp
 	case "remote_space_get":
 		resp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "get", "name": x(op.Args["name"]), "id": x(op.Args["id"])}, parseTimeout(x(op.Args["timeout_ms"])))
 		if err != nil {
@@ -2287,23 +2352,79 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		resp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "put", "name": x(op.Args["name"]), "memory": m, "replace": true}, parseTimeout(x(op.Args["timeout_ms"])))
+		host := x(op.Args["host"])
+		port := x(op.Args["port"])
+		name := x(op.Args["name"])
+		timeout := parseTimeout(x(op.Args["timeout_ms"]))
+		expectedDigest, exists, err := remoteSpaceObservedDigest(host, port, name, m.ID, timeout)
 		if err != nil {
 			return -1, err
+		}
+		req := map[string]any{"op": "put", "name": name, "memory": m, "replace": true}
+		if exists {
+			req["expected_digest"] = expectedDigest
+		}
+		resp, err := remoteSpaceRequest(host, port, req, timeout)
+		if err != nil {
+			return -1, err
+		}
+		var upsertResult struct {
+			OK     bool   `json:"ok"`
+			Status string `json:"status,omitempty"`
+		}
+		if err = json.Unmarshal([]byte(resp), &upsertResult); err != nil {
+			return -1, err
+		}
+		if op.Args["out"] != "" {
+			f.Vars[op.Args["out"]] = resp
+		}
+		if k := op.Args["status_out"]; k != "" {
+			f.Vars[k] = upsertResult.Status
+		}
+		if !upsertResult.OK && upsertResult.Status == "conflict" {
+			break
 		}
 		if err = requireRemoteMutationACK("space_upsert", resp); err != nil {
 			return -1, err
 		}
-		f.Vars[op.Args["out"]] = resp
 	case "remote_space_delete":
-		resp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "delete", "name": x(op.Args["name"]), "id": x(op.Args["id"])}, parseTimeout(x(op.Args["timeout_ms"])))
+		host := x(op.Args["host"])
+		port := x(op.Args["port"])
+		name := x(op.Args["name"])
+		id := x(op.Args["id"])
+		timeout := parseTimeout(x(op.Args["timeout_ms"]))
+		expectedDigest, exists, err := remoteSpaceObservedDigest(host, port, name, id, timeout)
 		if err != nil {
 			return -1, err
+		}
+		if !exists {
+			return -1, errors.New("remote memory missing")
+		}
+		resp, err := remoteSpaceRequest(host, port, map[string]any{
+			"op": "delete", "name": name, "id": id, "expected_digest": expectedDigest,
+		}, timeout)
+		if err != nil {
+			return -1, err
+		}
+		var deleteResult struct {
+			OK     bool   `json:"ok"`
+			Status string `json:"status,omitempty"`
+		}
+		if err = json.Unmarshal([]byte(resp), &deleteResult); err != nil {
+			return -1, err
+		}
+		if op.Args["out"] != "" {
+			f.Vars[op.Args["out"]] = resp
+		}
+		if k := op.Args["status_out"]; k != "" {
+			f.Vars[k] = deleteResult.Status
+		}
+		if !deleteResult.OK && deleteResult.Status == "conflict" {
+			break
 		}
 		if err = requireRemoteMutationACK("space_delete", resp); err != nil {
 			return -1, err
 		}
-		f.Vars[op.Args["out"]] = resp
 	case "remote_space_tag_list":
 		resp, err := remoteSpaceRequest(x(op.Args["host"]), x(op.Args["port"]), map[string]any{"op": "tag", "name": x(op.Args["name"]), "id": x(op.Args["tag"])}, parseTimeout(x(op.Args["timeout_ms"])))
 		if err != nil {
@@ -2891,9 +3012,9 @@ func (e *Engine) createAndMountSpace(path string) (string, error) {
 			return "", er
 		}
 		available := st.Bavail * uint64(st.Bsize)
-		const minExpansionFree = uint64(5) << 30
+		minExpansionFree := uint64(automaticShardMinFreeBytes())
 		if available < minExpansionFree {
-			return "", fmt.Errorf("Memory expansion requires at least 5 GiB free at target path: available=%d", available)
+			return "", fmt.Errorf("Memory expansion requires at least %d free bytes at target path: available=%d", minExpansionFree, available)
 		}
 		if err = createEmptyBody(cp); err != nil {
 			return "", err
@@ -3014,74 +3135,6 @@ func structuralMemoryEqual(a, b *Memory) bool {
 		OutputEffect map[string]any
 	}{b.Budget, b.InputPattern, b.OutputEffect})
 	return string(ab) == string(bb)
-}
-
-func mergeSameIdentity(dst, src *Memory) {
-	// RuntimeExecCount is physical monotonic telemetry. All semantic
-	// reconciliation lives in Memory State/programs rather than Kernel.
-	if src.RuntimeExecCount > dst.RuntimeExecCount {
-		dst.RuntimeExecCount = src.RuntimeExecCount
-	}
-	if dst.State == nil {
-		dst.State = map[string]any{}
-	}
-	conflicts := map[string]any{}
-	for k, v := range src.State {
-		if ov, ok := dst.State[k]; !ok || fmt.Sprint(ov) == "" {
-			dst.State[k] = v
-		} else {
-			a, _ := json.Marshal(ov)
-			b, _ := json.Marshal(v)
-			if !bytes.Equal(a, b) {
-				conflicts[k] = []any{ov, v}
-			}
-		}
-	}
-	if len(conflicts) > 0 {
-		b, _ := json.Marshal(conflicts)
-		dst.State["merge_state_conflicts"] = string(b)
-	}
-}
-
-func (e *Engine) importMemory(in *Memory, dst *Engine, mode string) (string, string, error) {
-	q := copyMemory(in)
-	if ex, er := dst.resolveIDLocal(q.ID); er == nil {
-		if mode == "prefer_remote" {
-			dst.dataMu.Lock()
-			dst.cache[q.ID] = q
-			dst.dirtyIDs[q.ID] = true
-			dst.dirty = true
-			dst.dataMu.Unlock()
-			return q.ID, "replaced", nil
-		}
-		if mode == "preserve_branch" {
-			old := q.ID
-			q.ID = nextID("mem")
-			if q.State == nil {
-				q.State = map[string]any{}
-			}
-			q.State["merge_source_id"] = old
-			q.State["merge_conflict"] = "1"
-			dst.addRuntimeMemory(q)
-			return q.ID, "conflict-preserved", nil
-		}
-		if structuralMemoryEqual(ex, q) {
-			mergeSameIdentity(ex, q)
-			dst.markDirty(ex.ID)
-			return ex.ID, "reconciled", nil
-		}
-		old := q.ID
-		q.ID = nextID("mem")
-		if q.State == nil {
-			q.State = map[string]any{}
-		}
-		q.State["merge_source_id"] = old
-		q.State["merge_conflict"] = "1"
-		dst.addRuntimeMemory(q)
-		return q.ID, "conflict-preserved", nil
-	}
-	dst.addRuntimeMemory(q)
-	return q.ID, "imported", nil
 }
 
 func (e *Engine) mergeSpace(source, target string) (map[string]any, error) {
@@ -3310,25 +3363,58 @@ func parseTimeout(s string) time.Duration {
 	return time.Duration(n) * time.Millisecond
 }
 func remoteSpaceRequest(host, port string, req map[string]any, timeout time.Duration) (string, error) {
-	c, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
+	c, err := storageDial(host, port, timeout)
 	if err != nil {
 		return "", err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(timeout))
-	if err = json.NewEncoder(c).Encode(req); err != nil {
+	if err = writeStorageEnvelope(c, req); err != nil {
 		return "", err
 	}
-	b, err := io.ReadAll(c)
-	return string(b), err
+	var env storageWireEnvelope
+	if err = json.NewDecoder(io.LimitReader(c, 4<<20)).Decode(&env); err != nil {
+		return "", err
+	}
+	body, err := storageEnvelopeBody(env)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func remoteSpaceObservedDigest(host, port, name, id string, timeout time.Duration) (string, bool, error) {
+	resp, err := remoteSpaceRequest(host, port, map[string]any{"op": "digest", "name": name, "id": id}, timeout)
+	if err != nil {
+		return "", false, err
+	}
+	var rr struct {
+		OK     bool   `json:"ok"`
+		Digest string `json:"digest"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(resp), &rr); err != nil {
+		return "", false, err
+	}
+	if !rr.OK {
+		if strings.EqualFold(strings.TrimSpace(rr.Error), "not found") {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("remote memory digest unavailable: %s", strings.TrimSpace(rr.Error))
+	}
+	if strings.TrimSpace(rr.Digest) == "" {
+		return "", false, errors.New("remote memory digest empty")
+	}
+	return rr.Digest, true, nil
 }
 
 type memNodeRequest struct {
-	Op      string  `json:"op"`
-	Name    string  `json:"name"`
-	ID      string  `json:"id"`
-	Memory  *Memory `json:"memory,omitempty"`
-	Replace bool    `json:"replace,omitempty"`
+	Op             string  `json:"op"`
+	Name           string  `json:"name"`
+	ID             string  `json:"id"`
+	Memory         *Memory `json:"memory,omitempty"`
+	Replace        bool    `json:"replace,omitempty"`
+	ExpectedDigest string  `json:"expected_digest,omitempty"`
 }
 
 func safeNodePath(root, name string) (string, error) {
@@ -3363,7 +3449,10 @@ func serveMemNode(root, addr string) error {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", addr)
+	if len(storageTransportKey()) == 0 {
+		return errors.New("remote Memory storage requires MEMORYAI_STORAGE_CAPABILITY_KEY or MEMORYAI_MESH_CAPABILITY_KEY")
+	}
+	ln, err := storageListen(addr)
 	if err != nil {
 		return err
 	}
@@ -3381,11 +3470,11 @@ func handleMemNodeConn(root string, c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 	var req memNodeRequest
-	if err := json.NewDecoder(c).Decode(&req); err != nil {
-		json.NewEncoder(c).Encode(map[string]any{"ok": false, "error": err.Error()})
+	if err := readStorageEnvelope(c, &req); err != nil {
+		_ = writeStorageEnvelope(c, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	reply := func(v any) { _ = json.NewEncoder(c).Encode(v) }
+	reply := func(v any) { _ = writeStorageEnvelope(c, v) }
 	if req.Op == "stat" {
 		var st syscall.Statfs_t
 		if err := syscall.Statfs(root, &st); err != nil {
@@ -3403,7 +3492,15 @@ func handleMemNodeConn(root string, c net.Conn) {
 	switch req.Op {
 	case "create":
 		if _, er := os.Stat(p); errors.Is(er, os.ErrNotExist) {
-			err = createEmptyBody(p)
+			free, freeErr := physicalFreeBytes(p)
+			minimum := automaticShardMinFreeBytes()
+			if freeErr != nil {
+				err = freeErr
+			} else if free < minimum {
+				err = fmt.Errorf("remote Memory expansion requires at least %d free bytes at target path; available=%d", minimum, free)
+			} else {
+				err = createEmptyBody(p)
+			}
 		}
 		if err != nil {
 			reply(map[string]any{"ok": false, "error": err.Error()})
@@ -3445,10 +3542,11 @@ func handleMemNodeConn(root string, c net.Conn) {
 			return
 		}
 		if _, er := os.Stat(p); errors.Is(er, os.ErrNotExist) {
-			if er = createEmptyBody(p); er != nil {
-				reply(map[string]any{"ok": false, "error": er.Error()})
-				return
-			}
+			reply(map[string]any{"ok": false, "error": "remote storage body missing; explicit create required"})
+			return
+		} else if er != nil {
+			reply(map[string]any{"ok": false, "error": er.Error()})
+			return
 		}
 		sp, er := loadPassiveStorageSerialized(p)
 		if er != nil {
@@ -3457,35 +3555,70 @@ func handleMemNodeConn(root string, c net.Conn) {
 		}
 		defer sp.close()
 		q := copyMemory(req.Memory)
-		id := q.ID
-		if ex, er := sp.resolveIDLocal(id); er == nil {
-			if req.Replace {
-				sp.cache[id] = q
-				sp.dirtyIDs[id] = true
-				sp.dirty = true
-			} else {
-				a, _ := json.Marshal(ex)
-				b, _ := json.Marshal(q)
-				if string(a) == string(b) {
-					reply(map[string]any{"ok": true, "id": id, "same": true})
-					return
-				}
-				old := id
-				q.ID = nextID("mem")
-				id = q.ID
-				if q.State == nil {
-					q.State = map[string]any{}
-				}
-				q.State["merge_source_id"] = old
-				sp.addRuntimeMemory(q)
+		id := strings.TrimSpace(q.ID)
+		if id == "" {
+			reply(map[string]any{"ok": false, "error": "memory id required"})
+			return
+		}
+		if ex, resolveErr := sp.resolveIDLocal(id); resolveErr == nil {
+			existingDigest := memoryJSONDigest(ex)
+			incomingDigest := memoryJSONDigest(q)
+			if existingDigest == incomingDigest {
+				reply(map[string]any{"ok": true, "status": "same", "id": id, "same": true, "digest": existingDigest})
+				return
 			}
-		} else {
-			sp.addRuntimeMemory(q)
+			if !req.Replace {
+				reply(map[string]any{
+					"ok": false, "status": "conflict", "id": id,
+					"existing_digest": existingDigest, "incoming_digest": incomingDigest,
+					"error": "divergent same-ID Memory requires Memory-owned reconciliation",
+				})
+				return
+			}
+			if strings.TrimSpace(req.ExpectedDigest) == "" {
+				reply(map[string]any{
+					"ok": false, "status": "conflict", "id": id,
+					"existing_digest": existingDigest, "incoming_digest": incomingDigest,
+					"error": "remote replace requires expected structural digest",
+				})
+				return
+			}
+			if req.ExpectedDigest != existingDigest {
+				reply(map[string]any{
+					"ok": false, "status": "conflict", "id": id,
+					"existing_digest": existingDigest, "expected_digest": req.ExpectedDigest,
+					"incoming_digest": incomingDigest,
+					"error":           "remote replace compare-and-swap conflict",
+				})
+				return
+			}
+			if q.Revision <= ex.Revision {
+				reply(map[string]any{
+					"ok": false, "status": "conflict", "id": id,
+					"existing_revision": ex.Revision, "incoming_revision": q.Revision,
+					"error": "remote replace revision must advance monotonically",
+				})
+				return
+			}
+		} else if !errors.Is(resolveErr, io.EOF) {
+			reply(map[string]any{"ok": false, "error": resolveErr.Error()})
+			return
+		} else if req.Replace && strings.TrimSpace(req.ExpectedDigest) != "" {
+			reply(map[string]any{
+				"ok": false, "status": "conflict", "id": id,
+				"expected_digest": req.ExpectedDigest,
+				"error":           "remote replace target disappeared before compare-and-swap",
+			})
+			return
+		}
+		if er = sp.upsertExplicitMemoryBounded(q); er != nil {
+			reply(map[string]any{"ok": false, "error": er.Error()})
+			return
 		}
 		if er = persistEngineIncremental(sp); er != nil {
 			reply(map[string]any{"ok": false, "error": er.Error()})
 		} else {
-			reply(map[string]any{"ok": true, "id": id})
+			reply(map[string]any{"ok": true, "status": "stored", "id": id, "digest": memoryJSONDigest(q)})
 		}
 	case "digest":
 		sp, er := loadPassiveStorageSerialized(p)
@@ -3499,8 +3632,7 @@ func handleMemNodeConn(root string, c net.Conn) {
 			reply(map[string]any{"ok": false, "error": "not found"})
 			return
 		}
-		b, _ := json.Marshal(m)
-		reply(map[string]any{"ok": true, "digest": fmt.Sprintf("%x", sha256.Sum256(b))})
+		reply(map[string]any{"ok": true, "digest": memoryJSONDigest(m)})
 	case "delete":
 		sp, er := loadPassiveStorageSerialized(p)
 		if er != nil {
@@ -3508,14 +3640,32 @@ func handleMemNodeConn(root string, c net.Conn) {
 			return
 		}
 		defer sp.close()
-		if _, er = sp.resolveIDLocal(req.ID); er != nil {
+		current, er := sp.resolveIDLocal(req.ID)
+		if er != nil {
 			reply(map[string]any{"ok": false, "error": "not found"})
 			return
 		}
-		sp.deletedIDs[req.ID] = true
-		delete(sp.cache, req.ID)
-		delete(sp.newIDs, req.ID)
-		sp.dirty = true
+		currentDigest := memoryJSONDigest(current)
+		if strings.TrimSpace(req.ExpectedDigest) == "" {
+			reply(map[string]any{
+				"ok": false, "status": "conflict", "id": req.ID,
+				"existing_digest": currentDigest,
+				"error":           "remote delete requires expected structural digest",
+			})
+			return
+		}
+		if req.ExpectedDigest != currentDigest {
+			reply(map[string]any{
+				"ok": false, "status": "conflict", "id": req.ID,
+				"existing_digest": currentDigest, "expected_digest": req.ExpectedDigest,
+				"error": "remote delete compare-and-swap conflict",
+			})
+			return
+		}
+		if er = sp.deleteExplicitMemoryBounded(req.ID); er != nil {
+			reply(map[string]any{"ok": false, "error": er.Error()})
+			return
+		}
 		if er = persistEngineIncremental(sp); er != nil {
 			reply(map[string]any{"ok": false, "error": er.Error()})
 		} else {

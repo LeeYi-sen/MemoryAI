@@ -196,6 +196,7 @@ func (e *Engine) syncRequiredStructures(path string) error {
 		}
 		q := copyMemory(incoming)
 		if er == nil && q.Revision <= current.Revision {
+			q.CapabilitySig = ""
 			q.Revision = current.Revision + 1
 		}
 		if err := e.upsertExplicitMemoryBounded(q); err != nil {
