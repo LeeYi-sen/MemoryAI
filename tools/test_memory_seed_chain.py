@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED = ROOT / "Kernel/current-required-structures.json"
-CURRENT_SEED_SHA = "f96050776140416a3cc4f3852509c64b6afd48649ec289c24752a8eab1c543b3"
+CURRENT_SEED_SHA = "5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4"
 
 
 class CurrentMemorySeedSourceTest(unittest.TestCase):
@@ -18,7 +18,7 @@ class CurrentMemorySeedSourceTest(unittest.TestCase):
         data = json.loads(raw)
         self.assertEqual(data["version"], "29.0-memory-runtime-ownership")
         self.assertEqual(data["format"], "memoryai-required-structures-v1")
-        self.assertEqual(len(data["memories"]), 128)
+        self.assertEqual(len(data["memories"]), 129)
 
 
 if __name__ == "__main__":

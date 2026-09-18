@@ -212,6 +212,160 @@ func loadMeshProposalSlot(e *Engine, slot string) (requestID string, proposalRev
 	return requestID, proposalRevision, memory.Revision, true, nil
 }
 
+func loadMeshProposalAckedThrough(e *Engine, slot string) (uint64, error) {
+	root, err := meshProposalReplayRoot(e)
+	if err != nil {
+		return 0, err
+	}
+	_, memory, err := root.resolveLocalFabricMemory(meshProposalSlotID(slot))
+	if errors.Is(err, io.EOF) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if memory == nil || !memoryHasTag(memory, meshProposalReplaySlotTag) {
+		return 0, errors.New("mesh proposal ACK fence slot unavailable")
+	}
+	value, ok := memory.State["acked_through_revision"]
+	if !ok || strings.TrimSpace(fmt.Sprint(value)) == "" {
+		return 0, nil
+	}
+	return meshScalarUint64(value)
+}
+
+func persistMeshProposalAckFence(e *Engine, slot, receiptID string, proposalRevision uint64) error {
+	root, err := meshProposalReplayRoot(e)
+	if err != nil {
+		return err
+	}
+	_, memory, err := root.resolveLocalFabricMemory(meshProposalSlotID(slot))
+	if err != nil {
+		return err
+	}
+	if memory == nil || !memoryHasTag(memory, meshProposalReplaySlotTag) {
+		return errors.New("mesh proposal ACK fence slot unavailable")
+	}
+	storedSlot := strings.TrimSpace(fmt.Sprint(memory.State["slot"]))
+	if storedSlot != slot {
+		return errors.New("mesh proposal ACK fence slot identity drift")
+	}
+	ackedThrough, err := loadMeshProposalAckedThrough(root, slot)
+	if err != nil {
+		return err
+	}
+	if proposalRevision > ackedThrough {
+		ackedThrough = proposalRevision
+	}
+	q := copyMemory(memory)
+	if q.State == nil {
+		q.State = map[string]any{}
+	}
+	q.State["acked_through_revision"] = ackedThrough
+	q.State["acked_request_id"] = receiptID
+	q.State["acked_nano"] = time.Now().UnixNano()
+	q.CapabilitySig = ""
+	q.Revision++
+	if err := root.upsertExplicitMemoryBounded(q); err != nil {
+		return err
+	}
+	return root.persistAll()
+}
+
+func deleteMeshProposalReceiptDurably(e *Engine, receiptID string) error {
+	root, err := meshProposalReplayRoot(e)
+	if err != nil {
+		return err
+	}
+	if err := root.explicitDeleteMemory(meshProposalReceiptID(receiptID)); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if err := root.persistAll(); err != nil {
+		// Keep the delete dirty and cross the persistence barrier once more. If
+		// both barriers fail, restart can only resurrect a done receipt, never
+		// an unfenced execution.
+		if retryErr := root.persistAll(); retryErr != nil {
+			return fmt.Errorf("persist Mesh proposal receipt GC: first=%v retry=%w", err, retryErr)
+		}
+	}
+	return nil
+}
+
+func ackMeshProposalReplay(e *Engine, req MeshRequest) (string, error) {
+	receiptID := strings.TrimSpace(req.ReceiptID)
+	memoryID := strings.TrimSpace(req.MemoryID)
+	originNode := strings.TrimSpace(req.OriginNode)
+	if receiptID == "" || memoryID == "" || originNode == "" || req.Revision == 0 {
+		return "", errors.New("mesh proposal ACK requires receipt_id, memory_id, origin_node and revision")
+	}
+	st, err := meshProposalReplayStateFor(e)
+	if err != nil {
+		return "", err
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	slot := originNode + "\x00" + memoryID
+	slotRequestID, slotRevision, _, slotFound, err := loadMeshProposalSlot(e, slot)
+	if err != nil {
+		return "", err
+	}
+	if !slotFound {
+		return "", errors.New("mesh proposal ACK missing durable slot fence")
+	}
+	if req.Revision > slotRevision {
+		return "", fmt.Errorf("mesh proposal ACK revision %d is ahead of durable slot revision %d", req.Revision, slotRevision)
+	}
+
+	entry, _, found, err := loadMeshProposalReplayEntry(e, receiptID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		ackedThrough, err := loadMeshProposalAckedThrough(e, slot)
+		if err != nil {
+			return "", err
+		}
+		if ackedThrough >= req.Revision {
+			return "acked-gc", nil
+		}
+		return "", errors.New("mesh proposal ACK receipt missing without durable ACK fence")
+	}
+	if entry.RequestID != receiptID || entry.Slot != slot || entry.Revision != req.Revision {
+		return "", errors.New("mesh proposal ACK identity mismatch")
+	}
+	if entry.State != meshProposalReplayDone {
+		return "", fmt.Errorf("mesh proposal ACK cannot GC receipt in state %q", entry.State)
+	}
+	if slotRevision == req.Revision && slotRequestID != receiptID {
+		return "", errors.New("mesh proposal ACK conflicts with durable slot identity")
+	}
+	if err := persistMeshProposalAckFence(e, slot, receiptID, req.Revision); err != nil {
+		return "", err
+	}
+	if err := deleteMeshProposalReceiptDurably(e, receiptID); err != nil {
+		return "", err
+	}
+	return "acked-gc", nil
+}
+
+func (m *meshRuntime) ackSharedProposal(req MeshRequest) MeshResponse {
+	if m == nil || m.role != "sovereign" {
+		return MeshResponse{OK: false, Error: "mesh proposal ACK requires sovereign role"}
+	}
+	m.mu.RLock()
+	e := m.engine
+	m.mu.RUnlock()
+	if e == nil {
+		return MeshResponse{OK: false, Error: "sovereign engine unavailable"}
+	}
+	status, err := ackMeshProposalReplay(e, req)
+	if err != nil {
+		return MeshResponse{OK: false, Error: err.Error()}
+	}
+	return MeshResponse{OK: true, Status: status, ReceiptID: req.ReceiptID}
+}
+
 func meshScalarUint64(v any) (uint64, error) {
 	switch x := v.(type) {
 	case uint64:
@@ -257,10 +411,24 @@ func persistMeshProposalReplayEntry(e *Engine, entry meshProposalReplayEntry, re
 		if err != nil {
 			return err
 		}
-		if !found {
+		var previousSlot *Memory
+		if found {
+			_, previousSlot, err = root.resolveLocalFabricMemory(meshProposalSlotID(entry.Slot))
+			if err != nil {
+				return err
+			}
+		} else {
 			slotRevision = 0
 		}
-		if err := root.upsertExplicitMemoryBounded(meshProposalSlotMemory(entry.Slot, entry.RequestID, entry.Revision, slotRevision+1)); err != nil {
+		nextSlot := meshProposalSlotMemory(entry.Slot, entry.RequestID, entry.Revision, slotRevision+1)
+		if previousSlot != nil {
+			for _, key := range []string{"acked_through_revision", "acked_request_id", "acked_nano"} {
+				if value, ok := previousSlot.State[key]; ok {
+					nextSlot.State[key] = value
+				}
+			}
+		}
+		if err := root.upsertExplicitMemoryBounded(nextSlot); err != nil {
 			return err
 		}
 	}

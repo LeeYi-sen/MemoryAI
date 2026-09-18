@@ -30,19 +30,20 @@
 | AR-013 | P0 | DONE | Kernel Memory schema drops input_pattern/output_effect/executable | `Kernel/src/kernel.go; persistence tests` | Make required executable-structure fields round-trip safely. | Entry 032 | schema round-trip test PASS; focused race PASS |
 | AR-014 | P1 | DONE | Executable Memory lacks standardized success history / mutation variants | `Kernel schema + current seed` | Standardize persistent first-class execution history and variant lineage fields. | Entry 036 | schema round-trip PASS; variant lineage integration PASS |
 | AR-015 | P2 | DONE | RuntimeExecCount is not success history | `Current seed / execution feedback` | Keep telemetry physical and create Memory-owned success/failure outcome history. | Entry 036 | Memory-owned success/failure history integration PASS |
-| AR-016 | P1 | OPEN | Mesh global sync does not integrate remote Memory | `Current seed; mesh runtime` | Perform authorized transient direct reads and emit mesh.memory.integrated without local caching/import. | - | - |
-| AR-017 | P0 | OPEN | Memory does not use current Mesh execution primitives | `Current seed` | Migrate to mesh_route_execution / mesh_shared_fetch / mesh_structure_run as appropriate. | - | - |
-| AR-018 | P1 | OPEN | Mesh digest conflicts do not enter Memory reconciliation | `Mesh authority/runtime + current seed` | Convert physical conflict result into Memory-visible conflict event/frontier. | - | - |
-| AR-019 | P1 | OPEN | Proposal replay receipts lack ACK + safe GC | `Kernel/src/mesh_proposal_replay_runtime.go; journal runtime` | Add receipt ACK, slot fence proof and restart-safe GC; fail closed on ambiguous state. | - | - |
+| AR-016 | P1 | DONE | Mesh global sync does not integrate remote Memory | `Current seed; mesh runtime` | Perform authorized transient direct reads and emit mesh.memory.integrated without local caching/import. | Entry 037 | real remote direct-fetch integration PASS; no local import/cache; unreachable = forgotten soft-fail |
+| AR-017 | P0 | DONE | Memory does not use current Mesh execution primitives | `Current seed` | Migrate to mesh_route_execution / mesh_shared_fetch / mesh_structure_run as appropriate. | Entry 037 | route_execution + shared_fetch + structure_run Memory contract PASS; remote owner execution PASS |
+| AR-018 | P1 | DONE | Mesh digest conflicts do not enter Memory reconciliation | `Mesh authority/runtime + current seed` | Convert physical conflict result into Memory-visible conflict event/frontier. | Entry 037 | shared_reconcile conflict -> cog.mesh.version.conflict -> frontier integration PASS |
+| AR-019 | P1 | DONE | Proposal replay receipts lack ACK + safe GC | `Kernel/src/mesh_proposal_replay_runtime.go; journal runtime` | Add receipt ACK, slot fence proof and restart-safe GC; fail closed on ambiguous state. | Entry 037 | receipt_id + atomic proposal->ACK + durable ACK fence + done-only GC + restart/idempotency tests PASS |
 | AR-020 | P1 | OPEN | Kernel recognizes cog.surface/cog.input for trace policy | `Kernel/src/kernel.go` | Remove cognition-label interpretation from Kernel tracing. | - | - |
 | AR-021 | P2 | OPEN | Physical storage metadata uses cog.storage namespace | `Kernel/src/kernel.go; current seed if referenced` | Rename to physical storage namespace with compatibility migration. | - | - |
 | AR-022 | P2 | DONE | Activation callers retain topK vocabulary | `Kernel/src/kernel.go; daemon_runtime.go` | Rename caller variables/arguments to pageCap and expand audit scope. | Entry 032 | topK caller audit regression PASS; production scan clean |
 | AR-023 | P0 | DONE | Architecture audit does not validate Memory-Kernel opcode ABI | `tools/architecture_audit.py` | Fail when seed uses unsupported/obsolete opcode. | Entry 031 | `test_architecture_audit.py` PASS; live audit rejects AR-002 obsolete opcodes |
 | AR-024 | P0 | DONE | Architecture audit does not validate capability requirements | `tools/architecture_audit.py` | Fail on privileged opcode without declared capability; lock semantic regression. | Entry 031 | synthetic missing-capability regression PASS |
-| AR-025 | P2 | OPEN | memory_copy can retain stale CapabilitySig | `Kernel/src/kernel.go; security tests` | Clear or regenerate signature after structural identity/program mutation. | - | - |
-| AR-026 | P2 | OPEN | Structural digest includes CapabilitySig | `Kernel/src/structure_runtime.go` | Exclude physical security signature from structural Memory identity digest. | - | - |
+| AR-025 | P2 | DONE | memory_copy can retain stale CapabilitySig | `Kernel/src/kernel.go; security tests` | Clear or regenerate signature after structural identity/program mutation. | Entry 037 | copy/program mutation stale-signature regressions PASS; revision mutations clear stored signature |
+| AR-026 | P2 | DONE | Structural digest includes CapabilitySig | `Kernel/src/structure_runtime.go` | Exclude physical security signature from structural Memory identity digest. | Entry 037 | structural digest ignores CapabilitySig regression PASS |
 | AR-027 | P0 | DONE | SELF_ONLY / ASSISTED_LEARNING mode is only implicit | `Kernel/current-required-structures.json` | Add explicit Memory-owned learning mode; default SELF_ONLY and gate external research on ASSISTED_LEARNING. | Entry 034 | learning mode contract PASS; default SELF_ONLY locked |
 | AR-028 | P0 | DONE | Event payload vars are not exposed under `__event.*` contract used by Memory | `Kernel/src/event_runtime.go` | Mirror opaque event vars into `__event.<key>` without semantic interpretation. | Entry 034 | namespaced event variable regression PASS |
+| AR-029 | P0 | DONE | Mesh proposal tag list is not visible to Memory policy after physical event conversion | `Kernel/src/mesh_authority_runtime.go; event boundary` | Preserve exact tag list for replay identity and expose deterministic proposal_tags transport value to Memory review. | Entry 037 | real Sovereign proposal policy + receipt/ACK integration PASS |
 
 ## Repair order / implementation batches
 
@@ -62,7 +63,7 @@ AR-006 -> AR-008 -> AR-009. Connect existing Memory semantic structures to the l
 AR-010 -> AR-014 -> AR-015 -> AR-011 -> AR-012. Recombination, persistent outcome history and Memory-owned fusion become executable Memory behavior.
 
 ### Batch F — Sovereign Memory Mesh durability/integration
-AR-017 -> AR-016 -> AR-018 -> AR-019 -> AR-025 -> AR-026. Close remote direct-read integration, conflict feedback and safe replay receipt lifecycle.
+AR-017 -> AR-016 -> AR-018 -> AR-019 -> AR-025 -> AR-026; AR-029 was discovered and closed in the same batch. Close remote direct-read integration, conflict feedback, safe replay receipt lifecycle, and proposal event transport.
 
 ### Batch G — remaining Kernel boundary cleanup
 AR-020 -> AR-021. Remove remaining cognition-shaped namespace/policy leakage from the physical Kernel.
@@ -80,3 +81,5 @@ AR-020 -> AR-021. Remove remaining cognition-shaped namespace/policy leakage fro
 - 2026-09-17 / Entry 035: AR-006, AR-008 and AR-009 DONE. Live raw Experience now reaches Memory-owned grounding/relation/query events; learned Surface rendering closes semantic answer -> expression frame -> reply; initial Chinese self-identity grounding lives only in Memory. Nested physical event context is stack-scoped so sibling Memory handlers retain the selecting event subject.
 
 - 2026-09-18 / Entry 036: Batch E DONE. AR-010/011/012/014/015 closed: Memory-owned executable recombination/fission, first-class success/failure + mutation lineage, explicit four-stage Memory-body fusion, and physical-only conflict-preserving `space_merge`.
+
+- 2026-09-18 / Entry 037: Batch F DONE. AR-016/017/018/019/025/026 closed; AR-029 discovered and closed. Sovereign Mesh now performs authorized transient remote reads without import/cache, exposes current execution primitives to Memory, feeds digest conflicts into Memory frontiers, and uses durable receipt ACK fencing before safe GC. Capability signatures are physical metadata rather than structural identity.

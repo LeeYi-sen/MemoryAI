@@ -9296,6 +9296,7 @@
         "max_ops": 1500
       },
       "capabilities": [
+        "event.emit",
         "memory.write",
         "mesh.write"
       ],
@@ -9305,51 +9306,118 @@
       "layer": "inherited",
       "program": [
         {
+          "code": "state_get",
           "a": "{{__subject}}",
           "b": "memory_id",
-          "c": "mcr_id",
-          "code": "state_get"
+          "c": "mcr_id"
         },
         {
+          "code": "state_get",
           "a": "{{__subject}}",
           "b": "winner_digest",
-          "c": "mcr_d",
-          "code": "state_get"
+          "c": "mcr_d"
         },
         {
+          "code": "cmp_eq",
           "a": "mcr_none",
-          "b": "{{mcr_d}}",
-          "code": "cmp_eq"
+          "b": "{{mcr_d}}"
         },
         {
+          "code": "jump_if",
           "a": "{{mcr_none}}",
-          "b": "mcr_end",
-          "code": "jump_if"
+          "b": "mcr_end"
         },
         {
+          "code": "mesh_shared_reconcile",
           "a": "{{mcr_id}}",
           "b": "{{mcr_d}}",
           "c": "mcr_status",
-          "code": "mesh_shared_reconcile"
+          "args": {
+            "reason_out": "mcr_reason"
+          }
         },
         {
-          "a": "{{__subject}}",
-          "b": "status",
-          "c": "reconciled",
-          "code": "state_set"
-        },
-        {
+          "code": "state_set",
           "a": "{{__subject}}",
           "b": "reconcile_status",
-          "c": "{{mcr_status}}",
-          "code": "state_set"
+          "c": "{{mcr_status}}"
         },
         {
-          "a": "mcr_end",
-          "code": "label"
+          "code": "cmp_eq",
+          "a": "mcr_conflict",
+          "b": "{{mcr_status}}",
+          "c": "conflict"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{mcr_conflict}}",
+          "b": "mcr_preserve"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "reconciled"
+        },
+        {
+          "code": "jump",
+          "a": "mcr_end"
+        },
+        {
+          "code": "label",
+          "a": "mcr_preserve"
+        },
+        {
+          "code": "memory_new",
+          "a": "mcr_conf",
+          "args": {
+            "content": "Sovereign digest disagreement preserved for Memory-owned reconciliation.",
+            "layer": "emergent",
+            "parents": "{{__subject}},mesh.conflict.reconcile.parent",
+            "tags": "memory,cog.mesh.version.conflict,cog.mesh.directory.conflict"
+          }
+        },
+        {
+          "code": "state_set",
+          "a": "{{mcr_conf}}",
+          "b": "memory_id",
+          "c": "{{mcr_id}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{mcr_conf}}",
+          "b": "proposed_digest",
+          "c": "{{mcr_d}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{mcr_conf}}",
+          "b": "reconcile_status",
+          "c": "{{mcr_status}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{mcr_conf}}",
+          "b": "reason",
+          "c": "{{mcr_reason}}"
+        },
+        {
+          "code": "state_set",
+          "a": "{{__subject}}",
+          "b": "status",
+          "c": "conflict-preserved"
+        },
+        {
+          "code": "emit_event",
+          "a": "mesh.version.conflict",
+          "b": "{{mcr_conf}}"
+        },
+        {
+          "code": "label",
+          "a": "mcr_end"
         }
       ],
-      "revision": 1,
+      "revision": 2,
       "tags": [
         "memory",
         "cog.mesh",
@@ -10070,156 +10138,224 @@
         "max_ops": 1500
       },
       "capabilities": [
-        "event.emit",
-        "memory.write"
+        "event.emit"
       ],
-      "content": "Integrate remote Global Goals/Beliefs/Dimensions/Cognition into the same local arbitration loops: one logical AI across nodes.",
+      "content": "Consume one authorized remote Memory transiently from the event Frame. Classify only through Memory Program logic and emit transient visibility events; never import, cache or mutate the remote Memory locally.",
       "generation": 26,
       "id": "mesh.global.integrate.parent",
       "layer": "inherited",
       "program": [
         {
-          "a": "{{__subject}}",
-          "b": "cog.global.organism",
-          "code": "memory_tag_add"
+          "code": "copy",
+          "a": "mi_json",
+          "b": "__event.remote_memory_json"
         },
         {
-          "a": "{{__subject}}",
+          "code": "copy",
+          "a": "mi_id",
+          "b": "__event.remote_memory_id"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "mi_empty",
+          "b": "{{mi_json}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{mi_empty}}",
+          "b": "mi_end"
+        },
+        {
+          "code": "json_get",
+          "a": "{{mi_json}}",
           "b": "tags",
-          "c": "mi_tags",
-          "code": "field_get"
+          "c": "mi_tags"
         },
         {
+          "code": "json_get",
+          "a": "{{mi_json}}",
+          "b": "executable",
+          "c": "mi_executable"
+        },
+        {
+          "code": "copy",
+          "a": "mesh_integrated_remote_id",
+          "b": "mi_id"
+        },
+        {
+          "code": "copy",
+          "a": "mesh_integrated_remote_tags",
+          "b": "mi_tags"
+        },
+        {
+          "code": "str_contains",
           "a": "mi_goal",
           "b": "{{mi_tags}}",
-          "c": "cog.goal",
-          "code": "str_contains"
+          "c": "cog.goal"
         },
         {
+          "code": "str_contains",
           "a": "mi_bel",
           "b": "{{mi_tags}}",
-          "c": "cog.belief",
-          "code": "str_contains"
+          "c": "cog.belief"
         },
         {
+          "code": "str_contains",
           "a": "mi_dim",
           "b": "{{mi_tags}}",
-          "c": "cog.dimension.stable",
-          "code": "str_contains"
+          "c": "cog.dimension.stable"
         },
         {
+          "code": "str_contains",
           "a": "mi_cog",
           "b": "{{mi_tags}}",
-          "c": "cog.cognition.network",
-          "code": "str_contains"
+          "c": "cog.cognition.network"
         },
         {
+          "code": "cmp_eq",
           "a": "mi_g",
           "b": "{{mi_goal}}",
-          "c": "1",
-          "code": "cmp_eq"
+          "c": "1"
         },
         {
+          "code": "jump_if",
           "a": "{{mi_g}}",
-          "b": "mi_goal_do",
-          "code": "jump_if"
+          "b": "mi_goal_emit"
         },
         {
+          "code": "cmp_eq",
           "a": "mi_b",
           "b": "{{mi_bel}}",
-          "c": "1",
-          "code": "cmp_eq"
+          "c": "1"
         },
         {
+          "code": "jump_if",
           "a": "{{mi_b}}",
-          "b": "mi_bel_do",
-          "code": "jump_if"
+          "b": "mi_bel_emit"
         },
         {
+          "code": "cmp_eq",
           "a": "mi_d",
           "b": "{{mi_dim}}",
-          "c": "1",
-          "code": "cmp_eq"
+          "c": "1"
         },
         {
+          "code": "jump_if",
           "a": "{{mi_d}}",
-          "b": "mi_dim_do",
-          "code": "jump_if"
+          "b": "mi_dim_emit"
         },
         {
+          "code": "cmp_eq",
           "a": "mi_c",
           "b": "{{mi_cog}}",
-          "c": "1",
-          "code": "cmp_eq"
+          "c": "1"
         },
         {
+          "code": "jump_if",
           "a": "{{mi_c}}",
-          "b": "mi_cog_do",
-          "code": "jump_if"
+          "b": "mi_cog_emit"
         },
         {
-          "a": "mi_end",
-          "code": "jump"
+          "code": "jump",
+          "a": "mi_exec_check"
         },
         {
-          "a": "mi_goal_do",
-          "code": "label"
+          "code": "label",
+          "a": "mi_goal_emit"
         },
         {
-          "a": "{{__subject}}",
-          "b": "cog.goal.active",
-          "code": "memory_tag_add"
+          "code": "emit_event",
+          "a": "mesh.remote.goal.visible",
+          "b": "mesh.global.integrate.parent",
+          "args": {
+            "vars": "remote_memory_json,remote_memory_id,remote_origin_node,remote_digest"
+          }
         },
         {
-          "a": "goal.created",
-          "b": "{{__subject}}",
-          "code": "emit_event"
+          "code": "jump",
+          "a": "mi_exec_check"
         },
         {
-          "a": "mi_end",
-          "code": "jump"
+          "code": "label",
+          "a": "mi_bel_emit"
         },
         {
-          "a": "mi_bel_do",
-          "code": "label"
+          "code": "emit_event",
+          "a": "mesh.remote.belief.visible",
+          "b": "mesh.global.integrate.parent",
+          "args": {
+            "vars": "remote_memory_json,remote_memory_id,remote_origin_node,remote_digest"
+          }
         },
         {
-          "a": "belief.supported",
-          "b": "{{__subject}}",
-          "code": "emit_event"
+          "code": "jump",
+          "a": "mi_exec_check"
         },
         {
-          "a": "mi_end",
-          "code": "jump"
+          "code": "label",
+          "a": "mi_dim_emit"
         },
         {
-          "a": "mi_dim_do",
-          "code": "label"
+          "code": "emit_event",
+          "a": "mesh.remote.dimension.visible",
+          "b": "mesh.global.integrate.parent",
+          "args": {
+            "vars": "remote_memory_json,remote_memory_id,remote_origin_node,remote_digest"
+          }
         },
         {
-          "a": "dimension.stable",
-          "b": "{{__subject}}",
-          "code": "emit_event"
+          "code": "jump",
+          "a": "mi_exec_check"
         },
         {
-          "a": "mi_end",
-          "code": "jump"
+          "code": "label",
+          "a": "mi_cog_emit"
         },
         {
-          "a": "mi_cog_do",
-          "code": "label"
+          "code": "emit_event",
+          "a": "mesh.remote.cognition.visible",
+          "b": "mesh.global.integrate.parent",
+          "args": {
+            "vars": "remote_memory_json,remote_memory_id,remote_origin_node,remote_digest"
+          }
         },
         {
-          "a": "cognition.integrated",
-          "b": "{{__subject}}",
-          "code": "emit_event"
+          "code": "label",
+          "a": "mi_exec_check"
         },
         {
-          "a": "mi_end",
-          "code": "label"
+          "code": "cmp_eq",
+          "a": "mi_exec",
+          "b": "{{mi_executable}}",
+          "c": "true"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{mi_exec}}",
+          "b": "mi_exec_emit"
+        },
+        {
+          "code": "jump",
+          "a": "mi_end"
+        },
+        {
+          "code": "label",
+          "a": "mi_exec_emit"
+        },
+        {
+          "code": "emit_event",
+          "a": "mesh.remote.executable.visible",
+          "b": "mesh.global.integrate.parent",
+          "args": {
+            "vars": "remote_memory_json,remote_memory_id,remote_origin_node,remote_digest"
+          }
+        },
+        {
+          "code": "label",
+          "a": "mi_end"
         }
       ],
-      "revision": 1,
+      "revision": 2,
       "tags": [
         "memory",
         "cog.mesh",
@@ -10240,62 +10376,231 @@
       },
       "capabilities": [
         "memory.write",
-        "mesh.read"
+        "mesh.read",
+        "event.emit"
       ],
-      "content": "Refresh shared-directory visibility only. Remote Memory payloads are never imported/cached; resolve/read/execute stays remote and disappears when its origin is unreachable.",
+      "content": "Continuously resolve globally shared Memory through Sovereign authorization and transient direct reads. Remote payloads stay in the current Frame only; unreachable origin means forgotten.",
       "generation": 26,
       "id": "mesh.global.sync.parent",
       "layer": "inherited",
       "program": [
         {
-          "a": "ms_role",
-          "code": "mesh_role"
+          "code": "mesh_role",
+          "a": "ms_role"
         },
         {
+          "code": "cmp_eq",
           "a": "ms_st",
           "b": "{{ms_role}}",
-          "c": "standalone",
-          "code": "cmp_eq"
+          "c": "standalone"
         },
         {
+          "code": "jump_if",
           "a": "{{ms_st}}",
-          "b": "ms_end",
-          "code": "jump_if"
+          "b": "ms_end"
         },
         {
+          "code": "mesh_shared_search",
+          "b": "ms_records",
           "args": {
             "tags": "cog.global.organism"
-          },
-          "b": "ms_records",
-          "code": "mesh_shared_search"
+          }
         },
         {
+          "code": "list_len",
           "a": "ms_records",
-          "b": "ms_n",
-          "code": "list_len"
+          "b": "ms_n"
         },
         {
+          "code": "state_set",
           "a": "mesh.global.sync.parent",
           "b": "last_directory_visible",
-          "c": "{{ms_n}}",
-          "code": "state_set"
+          "c": "{{ms_n}}"
         },
         {
-          "a": "ms_now",
-          "code": "time_unix"
+          "code": "set",
+          "a": "ms_i",
+          "b": "0"
         },
         {
+          "code": "set",
+          "a": "ms_integrated",
+          "b": "0"
+        },
+        {
+          "code": "set",
+          "a": "ms_forgotten",
+          "b": "0"
+        },
+        {
+          "code": "label",
+          "a": "ms_loop"
+        },
+        {
+          "code": "cmp_ge",
+          "a": "ms_done",
+          "b": "{{ms_i}}",
+          "c": "{{ms_n}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{ms_done}}",
+          "b": "ms_stamp"
+        },
+        {
+          "code": "list_get",
+          "a": "ms_records",
+          "b": "{{ms_i}}",
+          "c": "ms_rec"
+        },
+        {
+          "code": "json_get",
+          "a": "{{ms_rec}}",
+          "b": "memory_id",
+          "c": "ms_id"
+        },
+        {
+          "code": "json_get",
+          "a": "{{ms_rec}}",
+          "b": "origin_node",
+          "c": "ms_origin"
+        },
+        {
+          "code": "json_get",
+          "a": "{{ms_rec}}",
+          "b": "digest",
+          "c": "ms_digest"
+        },
+        {
+          "code": "mesh_shared_fetch",
+          "a": "{{ms_id}}",
+          "b": "ms_json",
+          "c": "ms_status",
+          "args": {
+            "soft_fail": "1",
+            "reason_out": "ms_reason"
+          }
+        },
+        {
+          "code": "cmp_eq",
+          "a": "ms_remembered",
+          "b": "{{ms_status}}",
+          "c": "remembered"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{ms_remembered}}",
+          "b": "ms_emit"
+        },
+        {
+          "code": "num_add",
+          "a": "ms_forgotten",
+          "b": "{{ms_forgotten}}",
+          "c": "1"
+        },
+        {
+          "code": "jump",
+          "a": "ms_next"
+        },
+        {
+          "code": "label",
+          "a": "ms_emit"
+        },
+        {
+          "code": "copy",
+          "a": "remote_memory_json",
+          "b": "ms_json"
+        },
+        {
+          "code": "copy",
+          "a": "remote_memory_id",
+          "b": "ms_id"
+        },
+        {
+          "code": "copy",
+          "a": "remote_origin_node",
+          "b": "ms_origin"
+        },
+        {
+          "code": "copy",
+          "a": "remote_digest",
+          "b": "ms_digest"
+        },
+        {
+          "code": "copy",
+          "a": "remote_status",
+          "b": "ms_status"
+        },
+        {
+          "code": "copy",
+          "a": "remote_fetch_reason",
+          "b": "ms_reason"
+        },
+        {
+          "code": "copy",
+          "a": "mesh_integrated_remote_id",
+          "b": "ms_id"
+        },
+        {
+          "code": "emit_event",
+          "a": "mesh.memory.integrated",
+          "b": "mesh.global.sync.parent",
+          "args": {
+            "vars": "remote_memory_json,remote_memory_id,remote_origin_node,remote_digest,remote_status,remote_fetch_reason"
+          }
+        },
+        {
+          "code": "num_add",
+          "a": "ms_integrated",
+          "b": "{{ms_integrated}}",
+          "c": "1"
+        },
+        {
+          "code": "label",
+          "a": "ms_next"
+        },
+        {
+          "code": "num_add",
+          "a": "ms_i",
+          "b": "{{ms_i}}",
+          "c": "1"
+        },
+        {
+          "code": "jump",
+          "a": "ms_loop"
+        },
+        {
+          "code": "label",
+          "a": "ms_stamp"
+        },
+        {
+          "code": "state_set",
+          "a": "mesh.global.sync.parent",
+          "b": "last_integrated_count",
+          "c": "{{ms_integrated}}"
+        },
+        {
+          "code": "state_set",
+          "a": "mesh.global.sync.parent",
+          "b": "last_forgotten_count",
+          "c": "{{ms_forgotten}}"
+        },
+        {
+          "code": "time_unix",
+          "a": "ms_now"
+        },
+        {
+          "code": "state_set",
           "a": "mesh.global.sync.parent",
           "b": "last_directory_scan_unix",
-          "c": "{{ms_now}}",
-          "code": "state_set"
+          "c": "{{ms_now}}"
         },
         {
-          "a": "ms_end",
-          "code": "label"
+          "code": "label",
+          "a": "ms_end"
         }
       ],
-      "revision": 1,
+      "revision": 2,
       "tags": [
         "memory",
         "cog.mesh",
@@ -10335,6 +10640,83 @@
       ],
       "trigger": [
         "event:idle"
+      ]
+    },
+    {
+      "id": "mesh.remote.execute.parent",
+      "layer": "emergent",
+      "generation": 37,
+      "revision": 1,
+      "content": "Execute an explicitly requested authorized shared executable Memory at its owning node; the returned Frame remains transient.",
+      "tags": [
+        "memory",
+        "cog.mesh",
+        "runtime.trigger"
+      ],
+      "capabilities": [
+        "mesh.run",
+        "event.emit"
+      ],
+      "budget": {
+        "max_alloc_bytes": 67108864,
+        "max_cpu_us": 2000000,
+        "max_events": 160,
+        "max_heap_growth_bytes": 134217728,
+        "max_memory_writes": 64,
+        "max_ops": 4000
+      },
+      "trigger": [
+        "event:mesh.remote.execute.request"
+      ],
+      "program": [
+        {
+          "code": "copy",
+          "a": "mre_id",
+          "b": "__event.memory_id"
+        },
+        {
+          "code": "cmp_eq",
+          "a": "mre_none",
+          "b": "{{mre_id}}"
+        },
+        {
+          "code": "jump_if",
+          "a": "{{mre_none}}",
+          "b": "mre_end"
+        },
+        {
+          "code": "mesh_structure_run",
+          "a": "{{mre_id}}",
+          "b": "mre_frame",
+          "c": "mre_status"
+        },
+        {
+          "code": "copy",
+          "a": "mesh_remote_execution_status",
+          "b": "mre_status"
+        },
+        {
+          "code": "copy",
+          "a": "mesh_remote_execution_frame",
+          "b": "mre_frame"
+        },
+        {
+          "code": "copy",
+          "a": "remote_memory_id",
+          "b": "mre_id"
+        },
+        {
+          "code": "emit_event",
+          "a": "mesh.remote.execution.completed",
+          "b": "mesh.remote.execute.parent",
+          "args": {
+            "vars": "remote_memory_id,mesh_remote_execution_status,mesh_remote_execution_frame"
+          }
+        },
+        {
+          "code": "label",
+          "a": "mre_end"
+        }
       ]
     },
     {

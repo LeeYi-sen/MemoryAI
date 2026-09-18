@@ -117,14 +117,26 @@ func TestMeshDeferredJournalFlushRemovesDurableEntries(t *testing.T) {
 	t.Setenv("MEMORYAI_MESH_CAPABILITY_KEY", "journal-test-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req MeshRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(MeshResponse{OK: true, Status: "accepted"})
+		switch req.Op {
+		case "shared_propose":
+			_ = json.NewEncoder(w).Encode(MeshResponse{OK: true, Status: "accepted", ReceiptID: "mesh-proposal-flush-receipt"})
+		case "shared_proposal_ack":
+			_ = json.NewEncoder(w).Encode(MeshResponse{OK: true, Status: "acked-gc", ReceiptID: req.ReceiptID})
+		default:
+			_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "unexpected op"})
+		}
 	}))
 	defer server.Close()
 	m, e := testMeshMemoryRuntime(t, dir, "node-flush", "node")
 	m.authorityURL = server.URL
 	m.client = server.Client()
-	if err := deferMeshRequest(m, MeshRequest{Op: "shared_propose", MemoryID: "memory.a", ProposalDigest: "digest-a", OriginNode: "node-flush"}); err != nil {
+	if err := deferMeshRequest(m, MeshRequest{Op: "shared_propose", MemoryID: "memory.a", ProposalDigest: "digest-a", Revision: 1, OriginNode: "node-flush"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := flushMeshDeferredJournal(m); err != nil {
@@ -140,5 +152,64 @@ func TestMeshDeferredJournalFlushRemovesDurableEntries(t *testing.T) {
 	}
 	if len(disk.Entries) != 0 {
 		t.Fatalf("flush did not durably remove deferred entries: %+v", disk.Entries)
+	}
+}
+
+func TestSuccessfulDeferredProposalAtomicallyBecomesAckBeforeAckTransport(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MEMORYAI_MESH_CAPABILITY_KEY", "proposal-ack-transition-key")
+	var proposalCalls, ackCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req MeshRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Op {
+		case "shared_propose":
+			proposalCalls++
+			_ = json.NewEncoder(w).Encode(MeshResponse{OK: true, Status: "shared", Decision: "approved", ReceiptID: "mesh-proposal-test-receipt"})
+		case "shared_proposal_ack":
+			ackCalls++
+			_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "simulated ACK transport failure"})
+		default:
+			_ = json.NewEncoder(w).Encode(MeshResponse{OK: false, Error: "unexpected op"})
+		}
+	}))
+	defer server.Close()
+
+	m, e := testMeshMemoryRuntime(t, dir, "node-ack-transition", "node")
+	m.authorityURL = server.URL
+	m.client = server.Client()
+	if _, err := m.proposeSharedDurable("mesh.test.seed"); err != nil {
+		t.Fatalf("proposal should remain accepted with ACK deferred: %v", err)
+	}
+	if proposalCalls != 1 || ackCalls != 1 {
+		t.Fatalf("unexpected transport calls proposal=%d ack=%d", proposalCalls, ackCalls)
+	}
+	m.mu.RLock()
+	pending := append([]MeshRequest(nil), m.journal...)
+	m.mu.RUnlock()
+	if len(pending) != 1 || pending[0].Op != "shared_proposal_ack" || pending[0].ReceiptID != "mesh-proposal-test-receipt" {
+		t.Fatalf("durable spool was not atomically converted to ACK: %+v", pending)
+	}
+	e.close()
+	forgetMeshJournalState(m)
+
+	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.close()
+	m2 := &meshRuntime{role: "node", nodeID: "node-ack-transition", engine: restored, directory: map[string]MeshNode{}, shared: map[string]MeshRecord{}, client: server.Client(), authorityURL: server.URL}
+	defer forgetMeshJournalState(m2)
+	if err := recoverMeshDeferredJournal(m2); err != nil {
+		t.Fatal(err)
+	}
+	m2.mu.RLock()
+	defer m2.mu.RUnlock()
+	if len(m2.journal) != 1 || m2.journal[0].Op != "shared_proposal_ack" {
+		t.Fatalf("restart resurrected proposal instead of ACK: %+v", m2.journal)
 	}
 }

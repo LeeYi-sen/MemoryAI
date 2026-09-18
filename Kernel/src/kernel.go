@@ -1130,6 +1130,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		ls := stateList(target.State[key])
 		ls = append(ls, x(op.C))
 		target.State[key] = ls
+		target.CapabilitySig = ""
 		target.Revision++
 		owner.dirty = true
 		owner.dirtyIDs[target.ID] = true
@@ -1161,6 +1162,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if !seen {
 			ls = append(ls, val)
 			target.State[key] = ls
+			target.CapabilitySig = ""
 			target.Revision++
 			owner.dirty = true
 			owner.dirtyIDs[target.ID] = true
@@ -1192,6 +1194,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		cur := num(fmt.Sprint(target.State[key]))
 		nv := cur + delta
 		target.State[key] = ff(nv)
+		target.CapabilitySig = ""
 		target.Revision++
 		owner.dirty = true
 		owner.dirtyIDs[target.ID] = true
@@ -1214,6 +1217,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			target.State = map[string]any{}
 		}
 		target.State[x(op.B)] = x(op.C)
+		target.CapabilitySig = ""
 		target.Revision++
 		owner.dirty = true
 		owner.dirtyIDs[target.ID] = true
@@ -1738,6 +1742,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		e.dataMu.Lock()
 		target.Program = pp
+		target.CapabilitySig = ""
 		target.Revision++
 		e.dirty = true
 		e.dirtyIDs[target.ID] = true
@@ -1791,6 +1796,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		default:
 			return -1, fmt.Errorf("unknown program field %q", op.Args["field"])
 		}
+		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
 		f.memoryWrites++
@@ -1814,6 +1820,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		default:
 			return -1, fmt.Errorf("unknown program field %q", op.Args["field"])
 		}
+		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
 		f.memoryWrites++
@@ -1833,6 +1840,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			return -1, fmt.Errorf("program index %d out of range", i)
 		}
 		target.Program = append(target.Program[:i], target.Program[i+1:]...)
+		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
 		f.memoryWrites++
@@ -1858,6 +1866,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		target.Program = append(target.Program, make([]Op, len(frag))...)
 		copy(target.Program[i+len(frag):], target.Program[i:len(target.Program)-len(frag)])
 		copy(target.Program[i:i+len(frag)], frag)
+		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
 		f.memoryWrites++
@@ -1889,6 +1898,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		newp = append(newp, frag...)
 		newp = append(newp, target.Program[i+deleteCount:]...)
 		target.Program = newp
+		target.CapabilitySig = ""
 		target.Revision++
 		e.markDirty(target.ID)
 		f.memoryWrites++
@@ -1927,6 +1937,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		child.Generation = parent.Generation + 1
 		child.Parents = []string{parent.ID}
+		child.CapabilitySig = ""
 		child.SuccessHistory = nil
 		child.FailureHistory = nil
 		child.MutationVariants = nil
@@ -1974,6 +1985,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		if !contains(*dst, value) {
 			*dst = append(*dst, value)
+			target.CapabilitySig = ""
 			target.Revision++
 			owner.dirty = true
 			owner.dirtyIDs[target.ID] = true
@@ -1994,6 +2006,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			owner.dataMu.Lock()
 			if !contains(target.Tags, t) {
 				target.Tags = append(target.Tags, t)
+				target.CapabilitySig = ""
 				target.Revision++
 				owner.tagDeltaAddLocked(target.ID, t)
 				owner.dirty = true
@@ -2022,6 +2035,7 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		target.Tags = nt
 		if had {
+			target.CapabilitySig = ""
 			target.Revision++
 			owner.tagDeltaRemoveLocked(target.ID, t)
 			owner.dirty = true
@@ -2427,7 +2441,19 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		res, err := m.sharedFetch(x(op.A))
 		if err != nil {
-			return -1, err
+			if !truth(x(op.Args["soft_fail"])) {
+				return -1, err
+			}
+			if op.B != "" {
+				f.Vars[op.B] = ""
+			}
+			if op.C != "" {
+				f.Vars[op.C] = "forgotten"
+			}
+			if k := op.Args["reason_out"]; k != "" {
+				f.Vars[k] = err.Error()
+			}
+			break
 		}
 		b, _ := json.Marshal(res.Memory)
 		if op.B != "" {
@@ -2435,6 +2461,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		if op.C != "" {
 			f.Vars[op.C] = res.Status
+		}
+		if k := op.Args["reason_out"]; k != "" {
+			f.Vars[k] = res.Reason
 		}
 	case "mesh_shared_reconcile":
 		m := meshRuntimeCurrent()
@@ -2450,6 +2479,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		if op.C != "" {
 			f.Vars[op.C] = res.Status
+		}
+		if k := op.Args["reason_out"]; k != "" {
+			f.Vars[k] = res.Reason
 		}
 	case "mesh_structure_run":
 		m := meshRuntimeCurrent()

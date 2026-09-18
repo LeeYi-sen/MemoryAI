@@ -302,6 +302,9 @@ func meshJournalLogicalKey(req MeshRequest) string {
 	if req.Op == "shared_propose" && strings.TrimSpace(req.MemoryID) != "" {
 		return req.Op + "\x00" + strings.TrimSpace(req.MemoryID)
 	}
+	if req.Op == "shared_proposal_ack" && strings.TrimSpace(req.ReceiptID) != "" {
+		return req.Op + "\x00" + strings.TrimSpace(req.ReceiptID)
+	}
 	b, _ := json.Marshal(req)
 	h := sha256.Sum256(b)
 	return req.Op + "\x00" + hex.EncodeToString(h[:])
@@ -348,6 +351,65 @@ func removeDeferredMeshRequestExact(m *meshRuntime, req MeshRequest) error {
 	return nil
 }
 
+func replaceDeferredMeshRequestExact(m *meshRuntime, oldReq, newReq MeshRequest) error {
+	st := meshJournalStateFor(m)
+	if st == nil {
+		return errors.New("mesh journal runtime unavailable")
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if err := recoverMeshDeferredJournalLocked(m, st); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	current := append([]MeshRequest(nil), m.journal...)
+	m.mu.RUnlock()
+	target := meshJournalExactKey(oldReq)
+	idx := -1
+	for i := range current {
+		if meshJournalExactKey(current[i]) == target {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return errors.New("mesh deferred request transition source missing")
+	}
+	next := append([]MeshRequest(nil), current...)
+	next[idx] = newReq
+	if err := persistMeshDeferredJournalLocked(m, st, next); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.journal = next
+	m.mu.Unlock()
+	return nil
+}
+
+func meshProposalAckRequest(proposal MeshRequest, res MeshResponse) (MeshRequest, error) {
+	receiptID := strings.TrimSpace(res.ReceiptID)
+	if receiptID == "" {
+		return MeshRequest{}, errors.New("Sovereign proposal response missing receipt_id")
+	}
+	if strings.TrimSpace(proposal.MemoryID) == "" || strings.TrimSpace(proposal.OriginNode) == "" || proposal.Revision == 0 {
+		return MeshRequest{}, errors.New("proposal ACK source identity incomplete")
+	}
+	return MeshRequest{
+		Op:         "shared_proposal_ack",
+		ReceiptID:  receiptID,
+		MemoryID:   proposal.MemoryID,
+		OriginNode: proposal.OriginNode,
+		Revision:   proposal.Revision,
+	}, nil
+}
+
+func sendDeferredMeshProposalAck(m *meshRuntime, ack MeshRequest) error {
+	if _, err := m.authorityRPC(ack); err != nil {
+		return err
+	}
+	return removeDeferredMeshRequestExact(m, ack)
+}
+
 func flushMeshDeferredJournal(m *meshRuntime) error {
 	if err := recoverMeshDeferredJournal(m); err != nil {
 		return err
@@ -356,7 +418,23 @@ func flushMeshDeferredJournal(m *meshRuntime) error {
 	pending := append([]MeshRequest(nil), m.journal...)
 	m.mu.RUnlock()
 	for _, req := range pending {
-		if _, err := m.authorityRPC(req); err != nil {
+		res, err := m.authorityRPC(req)
+		if err != nil {
+			continue
+		}
+		if req.Op == "shared_propose" {
+			ack, ackErr := meshProposalAckRequest(req, res)
+			if ackErr != nil {
+				continue
+			}
+			// Atomically transition the durable spool from proposal to ACK before
+			// any ACK is sent. A crash can therefore never resurrect the proposal.
+			if err := replaceDeferredMeshRequestExact(m, req, ack); err != nil {
+				return fmt.Errorf("Sovereign accepted proposal but Memory spool could not transition to ACK: %w", err)
+			}
+			if err := sendDeferredMeshProposalAck(m, ack); err != nil {
+				continue
+			}
 			continue
 		}
 		if err := removeDeferredMeshRequestExact(m, req); err != nil {
@@ -417,14 +495,32 @@ func (m *meshRuntime) proposeSharedDurable(id string) (MeshResponse, error) {
 		Op: "shared_propose", MemoryID: mem.ID, ProposalDigest: memoryJSONDigest(mem),
 		Revision: mem.Revision, OriginNode: origin, Endpoint: endpoint, Tags: append([]string(nil), mem.Tags...),
 	}
+	// Persist the proposal before transport. Once the Sovereign executes it, the
+	// same durable slot is converted to an ACK before the ACK is transmitted.
+	// This closes the crash window between successful execution and local spool
+	// removal.
+	if err := deferMeshRequest(m, req); err != nil {
+		return MeshResponse{OK: false, Status: "backpressure", Decision: "not-deferred", Reason: err.Error()}, fmt.Errorf("Memory journal rejected proposal before transport: %w", err)
+	}
 	res, authorityErr := m.authorityRPC(req)
-	if authorityErr == nil {
+	if authorityErr != nil {
+		return MeshResponse{OK: true, Status: "deferred", Decision: "authority-unreachable", Reason: authorityErr.Error()}, nil
+	}
+	ack, err := meshProposalAckRequest(req, res)
+	if err != nil {
+		return MeshResponse{OK: false, Status: "receipt-missing", Decision: res.Decision, Reason: err.Error()}, err
+	}
+	if err := replaceDeferredMeshRequestExact(m, req, ack); err != nil {
+		return MeshResponse{OK: false, Status: "ack-transition-failed", Decision: res.Decision, Reason: err.Error(), ReceiptID: res.ReceiptID}, err
+	}
+	if err := sendDeferredMeshProposalAck(m, ack); err != nil {
+		if res.Reason != "" {
+			res.Reason += "; "
+		}
+		res.Reason += "proposal ACK deferred: " + err.Error()
 		return res, nil
 	}
-	if err := deferMeshRequest(m, req); err != nil {
-		return MeshResponse{OK: false, Status: "backpressure", Decision: "not-deferred", Reason: authorityErr.Error()}, fmt.Errorf("sovereign authority unavailable and Memory journal rejected request: %w", err)
-	}
-	return MeshResponse{OK: true, Status: "deferred", Decision: "authority-unreachable", Reason: authorityErr.Error()}, nil
+	return res, nil
 }
 
 func meshDeferredJournalInfo(m *meshRuntime) map[string]any {

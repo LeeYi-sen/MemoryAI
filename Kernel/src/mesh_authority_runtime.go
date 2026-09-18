@@ -91,6 +91,8 @@ func (m *meshRuntime) handleAuthority(req MeshRequest) MeshResponse {
 		return m.searchShared(req)
 	case "shared_grant":
 		return m.issueSharedGrant(req)
+	case "shared_proposal_ack":
+		return m.ackSharedProposal(req)
 	case "shared_reconcile":
 		m.mu.RLock()
 		rec, ok := m.shared[req.MemoryID]
@@ -173,6 +175,7 @@ func (m *meshRuntime) authorizeSharedProposal(req MeshRequest) MeshResponse {
 	f.Vars["origin_node"] = req.OriginNode
 	f.Vars["proposal_digest"] = req.ProposalDigest
 	f.Vars["revision"] = fmt.Sprint(req.Revision)
+	f.Vars["proposal_tags"] = strings.Join(req.Tags, ",")
 	f.Lists["tags"] = append([]string(nil), req.Tags...)
 	if err := e.fireEvent("mesh.shared.proposal", req.MemoryID, f); err != nil {
 		return MeshResponse{OK: false, Error: err.Error()}
@@ -185,6 +188,7 @@ func (m *meshRuntime) authorizeSharedProposal(req MeshRequest) MeshResponse {
 	if reason == "" {
 		reason = f.Vars["reason"]
 	}
+	receiptID := strings.TrimSpace(f.Vars["mesh_request_id"])
 	switch decision {
 	case "approve", "approved", "allow", "authorized":
 		rec := MeshRecord{
@@ -199,10 +203,10 @@ func (m *meshRuntime) authorizeSharedProposal(req MeshRequest) MeshResponse {
 		m.mu.Lock()
 		m.shared[rec.MemoryID] = rec
 		m.mu.Unlock()
-		return MeshResponse{OK: true, Status: "shared", Decision: "approved", Reason: reason, Records: []MeshRecord{rec}}
+		return MeshResponse{OK: true, Status: "shared", Decision: "approved", Reason: reason, ReceiptID: receiptID, Records: []MeshRecord{rec}}
 	case "deny", "denied", "reject", "rejected":
-		return MeshResponse{OK: true, Status: "local", Decision: "denied", Reason: reason}
+		return MeshResponse{OK: true, Status: "local", Decision: "denied", Reason: reason, ReceiptID: receiptID}
 	default:
-		return MeshResponse{OK: true, Status: "candidate", Decision: "pending-memory-policy", Reason: reason}
+		return MeshResponse{OK: true, Status: "candidate", Decision: "pending-memory-policy", Reason: reason, ReceiptID: receiptID}
 	}
 }

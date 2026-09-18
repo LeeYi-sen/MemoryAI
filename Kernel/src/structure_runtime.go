@@ -25,6 +25,7 @@ func memoryJSONDigest(m *Memory) string {
 	}
 	q := copyMemory(m)
 	q.RuntimeExecCount = 0
+	q.CapabilitySig = ""
 	b, _ := json.Marshal(q)
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:])

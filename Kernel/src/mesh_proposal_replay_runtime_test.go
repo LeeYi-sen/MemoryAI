@@ -107,3 +107,144 @@ func TestSovereignDirectoryAndSharedAuthorizationRecoverFromMemory(t *testing.T)
 		t.Fatalf("shared authorization did not recover from Memory: %+v", got)
 	}
 }
+
+func TestMeshProposalAckGcPersistsFenceAndIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	_, e := testMeshMemoryRuntime(t, dir, "sovereign-ack", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	f.Vars["mesh_decision"] = "approved"
+	if err := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, nil); err != nil {
+		t.Fatal(err)
+	}
+	ack := MeshRequest{
+		Op: "shared_proposal_ack", ReceiptID: entry.RequestID,
+		MemoryID: "shared.memory", OriginNode: "node-a", Revision: 1,
+	}
+	status, err := ackMeshProposalReplay(e, ack)
+	if err != nil || status != "acked-gc" {
+		t.Fatalf("ACK/GC failed status=%q err=%v", status, err)
+	}
+	if _, _, found, err := loadMeshProposalReplayEntry(e, entry.RequestID); err != nil || found {
+		t.Fatalf("done receipt survived ACK GC: found=%v err=%v", found, err)
+	}
+	if through, err := loadMeshProposalAckedThrough(e, entry.Slot); err != nil || through != 1 {
+		t.Fatalf("ACK fence not durable: through=%d err=%v", through, err)
+	}
+	if status, err := ackMeshProposalReplay(e, ack); err != nil || status != "acked-gc" {
+		t.Fatalf("duplicate ACK was not idempotent status=%q err=%v", status, err)
+	}
+
+	e.close()
+	forgetMeshProposalReplayState(e)
+	restored, err := loadEngineWithMutationJournal(filepath.Join(dir, "Memory.mem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.close()
+	if status, err := ackMeshProposalReplay(restored, ack); err != nil || status != "acked-gc" {
+		t.Fatalf("restart lost ACK fence status=%q err=%v", status, err)
+	}
+}
+
+func TestMeshProposalAckRefusesExecutingReceipt(t *testing.T) {
+	dir := t.TempDir()
+	_, e := testMeshMemoryRuntime(t, dir, "sovereign-executing", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	_, entry, _, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	ack := MeshRequest{
+		Op: "shared_proposal_ack", ReceiptID: entry.RequestID,
+		MemoryID: "shared.memory", OriginNode: "node-a", Revision: 1,
+	}
+	if _, err := ackMeshProposalReplay(e, ack); err == nil {
+		t.Fatal("executing receipt was GC eligible")
+	}
+	got, _, found, err := loadMeshProposalReplayEntry(e, entry.RequestID)
+	if err != nil || !found || got.State != meshProposalReplayExecuting {
+		t.Fatalf("executing receipt was altered: found=%v entry=%+v err=%v", found, got, err)
+	}
+}
+
+func TestMeshProposalAckFailsClosedWithoutAckFence(t *testing.T) {
+	dir := t.TempDir()
+	_, e := testMeshMemoryRuntime(t, dir, "sovereign-missing", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	f.Vars["mesh_decision"] = "approved"
+	if err := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.explicitDeleteMemory(entry.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.persistAll(); err != nil {
+		t.Fatal(err)
+	}
+	ack := MeshRequest{
+		Op: "shared_proposal_ack", ReceiptID: entry.RequestID,
+		MemoryID: "shared.memory", OriginNode: "node-a", Revision: 1,
+	}
+	if _, err := ackMeshProposalReplay(e, ack); err == nil {
+		t.Fatal("missing receipt without ACK fence was accepted")
+	}
+}
+
+func TestMeshProposalAckRejectsFutureRevision(t *testing.T) {
+	dir := t.TempDir()
+	_, e := testMeshMemoryRuntime(t, dir, "sovereign-future", "sovereign")
+	f := proposalReplayFrame("1")
+	ev := newPhysicalEvent("mesh.shared.proposal", "shared.memory", f.Vars)
+	st, entry, receiptRevision, replay, err := prepareMeshProposalReplay(e, f, ev)
+	if err != nil || replay {
+		t.Fatalf("prepare failed replay=%v err=%v", replay, err)
+	}
+	f.Vars["mesh_decision"] = "approved"
+	if err := finalizeMeshProposalReplay(e, st, entry, receiptRevision, f, nil); err != nil {
+		t.Fatal(err)
+	}
+	ack := MeshRequest{
+		Op: "shared_proposal_ack", ReceiptID: entry.RequestID,
+		MemoryID: "shared.memory", OriginNode: "node-a", Revision: 2,
+	}
+	if _, err := ackMeshProposalReplay(e, ack); err == nil {
+		t.Fatal("future revision ACK was accepted")
+	}
+}
+
+func TestSovereignProposalResponseCarriesReceiptAndAckGc(t *testing.T) {
+	e := loadCurrentBodyForGrowthTest(t)
+	m := &meshRuntime{
+		role: "sovereign", nodeID: "sovereign-real-ack", engine: e,
+		directory: map[string]MeshNode{}, shared: map[string]MeshRecord{}, client: &http.Client{},
+	}
+	req := MeshRequest{
+		Op: "shared_propose", MemoryID: "remote.goal", OriginNode: "node-real",
+		ProposalDigest: "digest-real", Revision: 1, Tags: []string{"memory", "cog.goal"},
+	}
+	res := m.authorizeSharedProposal(req)
+	if !res.OK || res.ReceiptID == "" {
+		t.Fatalf("real Sovereign proposal response missing durable receipt: %+v", res)
+	}
+	ack := m.ackSharedProposal(MeshRequest{
+		Op: "shared_proposal_ack", ReceiptID: res.ReceiptID,
+		MemoryID: req.MemoryID, OriginNode: req.OriginNode, Revision: req.Revision,
+	})
+	if !ack.OK || ack.Status != "acked-gc" {
+		t.Fatalf("real Sovereign ACK/GC failed: %+v", ack)
+	}
+	if _, _, found, err := loadMeshProposalReplayEntry(e, res.ReceiptID); err != nil || found {
+		t.Fatalf("real authority receipt survived ACK GC: found=%v err=%v", found, err)
+	}
+}

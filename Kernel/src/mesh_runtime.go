@@ -43,22 +43,24 @@ type MeshRequest struct {
 	Revision       uint64            `json:"revision,omitempty"`
 	OriginNode     string            `json:"origin_node,omitempty"`
 	Endpoint       string            `json:"endpoint,omitempty"`
+	ReceiptID      string            `json:"receipt_id,omitempty"`
 	Vars           map[string]string `json:"vars,omitempty"`
 	Node           *MeshNode         `json:"node,omitempty"`
 	Grant          *MeshGrant        `json:"grant,omitempty"`
 }
 
 type MeshResponse struct {
-	OK       bool         `json:"ok"`
-	Error    string       `json:"error,omitempty"`
-	Status   string       `json:"status,omitempty"`
-	Decision string       `json:"decision,omitempty"`
-	Reason   string       `json:"reason,omitempty"`
-	Records  []MeshRecord `json:"records,omitempty"`
-	Nodes    []MeshNode   `json:"nodes,omitempty"`
-	Memory   *Memory      `json:"memory,omitempty"`
-	Frame    *Frame       `json:"frame,omitempty"`
-	Grant    *MeshGrant   `json:"grant,omitempty"`
+	OK        bool         `json:"ok"`
+	Error     string       `json:"error,omitempty"`
+	Status    string       `json:"status,omitempty"`
+	Decision  string       `json:"decision,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
+	ReceiptID string       `json:"receipt_id,omitempty"`
+	Records   []MeshRecord `json:"records,omitempty"`
+	Nodes     []MeshNode   `json:"nodes,omitempty"`
+	Memory    *Memory      `json:"memory,omitempty"`
+	Frame     *Frame       `json:"frame,omitempty"`
+	Grant     *MeshGrant   `json:"grant,omitempty"`
 }
 
 type meshRuntime struct {
