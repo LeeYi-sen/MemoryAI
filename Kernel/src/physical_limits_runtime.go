@@ -24,6 +24,8 @@ const (
 	hardStorageTransportMaxBytes    int64 = 32 << 20
 	defaultPhysicalExchangeTimeout        = 5 * time.Second
 	hardPhysicalExchangeTimeout           = 60 * time.Second
+	defaultFrameListMaxItems              = 8192
+	hardFrameListMaxItems                 = 65536
 )
 
 func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
@@ -39,6 +41,37 @@ func boundedPhysicalByteEnv(name string, fallback, hardMax int64) int64 {
 		return hardMax
 	}
 	return value
+}
+
+func boundedPhysicalCountEnv(name string, fallback, hardMax int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return fallback
+	}
+	if value > hardMax {
+		return hardMax
+	}
+	return value
+}
+
+func frameListMaxItems() int {
+	return boundedPhysicalCountEnv(
+		"MEMORYAI_FRAME_LIST_MAX_ITEMS",
+		defaultFrameListMaxItems,
+		hardFrameListMaxItems,
+	)
+}
+
+func ensureFrameListItems(count int, label string) error {
+	maxItems := frameListMaxItems()
+	if count > maxItems {
+		return fmt.Errorf("%s exceeds physical Frame-list cardinality: items=%d max=%d", label, count, maxItems)
+	}
+	return nil
 }
 
 func physicalExchangeMaxBytes() int64 {

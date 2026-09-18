@@ -1511,6 +1511,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 	case "utf8_bytes":
 		src := []byte(f.Vars[op.A])
+		if err := ensureFrameListItems(len(src), "utf8_bytes"); err != nil {
+			return -1, err
+		}
 		out := make([]string, len(src))
 		for i, b := range src {
 			out[i] = fmt.Sprintf("%02x", b)
@@ -1518,7 +1521,14 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		f.Lists[op.B] = out
 		f.Vars[op.B+"_count"] = strconv.Itoa(len(out))
 	case "unicode_runes":
-		out := make([]string, 0, len(f.Vars[op.A]))
+		runeCount := 0
+		for range f.Vars[op.A] {
+			runeCount++
+		}
+		if err := ensureFrameListItems(runeCount, "unicode_runes"); err != nil {
+			return -1, err
+		}
+		out := make([]string, 0, runeCount)
 		for _, r := range f.Vars[op.A] {
 			out = append(out, fmt.Sprintf("%x", r))
 		}
@@ -1535,6 +1545,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		if q, er := strconv.Atoi(x(op.Args["limit"])); er == nil && q > 0 {
 			maxOut = q
+		}
+		if err := ensureFrameListItems(maxOut, "unicode_windows"); err != nil {
+			return -1, err
 		}
 		if maxN < minN {
 			maxN = minN
@@ -1557,6 +1570,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		f.Lists[op.B] = out
 		f.Vars[op.B+"_count"] = strconv.Itoa(len(out))
 	case "list_append":
+		if err := ensureFrameListItems(len(f.Lists[op.A])+1, "list_append"); err != nil {
+			return -1, err
+		}
 		f.Lists[op.A] = append(f.Lists[op.A], x(op.B))
 		f.Vars[op.A+"_count"] = strconv.Itoa(len(f.Lists[op.A]))
 	case "list_contains":
@@ -1583,6 +1599,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 			}
 		}
 		if !seen {
+			if err := ensureFrameListItems(len(f.Lists[op.A])+1, "list_unique_append"); err != nil {
+				return -1, err
+			}
 			f.Lists[op.A] = append(f.Lists[op.A], val)
 		}
 		f.Vars[op.A+"_count"] = strconv.Itoa(len(f.Lists[op.A]))
@@ -1684,6 +1703,9 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err := json.Unmarshal([]byte(x(op.A)), &obj); err != nil {
 			return -1, fmt.Errorf("json_keys: %w", err)
 		}
+		if err := ensureFrameListItems(len(obj), "json_keys"); err != nil {
+			return -1, err
+		}
 		keys := make([]string, 0, len(obj))
 		for k := range obj {
 			keys = append(keys, k)
@@ -1735,7 +1757,10 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 				return -1, fmt.Errorf("json_array_strings: %w", er)
 			}
 		}
-		out := []string{}
+		if err := ensureFrameListItems(len(arr), "json_array_strings"); err != nil {
+			return -1, err
+		}
+		out := make([]string, 0, len(arr))
 		for _, v := range arr {
 			switch q := v.(type) {
 			case string:
@@ -1752,7 +1777,11 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if err != nil {
 			return -1, err
 		}
-		mm := re.FindAllStringSubmatch(f.Vars[op.A], -1)
+		maxItems := frameListMaxItems()
+		mm := re.FindAllStringSubmatch(f.Vars[op.A], maxItems+1)
+		if len(mm) > maxItems {
+			return -1, fmt.Errorf("regex_all exceeds physical Frame-list cardinality: items>%d", maxItems)
+		}
 		vals := []string{}
 		for _, m := range mm {
 			if len(m) > 1 {

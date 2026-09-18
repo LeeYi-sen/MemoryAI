@@ -273,3 +273,16 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical `data/Memory.mem` remains unchanged with SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`; image version remains `28.9.0-memory-fabric-sovereign`; Memory ABI remains `memoryai-memory-abi-v1`.
 - Final validation: architecture regression suite 41/41 PASS; live architecture audit PASS; Python suite 58/58 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-032 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 044 — bound Frame-list cardinality
+- Base HEAD: `6394478025ea40206109948cae1e52f859d13c21` (`Entry 043: hard-cap external I/O timeouts`).
+- Continued post-repair audit closed PR-033; tracker now has 33 DONE / 0 OPEN findings.
+- Frame list expansion now has a configurable physical ceiling via `MEMORYAI_FRAME_LIST_MAX_ITEMS`: default 8192 items, hard Kernel maximum 65536 items. Operator configuration cannot exceed the hard ceiling.
+- `unicode_windows` rejects a Memory-requested output limit above the physical ceiling before allocating its result slice.
+- `regex_all` no longer performs unbounded `FindAllStringSubmatch(..., -1)`; it requests at most `max+1` matches and fails closed on overflow.
+- `list_append` and `list_unique_append` reject overflow before mutating the Frame list.
+- `utf8_bytes`, `unicode_runes`, `json_keys` and `json_array_strings` also enforce the same physical result-cardinality boundary before bounded output expansion/copy.
+- The Kernel never truncates or ranks overflowing cognitive results; Memory must explicitly batch larger work.
+- Canonical cognitive seed and body are unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 42/42 PASS; live architecture audit PASS; Python suite 59/59 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-033 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

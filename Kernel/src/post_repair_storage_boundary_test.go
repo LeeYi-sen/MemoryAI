@@ -1496,3 +1496,46 @@ func TestRemoteStorageDirectTimeoutClamp(t *testing.T) {
 		t.Fatalf("direct remote storage timeout escaped physical hard cap: %v", got)
 	}
 }
+
+func TestUnicodeWindowsRejectsFrameListCardinalityOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_LIST_MAX_ITEMS", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["src"] = "abcdefghijklmnopqrst"
+	op := Op{Code: "unicode_windows", A: "src", B: "out", Args: map[string]string{"min": "1", "max": "1", "limit": "9"}}
+	if _, err := e.execPrimitive(&Memory{ID: "frame-list-test"}, op, f, 0, nil); err == nil {
+		t.Fatal("unicode_windows exceeded physical Frame-list cardinality without rejection")
+	}
+}
+
+func TestRegexAllRejectsFrameListCardinalityOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_LIST_MAX_ITEMS", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Vars["src"] = "a a a a a a a a a"
+	op := Op{Code: "regex_all", A: "src", B: "(a)", C: "matches"}
+	if _, err := e.execPrimitive(&Memory{ID: "frame-list-test"}, op, f, 0, nil); err == nil {
+		t.Fatal("regex_all exceeded physical Frame-list cardinality without rejection")
+	}
+}
+
+func TestListAppendRejectsFrameListCardinalityOverflow(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_LIST_MAX_ITEMS", "8")
+	e := loadCurrentBodyForGrowthTest(t)
+	f := newFrame()
+	f.Lists["items"] = []string{"1", "2", "3", "4", "5", "6", "7", "8"}
+	op := Op{Code: "list_append", A: "items", B: "9"}
+	if _, err := e.execPrimitive(&Memory{ID: "frame-list-test"}, op, f, 0, nil); err == nil {
+		t.Fatal("list_append exceeded physical Frame-list cardinality without rejection")
+	}
+	if len(f.Lists["items"]) != 8 {
+		t.Fatalf("overflowing list append mutated Frame before rejection: %d", len(f.Lists["items"]))
+	}
+}
+
+func TestFrameListOperatorLimitCannotExceedKernelHardCap(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_LIST_MAX_ITEMS", "999999999")
+	if got := frameListMaxItems(); got != hardFrameListMaxItems {
+		t.Fatalf("Frame-list operator limit escaped Kernel hard cap: got=%d hard=%d", got, hardFrameListMaxItems)
+	}
+}

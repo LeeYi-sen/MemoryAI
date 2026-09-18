@@ -69,3 +69,12 @@ Memory-provided timeout values are physical execution parameters only and are ha
 Raw exchange and remote-storage requests clamp again at the actual I/O function boundary, so a direct internal caller cannot bypass parser-level limits. Oversized integer values are capped before `time.Duration` multiplication to avoid overflow.
 
 Timeout ceilings never rank Memory, infer utility, choose targets, or alter cognitive policy.
+
+## Frame list cardinality
+
+Frame list expansion is physically bounded by `MEMORYAI_FRAME_LIST_MAX_ITEMS`.
+
+- default: 8192 items
+- hard Kernel maximum: 65536 items
+
+The Kernel never silently truncates a cognitive result set. A primitive that would exceed the physical cardinality returns an error before the bounded output mutation/allocation; Memory must explicitly split or batch larger work.

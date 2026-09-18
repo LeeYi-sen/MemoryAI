@@ -627,6 +627,21 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "external I/O timeout boundary"):
             self.run_audit(repo)
 
+    def test_requires_frame_list_cardinality_gate(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                "FindAllStringSubmatch(f.Vars[op.A], maxItems+1)",
+                "FindAllStringSubmatch(f.Vars[op.A], -1)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Frame-list cardinality"):
+            self.run_audit(repo)
+
 
 if __name__ == "__main__":
     unittest.main()

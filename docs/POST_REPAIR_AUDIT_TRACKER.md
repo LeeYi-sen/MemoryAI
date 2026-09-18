@@ -115,3 +115,20 @@
 - Source-adapter timeout parsing now uses a 15 s default and 120 s hard maximum for both Go duration strings and integer-second inputs; oversized integer values are capped before `time.Duration` multiplication.
 - These timeout ceilings are physical execution safety only and do not affect Memory relevance, priority, utility, confidence or goal selection.
 - Final validation: architecture regression suite 41/41 PASS; live architecture audit PASS; Python suite 58/58 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-032 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 043
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-033 | P0 | DONE | Frame list-producing primitives can allocate or append an unbounded number of elements inside one primitive (`unicode_windows`, `regex_all`, repeated `list_append`/`list_unique_append`), bypassing post-primitive allocation sampling | Add a configurable Frame-list cardinality ceiling with a hard Kernel maximum; oversized expansion/appends must fail before large result allocation or mutation, never silently truncate cognitive data |
+
+## Entry 044 closure evidence
+
+- PR-033 is DONE.
+- Frame list cardinality now has a configurable physical ceiling via `MEMORYAI_FRAME_LIST_MAX_ITEMS`: default 8192, hard Kernel maximum 65536. Operator configuration cannot exceed the hard ceiling.
+- `unicode_windows` rejects an oversized requested result limit before result-slice allocation.
+- `regex_all` asks RE2 for at most `max+1` matches and fails closed on overflow instead of collecting the entire match set.
+- `list_append` / `list_unique_append` reject the write before mutating an already-full Frame list.
+- `utf8_bytes`, `unicode_runes`, `json_keys` and `json_array_strings` now reject result cardinality beyond the same physical boundary.
+- No cognitive ranking, truncation, selection or semantic prioritization is performed by this ceiling; Memory must explicitly batch larger work.
+- Architecture regression suite reached 42/42 PASS and live architecture audit PASS before final entry validation.

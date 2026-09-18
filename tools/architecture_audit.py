@@ -281,6 +281,25 @@ def audit() -> dict[str, object]:
         "bounded call_parallel fanout",
     )
 
+    require(
+        physical_limits + kernel_source_text,
+        [
+            "defaultFrameListMaxItems",
+            "hardFrameListMaxItems",
+            "MEMORYAI_FRAME_LIST_MAX_ITEMS",
+            "ensureFrameListItems",
+            'ensureFrameListItems(maxOut, "unicode_windows")',
+            'ensureFrameListItems(len(f.Lists[op.A])+1, "list_append")',
+            "FindAllStringSubmatch(f.Vars[op.A], maxItems+1)",
+        ],
+        "bounded Frame-list cardinality",
+    )
+    forbid(
+        kernel_source_text,
+        ["FindAllStringSubmatch(f.Vars[op.A], -1)"],
+        "bounded Frame-list cardinality",
+    )
+
     resource_runtime = read("Kernel/src/resource_runtime.go")
     require(
         resource_runtime + kernel_source_text,
