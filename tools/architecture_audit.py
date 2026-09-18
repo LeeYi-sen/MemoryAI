@@ -321,6 +321,15 @@ def audit() -> dict[str, object]:
     )
 
     require(
+        kernel_source_text,
+        [
+            'ensureMemoryRecordWithinPhysicalLimit(&candidate, "memory_history_append")',
+            'ensureMemoryRecordWithinPhysicalLimit(&candidate, "memory_tag_add")',
+        ],
+        "bounded Memory metadata record growth",
+    )
+
+    require(
         physical_limits + kernel_source_text,
         [
             "MEMORYAI_MEMORY_RECORD_MAX_BYTES",

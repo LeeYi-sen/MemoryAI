@@ -2129,21 +2129,46 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		if value == "" {
 			break
 		}
+		if int64(len(value)) > memoryRecordMaxBytes() {
+			return -1, fmt.Errorf("memory_history_append exceeds physical Memory-record byte ceiling: max=%d", memoryRecordMaxBytes())
+		}
 		owner.dataMu.Lock()
-		var dst *[]string
+		candidate := *target
+		var current []string
 		switch field {
 		case "success_history":
-			dst = &target.SuccessHistory
+			current = target.SuccessHistory
 		case "failure_history":
-			dst = &target.FailureHistory
+			current = target.FailureHistory
 		case "mutation_variants":
-			dst = &target.MutationVariants
+			current = target.MutationVariants
 		default:
 			owner.dataMu.Unlock()
 			return -1, fmt.Errorf("unknown Memory history field %q", field)
 		}
-		if !contains(*dst, value) {
-			*dst = append(*dst, value)
+		if !contains(current, value) {
+			nextHistory := append([]string(nil), current...)
+			nextHistory = append(nextHistory, value)
+			switch field {
+			case "success_history":
+				candidate.SuccessHistory = nextHistory
+			case "failure_history":
+				candidate.FailureHistory = nextHistory
+			case "mutation_variants":
+				candidate.MutationVariants = nextHistory
+			}
+			if err := ensureMemoryRecordWithinPhysicalLimit(&candidate, "memory_history_append"); err != nil {
+				owner.dataMu.Unlock()
+				return -1, err
+			}
+			switch field {
+			case "success_history":
+				target.SuccessHistory = nextHistory
+			case "failure_history":
+				target.FailureHistory = nextHistory
+			case "mutation_variants":
+				target.MutationVariants = nextHistory
+			}
 			target.CapabilitySig = ""
 			target.Revision++
 			owner.dirty = true
@@ -2162,9 +2187,20 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		t := x(op.B)
 		if t != "" {
+			if int64(len(t)) > memoryRecordMaxBytes() {
+				return -1, fmt.Errorf("memory_tag_add exceeds physical Memory-record byte ceiling: max=%d", memoryRecordMaxBytes())
+			}
 			owner.dataMu.Lock()
 			if !contains(target.Tags, t) {
-				target.Tags = append(target.Tags, t)
+				nextTags := append([]string(nil), target.Tags...)
+				nextTags = append(nextTags, t)
+				candidate := *target
+				candidate.Tags = nextTags
+				if err := ensureMemoryRecordWithinPhysicalLimit(&candidate, "memory_tag_add"); err != nil {
+					owner.dataMu.Unlock()
+					return -1, err
+				}
+				target.Tags = nextTags
 				target.CapabilitySig = ""
 				target.Revision++
 				owner.tagDeltaAddLocked(target.ID, t)

@@ -199,3 +199,19 @@
 - String/list payloads receive a cheap preflight before complete record encoding so obviously impossible values do not force an oversized encoding allocation.
 - No field ranking, State truncation, eviction, or cognitive selection is introduced; Memory must explicitly split or relocate structures that exceed the physical record envelope.
 - Final validation: architecture regression suite 48/48 PASS; live architecture audit PASS; Python suite 65/65 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-037 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 048
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-038 | P0 | DONE | `memory_history_append` and `memory_tag_add` can grow persistent Memory metadata beyond the physical Memory-record ceiling before persistence rejects the record | Construct history/tag candidates under the owner lock, validate the complete Memory record before commit, and reject overflow before Revision/signature/dirty/tag-index side effects |
+
+## Entry 049 closure evidence
+
+- PR-038 is DONE.
+- `memory_history_append` validates candidate `success_history`, `failure_history`, or `mutation_variants` against the complete runtime Memory-record ceiling before replacing the selected history field.
+- `memory_tag_add` validates candidate tags before mutating the Memory or physical tag delta index.
+- Oversized metadata writes leave Revision, CapabilitySig, dirty bookkeeping, history/tag fields, and tag-index deltas unchanged.
+- Single history/tag values larger than the runtime record envelope are rejected before complete record encoding.
+- No history eviction, tag ranking, semantic filtering, or truncation is introduced.
+- Final validation: architecture regression suite 49/49 PASS; live architecture audit PASS; Python suite 66/66 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-038 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

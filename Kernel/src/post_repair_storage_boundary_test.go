@@ -1776,3 +1776,35 @@ func TestStateNumAddRejectsMemoryRecordByteOverflowBeforeMutation(t *testing.T) 
 		t.Fatal("overflowing state_num_add published output")
 	}
 }
+
+func TestMemoryHistoryAppendRejectsRecordByteOverflowBeforeMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_MEMORY_RECORD_MAX_BYTES", "256")
+	e := loadCurrentBodyForGrowthTest(t)
+	target := &Memory{ID: "record-bound-history", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{"pad": strings.Repeat("x", 130)}, Revision: 1}
+	e.addRuntimeMemory(target)
+	f := newFrame()
+	f.Vars["history"] = strings.Repeat("h", 64)
+	op := Op{Code: "memory_history_append", A: target.ID, B: "{{history}}", Args: map[string]string{"field": "success_history"}}
+	if _, err := e.execPrimitive(target, op, f, 0, nil); err == nil {
+		t.Fatal("memory_history_append exceeded physical Memory-record byte ceiling without rejection")
+	}
+	if len(target.SuccessHistory) != 0 || target.Revision != 1 {
+		t.Fatalf("overflowing memory_history_append mutated target: revision=%d history=%v", target.Revision, target.SuccessHistory)
+	}
+}
+
+func TestMemoryTagAddRejectsRecordByteOverflowBeforeMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_MEMORY_RECORD_MAX_BYTES", "256")
+	e := loadCurrentBodyForGrowthTest(t)
+	target := &Memory{ID: "record-bound-tag", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{"pad": strings.Repeat("x", 130)}, Revision: 1}
+	e.addRuntimeMemory(target)
+	f := newFrame()
+	f.Vars["tag"] = strings.Repeat("t", 64)
+	op := Op{Code: "memory_tag_add", A: target.ID, B: "{{tag}}"}
+	if _, err := e.execPrimitive(target, op, f, 0, nil); err == nil {
+		t.Fatal("memory_tag_add exceeded physical Memory-record byte ceiling without rejection")
+	}
+	if len(target.Tags) != 1 || target.Tags[0] != "memory" || target.Revision != 1 {
+		t.Fatalf("overflowing memory_tag_add mutated target: revision=%d tags=%v", target.Revision, target.Tags)
+	}
+}

@@ -333,3 +333,14 @@ Before ending any MemoryAI development turn, all validated current code from tha
 - Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
 - Final validation: architecture regression suite 48/48 PASS; live architecture audit PASS; Python suite 65/65 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-037 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
 - No `go build`, binary release build, archive packaging or release artifact generation was executed.
+
+### Entry 049 — bound Memory metadata record growth
+- Base HEAD: `f212c2e0f95ac299c5023ec333d2710d3f167453` (`Entry 048: bound runtime Memory State growth`).
+- Continued post-repair audit closed PR-038; tracker now has 38 DONE / 0 OPEN findings.
+- `memory_history_append` validates candidate history arrays against the complete runtime Memory-record ceiling before replacing `success_history`, `failure_history`, or `mutation_variants`.
+- `memory_tag_add` validates candidate tags before Memory mutation or physical tag-index delta bookkeeping.
+- Record overflow leaves Revision, CapabilitySig, dirty bookkeeping, history/tag content and tag-index deltas unchanged; single metadata values that cannot fit are rejected before full record encoding.
+- The boundary is physical-only: Kernel does not evict history, rank tags, truncate metadata, or decide which cognition is more important.
+- Canonical cognitive seed and body remain unchanged: 129 Memories; seed SHA-256 `5f8538b951029890d85b025572149fde0a5b7708bcbbd524b17a0979048c7bc4`; `data/Memory.mem` SHA-256 `e30987f5febd8e1cd893c6b313725eedfd72c518490ad711cb7991c5178ef411`.
+- Final validation: architecture regression suite 49/49 PASS; live architecture audit PASS; Python suite 66/66 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-038 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+- No `go build`, binary release build, archive packaging or release artifact generation was executed.

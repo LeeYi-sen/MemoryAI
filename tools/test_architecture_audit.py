@@ -739,5 +739,22 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
 
 
 
+    def test_requires_bounded_memory_metadata_record_growth(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'if err := ensureMemoryRecordWithinPhysicalLimit(&candidate, "memory_tag_add"); err != nil {',
+                'if err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "bounded Memory metadata record growth"):
+            self.run_audit(repo)
+
+
+
 if __name__ == "__main__":
     unittest.main()
