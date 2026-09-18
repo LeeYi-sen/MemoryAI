@@ -2060,3 +2060,56 @@ func TestMemoryNewPreflightsFrameOutputBeforeCreatingMemory(t *testing.T) {
 		t.Fatalf("overflowing memory_new published child id: %#v", f.Vars)
 	}
 }
+
+func TestStateNumAddPreflightsFrameOutputBeforeMemoryMutation(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	target := &Memory{ID: "state-output-bound", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{"counter": "0"}, Revision: 1}
+	e := loadFabricWriteTestEngine(t, []*Memory{target})
+	f := newFrame()
+	f.Vars["occupied"] = "1"
+	op := Op{Code: "state_num_add", A: target.ID, B: "counter", C: "1", Args: map[string]string{"out": "sum"}}
+	if _, err := e.execPrimitive(&Memory{ID: "state-output-caller"}, op, f, 0, nil); err == nil {
+		t.Fatal("state_num_add mutated Memory before rejecting overflowing Frame output")
+	}
+	_, got, err := e.resolveLocalFabricMemory(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got.State["counter"]) != "0" || got.Revision != 1 {
+		t.Fatalf("state_num_add side effect leaked before Frame rejection: state=%v revision=%d", got.State, got.Revision)
+	}
+}
+
+func TestMemoryDeletePreflightsFrameOutputBeforeDeletion(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	target := &Memory{ID: "delete-output-bound", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1}
+	e := loadFabricWriteTestEngine(t, []*Memory{target})
+	f := newFrame()
+	f.Vars["occupied"] = "1"
+	op := Op{Code: "memory_delete", A: target.ID, Args: map[string]string{"ok_out": "ok"}}
+	if _, err := e.execPrimitive(&Memory{ID: "delete-output-caller"}, op, f, 0, nil); err == nil {
+		t.Fatal("memory_delete deleted Memory before rejecting overflowing Frame output")
+	}
+	if _, _, err := e.resolveLocalFabricMemory(target.ID); err != nil {
+		t.Fatalf("memory_delete side effect leaked before Frame rejection: %v", err)
+	}
+}
+
+func TestMemoryImportPreflightsFrameOutputsBeforeImport(t *testing.T) {
+	t.Setenv("MEMORYAI_FRAME_VAR_MAX_ITEMS", "1")
+	e := loadFabricWriteTestEngine(t, nil)
+	incoming := &Memory{ID: "import-output-bound", Layer: "emergent", Tags: []string{"memory"}, State: map[string]any{}, Revision: 1}
+	raw, err := json.Marshal(incoming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFrame()
+	f.Vars["payload"] = string(raw)
+	op := Op{Code: "memory_import_json", A: "{{payload}}", B: "imported_id", C: "status"}
+	if _, err := e.execPrimitive(&Memory{ID: "import-output-caller"}, op, f, 0, nil); err == nil {
+		t.Fatal("memory_import_json imported Memory before rejecting overflowing Frame outputs")
+	}
+	if _, _, err := e.resolveLocalFabricMemory(incoming.ID); !errors.Is(err, io.EOF) {
+		t.Fatalf("memory_import_json side effect leaked before Frame rejection: %v", err)
+	}
+}

@@ -854,5 +854,21 @@ class ArchitectureAuditMemoryABITest(unittest.TestCase):
             self.run_audit(repo)
 
 
+    def test_requires_pre_side_effect_frame_output_capacity(self):
+        tmp, repo = self.with_repo()
+        self.addCleanup(tmp.cleanup)
+        kernel = repo / "Kernel/src/kernel.go"
+        kernel.write_text(
+            kernel.read_text(encoding="utf-8").replace(
+                'if err := ensureFrameVarWriteWithinPhysicalLimit(f, k, ff(nv), "state_num_add output"); err != nil {',
+                'if err := error(nil); err != nil {',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "pre-side-effect Frame output capacity"):
+            self.run_audit(repo)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -384,6 +384,17 @@ def audit() -> dict[str, object]:
     if re.search(r'(?m)^\s*f\.Vars\[[^\n]+\]\s*=(?!=)', primitive_block):
         raise RuntimeError("bounded VM Frame writes contains raw Frame variable assignment")
 
+    require(
+        kernel_source_text,
+        [
+            'ensureFrameVarWriteWithinPhysicalLimit(f, k, output, "state_list_unique_append output")',
+            'ensureFrameVarWriteWithinPhysicalLimit(f, k, ff(nv), "state_num_add output")',
+            'ensureFrameVarWriteWithinPhysicalLimit(f, k, "1", "memory_delete output")',
+            'frameVarsMergeCandidate(f.Vars, updates, "memory_import_json outputs")',
+        ],
+        "pre-side-effect Frame output capacity",
+    )
+
     structure_creation = read("Kernel/src/structure_runtime.go")
     fabric_write_creation = read("Kernel/src/fabric_write_runtime.go")
     shard_creation = read("Kernel/src/shard_runtime.go")

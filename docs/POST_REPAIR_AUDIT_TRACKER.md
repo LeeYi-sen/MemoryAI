@@ -315,3 +315,20 @@
 - Frame overflow in local creation leaves Fabric memory count and caller Frame unchanged.
 - No variable truncation, semantic ranking, eviction, or output selection is introduced.
 - Final validation: architecture regression suite 55/55 PASS; live architecture audit PASS; Python suite 72/72 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-044 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.
+
+## Continued audit after Entry 055
+
+| ID | Priority | Status | Finding | Completion contract |
+|---|---|---|---|---|
+| PR-045 | P0 | DONE | Local mutation primitives can commit Memory side effects before discovering that their optional Frame outputs exceed the Frame-variable envelope: `state_list_unique_append`, `state_num_add`, `memory_delete`, and `memory_import_json` | Preflight exact/whole output candidates before local mutation, deletion, or import/upsert; overflow must leave State, Revision, deletion/import presence and caller Frame unchanged |
+
+## Entry 056 closure evidence
+
+- PR-045 is DONE.
+- `state_list_unique_append` computes `added_out` first and validates its Frame slot while holding the owner lock before any list mutation.
+- `state_num_add` computes the new numeric value, validates optional output capacity, and only then commits candidate State / Revision / dirty bookkeeping.
+- `memory_delete` preflights `ok_out` before resolving and deleting the target.
+- `memory_import_json` previews the incoming ID and validates the complete prospective ID/status output map before import/upsert; only after that does the persistent Memory side effect run.
+- Overflow leaves State/Revision, deletion state, imported Memory presence, and caller Frame unchanged.
+- No output truncation, semantic ranking, field selection, or rollback-by-guess is introduced.
+- Final validation: architecture regression suite 56/56 PASS; live architecture audit PASS; Python suite 73/73 PASS; `go vet` PASS; full direct Go suite PASS; focused PR-045 `go test -race -count=20` PASS; `git diff --check` PASS; canonical Memory verify PASS.

@@ -1235,6 +1235,16 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 				break
 			}
 		}
+		if k := op.Args["added_out"]; k != "" {
+			output := "1"
+			if seen {
+				output = "0"
+			}
+			if err := ensureFrameVarWriteWithinPhysicalLimit(f, k, output, "state_list_unique_append output"); err != nil {
+				owner.dataMu.Unlock()
+				return -1, err
+			}
+		}
 		if !seen {
 			ls = append(ls, val)
 			candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, ls, "state_list_unique_append")
@@ -1271,6 +1281,12 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		owner.dataMu.Lock()
 		cur := num(fmt.Sprint(target.State[key]))
 		nv := cur + delta
+		if k := op.Args["out"]; k != "" {
+			if err := ensureFrameVarWriteWithinPhysicalLimit(f, k, ff(nv), "state_num_add output"); err != nil {
+				owner.dataMu.Unlock()
+				return -1, err
+			}
+		}
 		candidateState, err := memoryStateCandidateWithinPhysicalLimit(target, key, ff(nv), "state_num_add")
 		if err != nil {
 			owner.dataMu.Unlock()
@@ -2266,6 +2282,11 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		owner.dataMu.Unlock()
 	case "memory_delete":
 		id := x(op.A)
+		if k := op.Args["ok_out"]; k != "" {
+			if err := ensureFrameVarWriteWithinPhysicalLimit(f, k, "1", "memory_delete output"); err != nil {
+				return -1, err
+			}
+		}
 		ok := "0"
 		if owner := e.ownerOf(id); owner != nil {
 			if m, er := owner.resolveIDLocal(id); er == nil {
@@ -2306,7 +2327,31 @@ func (e *Engine) execPrimitive(self *Memory, op Op, f *Frame, pc int, labels map
 		}
 		setv(op.B, raw)
 	case "memory_import_json":
-		id, status, er := e.importMemoryJSON(x(op.A), truth(x(op.Args["remote"])))
+		rawImport := x(op.A)
+		remoteImport := truth(x(op.Args["remote"]))
+		if !remoteImport && (op.B != "" || op.C != "") {
+			var preview struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(rawImport), &preview); err != nil {
+				return -1, err
+			}
+			preview.ID = strings.TrimSpace(preview.ID)
+			updates := map[string]string{}
+			if op.B != "" {
+				updates[op.B] = preview.ID
+			}
+			if op.C != "" {
+				statusPreview := "unchanged"
+				if existing, sameKey := updates[op.C]; !sameKey || len(statusPreview) > len(existing) {
+					updates[op.C] = statusPreview
+				}
+			}
+			if _, err := frameVarsMergeCandidate(f.Vars, updates, "memory_import_json outputs"); err != nil {
+				return -1, err
+			}
+		}
+		id, status, er := e.importMemoryJSON(rawImport, remoteImport)
 		if er != nil {
 			return -1, er
 		}
